@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Video Pin Generator — AI-powered product video creation for Pinterest.
-Single-file Flask backend. Port 5090.
+Single-file Flask backend. Port 5110.
 """
 
 from flask import Flask, send_file, request, jsonify, redirect, session, make_response
@@ -411,7 +411,7 @@ def favicon():
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'service': 'video-pin-generator', 'port': 5090})
+    return jsonify({'status': 'ok', 'service': 'video-pin-generator', 'port': 5110})
 
 
 # ===== Routes: Stores =====
@@ -858,4 +858,4 @@ def drive_folders():
 # ===== Main =====
 if __name__ == '__main__':
     _ensure_worker()
-    app.run(host='0.0.0.0', port=5090, debug=False)
+    app.run(host='0.0.0.0', port=5110, debug=False)
