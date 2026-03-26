@@ -370,6 +370,33 @@ def _get_prompt(product_name, store_category, settings):
     template = templates.get(category, templates.get('default', 'Professional product showcase of {product_name}'))
     return template.replace('{product_name}', product_name).replace('{store_category}', category)
 
+def _get_default_store_prompts(store):
+    """Return 4 default prompts for a store, based on its category."""
+    settings = _load_settings()
+    templates = settings.get('prompt_templates', {})
+    category = (store.get('storeCategory', '') or 'default').lower()
+    base_template = templates.get(category, templates.get('default',
+        'Professional product showcase of {product_name}, clean studio lighting, smooth rotating view, commercial quality'))
+
+    return [
+        {
+            'label': 'Prompt 1',
+            'template': base_template
+        },
+        {
+            'label': 'Prompt 2',
+            'template': 'Lifestyle shot of {product_name}, warm natural lighting, modern setting, editorial style'
+        },
+        {
+            'label': 'Prompt 3',
+            'template': 'Close-up detail shot of {product_name}, soft bokeh background, premium commercial feel'
+        },
+        {
+            'label': 'Prompt 4',
+            'template': 'Dynamic showcase of {product_name}, smooth camera movement, professional product film'
+        }
+    ]
+
 def _download_video(url, local_path):
     """Download a video file from URL to local path."""
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -693,6 +720,51 @@ def health():
     return jsonify({'status': 'ok', 'service': 'video-pin-generator', 'port': 5110})
 
 
+# ===== Routes: Store Prompts =====
+@app.route('/api/stores/<store_id>/prompts', methods=['GET'])
+@login_required
+def get_store_prompts(store_id):
+    """Get prompts for a store. If none exist, return defaults."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+
+    prompts = store.get('prompts')
+    if not prompts:
+        prompts = _get_default_store_prompts(store)
+    return jsonify({'success': True, 'prompts': prompts})
+
+
+@app.route('/api/stores/<store_id>/prompts', methods=['PUT'])
+@login_required
+def save_store_prompts(store_id):
+    """Save prompts for a store."""
+    data = request.json
+    prompts = data.get('prompts', [])
+    if not prompts or not isinstance(prompts, list):
+        return jsonify({'success': False, 'error': 'At least one prompt is required'}), 400
+
+    # Validate each prompt has label and template
+    for p in prompts:
+        if not p.get('label') or not p.get('template'):
+            return jsonify({'success': False, 'error': 'Each prompt must have a label and template'}), 400
+
+    stores = _load_stores()
+    found = False
+    for s in stores:
+        if s['id'] == store_id:
+            s['prompts'] = prompts
+            found = True
+            break
+
+    if not found:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+
+    _save_stores(stores)
+    return jsonify({'success': True})
+
+
 # ===== Routes: Stores =====
 @app.route('/api/stores', methods=['GET'])
 @login_required
@@ -708,7 +780,8 @@ def get_stores():
             'shopifyStatus': s.get('shopifyStatus', ''),
             'storeCategory': s.get('storeCategory', ''),
             'productCount': s.get('productCount', None),
-            'hasToken': bool(s.get('shopifyAccessToken', ''))
+            'hasToken': bool(s.get('shopifyAccessToken', '')),
+            'promptCount': len(s.get('prompts', []))
         })
     return jsonify({'success': True, 'stores': safe})
 
@@ -744,10 +817,14 @@ def sync_stores():
         return jsonify({'success': False, 'error': 'Could not find stores.json. Tried: ' + ', '.join(store_candidates)}), 404
 
     # Extract relevant fields for all stores (connected and disconnected)
+    # Preserve existing store-level prompts across syncs
+    existing_stores = _load_stores()
+    existing_prompts = {s.get('id'): s.get('prompts') for s in existing_stores if s.get('prompts')}
+
     synced = []
     raw_stores = source_data if isinstance(source_data, list) else source_data.get('stores', [])
     for s in raw_stores:
-        synced.append({
+        store_entry = {
             'id': s.get('id', ''),
             'name': s.get('name', ''),
             'domain': s.get('domain', ''),
@@ -755,7 +832,11 @@ def sync_stores():
             'shopifyStatus': s.get('shopifyStatus', ''),
             'storeCategory': s.get('storeCategory', 'default'),
             'productCount': s.get('productCount', None),
-        })
+        }
+        # Preserve existing prompts
+        if store_entry['id'] in existing_prompts:
+            store_entry['prompts'] = existing_prompts[store_entry['id']]
+        synced.append(store_entry)
 
     _save_stores(synced)
     connected_count = sum(1 for s in synced if s.get('shopifyStatus') == 'connected')
@@ -1443,7 +1524,10 @@ def shopify_winners(store_id):
 @app.route('/api/videos/generate', methods=['POST'])
 @login_required
 def generate_videos():
-    """Queue video generation for selected products."""
+    """Queue video generation for selected products.
+    Creates N jobs per product (one per store prompt) if store has prompts configured.
+    Falls back to 1 job with global prompt if no store prompts exist.
+    """
     data = request.json
     products = data.get('products', [])
     if not products:
@@ -1460,38 +1544,92 @@ def generate_videos():
 
     duration = settings.get('video_duration', 8)
 
+    # Load store prompts from the first product's storeId
+    store_prompts = []
+    if products:
+        first_store_id = products[0].get('storeId', '')
+        if first_store_id:
+            stores = _load_stores()
+            store = next((s for s in stores if s['id'] == first_store_id), None)
+            if store:
+                store_prompts = store.get('prompts', [])
+
     new_jobs = []
     with _jobs_lock:
         jobs = _load_jobs()
         for p in products:
-            job_id = f'job_{uuid.uuid4().hex[:12]}'
-            prompt = _get_prompt(p.get('productName', ''), p.get('storeCategory', ''), settings)
-            job = {
-                'id': job_id,
-                'storeId': p.get('storeId', ''),
-                'storeName': p.get('storeName', ''),
-                'productId': str(p.get('productId', '')),
-                'productName': p.get('productName', ''),
-                'productHandle': p.get('handle', ''),
-                'imageUrl': p.get('imageUrl', ''),
-                'storeCategory': p.get('storeCategory', ''),
-                'status': 'queued',
-                'xaiRequestId': None,
-                'videoUrl': None,
-                'localPath': None,
-                'driveUrl': None,
-                'error': None,
-                'createdAt': datetime.datetime.utcnow().isoformat() + 'Z',
-                'completedAt': None,
-                'prompt': prompt,
-                'videoModel': video_model,
-                'aspectRatio': aspect_ratio,
-                'videoDuration': duration,
-                'estimatedCost': round(duration * 0.05, 2),
-                'actualCost': None
-            }
-            jobs.append(job)
-            new_jobs.append(job)
+            product_name = p.get('productName', '')
+            store_category = p.get('storeCategory', '')
+            group_id = uuid.uuid4().hex  # shared across all jobs for this product
+
+            if store_prompts:
+                # Create one job per store prompt
+                for idx, sp in enumerate(store_prompts):
+                    job_id = f'job_{uuid.uuid4().hex[:12]}'
+                    prompt_template = sp.get('template', '')
+                    prompt = prompt_template.replace('{product_name}', product_name).replace('{store_category}', store_category)
+                    job = {
+                        'id': job_id,
+                        'storeId': p.get('storeId', ''),
+                        'storeName': p.get('storeName', ''),
+                        'productId': str(p.get('productId', '')),
+                        'productName': product_name,
+                        'productHandle': p.get('handle', ''),
+                        'imageUrl': p.get('imageUrl', ''),
+                        'storeCategory': store_category,
+                        'status': 'queued',
+                        'xaiRequestId': None,
+                        'videoUrl': None,
+                        'localPath': None,
+                        'driveUrl': None,
+                        'error': None,
+                        'createdAt': datetime.datetime.utcnow().isoformat() + 'Z',
+                        'completedAt': None,
+                        'prompt': prompt,
+                        'promptIndex': idx,
+                        'promptLabel': sp.get('label', f'Prompt {idx + 1}'),
+                        'groupId': group_id,
+                        'videoModel': video_model,
+                        'aspectRatio': aspect_ratio,
+                        'videoDuration': duration,
+                        'estimatedCost': round(duration * 0.05, 2),
+                        'actualCost': None
+                    }
+                    jobs.append(job)
+                    new_jobs.append(job)
+            else:
+                # Fallback: 1 job with global prompt (old behavior)
+                job_id = f'job_{uuid.uuid4().hex[:12]}'
+                prompt = _get_prompt(product_name, store_category, settings)
+                job = {
+                    'id': job_id,
+                    'storeId': p.get('storeId', ''),
+                    'storeName': p.get('storeName', ''),
+                    'productId': str(p.get('productId', '')),
+                    'productName': product_name,
+                    'productHandle': p.get('handle', ''),
+                    'imageUrl': p.get('imageUrl', ''),
+                    'storeCategory': store_category,
+                    'status': 'queued',
+                    'xaiRequestId': None,
+                    'videoUrl': None,
+                    'localPath': None,
+                    'driveUrl': None,
+                    'error': None,
+                    'createdAt': datetime.datetime.utcnow().isoformat() + 'Z',
+                    'completedAt': None,
+                    'prompt': prompt,
+                    'promptIndex': 0,
+                    'promptLabel': '',
+                    'groupId': group_id,
+                    'videoModel': video_model,
+                    'aspectRatio': aspect_ratio,
+                    'videoDuration': duration,
+                    'estimatedCost': round(duration * 0.05, 2),
+                    'actualCost': None
+                }
+                jobs.append(job)
+                new_jobs.append(job)
         _save_jobs(jobs)
 
     _ensure_worker()

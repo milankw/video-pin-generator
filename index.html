@@ -836,6 +836,85 @@ textarea { resize: vertical; min-height: 80px; }
 .cost-done { color: var(--green); }
 .cost-estimate { color: var(--gray-400); }
 .cost-none { color: var(--gray-300); }
+
+/* ===== Store Prompts Modal ===== */
+.prompts-modal {
+  max-width: 640px;
+}
+.prompts-modal .modal-body {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.prompt-editor {
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+  position: relative;
+}
+.prompt-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.prompt-editor-number {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gray-400);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.prompt-editor .form-group { margin-bottom: 10px; }
+.prompt-editor .form-group:last-child { margin-bottom: 0; }
+.prompt-editor textarea { min-height: 70px; font-size: 13px; }
+.prompt-editor-remove {
+  background: none;
+  border: none;
+  color: var(--gray-400);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all var(--transition);
+}
+.prompt-editor-remove:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+.prompt-placeholder-hint {
+  font-size: 11px;
+  color: var(--gray-400);
+  margin-top: 4px;
+}
+.prompts-info-note {
+  font-size: 12px;
+  color: var(--gray-500);
+  background: var(--blue-bg);
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 16px;
+}
+.modal-close-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: var(--gray-400);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: all var(--transition);
+}
+.modal-close-btn:hover {
+  background: var(--gray-100);
+  color: var(--gray-700);
+}
 </style>
 </head>
 <body>
@@ -966,6 +1045,7 @@ textarea { resize: vertical; min-height: 80px; }
     <div class="card">
       <div class="card-title">Prompt Templates</div>
       <div class="card-desc">Customize the video generation prompt per store category. Use {product_name} as placeholder.</div>
+      <div class="prompts-info-note">These are account-level defaults. Configure store-specific prompts in the Stores tab.</div>
       <div id="prompt-templates"></div>
       <button class="btn btn-primary" onclick="savePromptTemplates()" style="margin-top:12px;">Save Templates</button>
     </div>
@@ -994,6 +1074,7 @@ textarea { resize: vertical; min-height: 80px; }
             <th>Category</th>
             <th>Status</th>
             <th>Products</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody id="stores-body"></tbody>
@@ -1033,7 +1114,7 @@ textarea { resize: vertical; min-height: 80px; }
         </select>
       </div>
       <button class="btn btn-success" onclick="generateVideos()" id="generate-btn" style="display:none;">
-        Generate Videos (<span id="selected-count">0</span>)
+        <span id="generate-btn-label">Generate Videos (<span id="selected-count">0</span>)</span>
       </button>
     </div>
 
@@ -1139,6 +1220,22 @@ textarea { resize: vertical; min-height: 80px; }
   </div>
 </div>
 
+<!-- Store Prompts modal -->
+<div class="modal-overlay" id="prompts-modal" onclick="closePromptsModal(event)">
+  <div class="modal prompts-modal" style="position:relative;">
+    <button class="modal-close-btn" onclick="document.getElementById('prompts-modal').classList.remove('active')">&times;</button>
+    <div class="modal-header"><h3 id="prompts-modal-title">Store Prompts</h3></div>
+    <div class="modal-body">
+      <div id="prompts-editor-list"></div>
+      <button class="btn btn-secondary btn-sm" onclick="addPromptEditor()" style="margin-top:4px;">+ Add Prompt</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('prompts-modal').classList.remove('active')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveStorePrompts()">Save Prompts</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ===== State =====
 let stores = [];
@@ -1146,6 +1243,8 @@ let winners = [];
 let selectedProducts = new Set();
 let queueInterval = null;
 let allSelectState = false;
+let _currentStorePromptCount = 0;  // prompt count for selected store in Winners tab
+let _editingStoreId = '';  // store ID being edited in prompts modal
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -1453,6 +1552,8 @@ async function loadStoresTable() {
     const category = s.storeCategory || 'default';
     const productCount = s.productCount != null ? s.productCount : '—';
 
+    const promptCountLabel = s.promptCount ? `${s.promptCount} prompts` : 'defaults';
+
     tr.innerHTML = `
       <td><span class="status-dot ${dotClass}"></span></td>
       <td style="font-weight:500;">${escHtml(s.name || 'Unnamed')}</td>
@@ -1460,6 +1561,7 @@ async function loadStoresTable() {
       <td><span class="category-badge">${escHtml(category)}</span></td>
       <td>${statusBadge}</td>
       <td style="color:var(--gray-500);">${productCount}</td>
+      <td><button class="btn btn-secondary btn-sm" onclick="openStorePrompts('${escAttr(s.id)}','${escAttr(s.name)}')">Prompts <span style="font-weight:400;color:var(--gray-400);">(${promptCountLabel})</span></button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1551,6 +1653,15 @@ async function fetchWinners() {
   selectedProducts.clear();
   allSelectState = false;
 
+  // Fetch store prompt count for generate button label
+  _currentStorePromptCount = 0;
+  try {
+    const promptData = await api(`/api/stores/${storeId}/prompts`);
+    if (promptData?.success && promptData.prompts) {
+      _currentStorePromptCount = promptData.prompts.length;
+    }
+  } catch(e) {}
+
   if (winners.length === 0) {
     document.getElementById('winners-empty').style.display = 'block';
     document.getElementById('select-all-btn').style.display = 'none';
@@ -1639,6 +1750,15 @@ function updateSelectionUI() {
   document.getElementById('selected-count').textContent = count;
   document.getElementById('generate-btn').style.display = count > 0 ? 'inline-flex' : 'none';
   document.getElementById('select-all-btn').textContent = allSelectState && count === winners.length ? 'Deselect All' : 'Select All';
+
+  // Update button label with prompt count if available
+  const btnLabel = document.getElementById('generate-btn-label');
+  if (_currentStorePromptCount > 0 && count > 0) {
+    const total = count * _currentStorePromptCount;
+    btnLabel.textContent = `Generate Videos (${count} products \u00d7 ${_currentStorePromptCount} prompts = ${total} videos)`;
+  } else {
+    btnLabel.innerHTML = `Generate Videos (<span id="selected-count">${count}</span>)`;
+  }
 }
 
 async function generateVideos() {
@@ -1674,6 +1794,150 @@ async function generateVideos() {
     document.querySelector('[data-tab="queue"]').click();
   } else {
     toast(data?.error || 'Failed to queue videos', 'error');
+  }
+}
+
+// ===== Store Prompts Modal =====
+async function openStorePrompts(storeId, storeName) {
+  _editingStoreId = storeId;
+  document.getElementById('prompts-modal-title').textContent = `Prompts for ${storeName}`;
+  document.getElementById('prompts-editor-list').innerHTML = '<div style="padding:20px;text-align:center;color:var(--gray-400);"><div class="spinner"></div> Loading...</div>';
+  document.getElementById('prompts-modal').classList.add('active');
+
+  const data = await api(`/api/stores/${storeId}/prompts`);
+  if (!data?.success) {
+    document.getElementById('prompts-editor-list').innerHTML = '<div style="color:var(--red);">Failed to load prompts</div>';
+    return;
+  }
+
+  renderPromptEditors(data.prompts);
+}
+
+function renderPromptEditors(prompts) {
+  const container = document.getElementById('prompts-editor-list');
+  container.innerHTML = '';
+  prompts.forEach((p, idx) => {
+    container.appendChild(createPromptEditorEl(p, idx, prompts.length));
+  });
+}
+
+function createPromptEditorEl(prompt, index, total) {
+  const div = document.createElement('div');
+  div.className = 'prompt-editor';
+  div.dataset.index = index;
+
+  const canRemove = total > 1;
+  const removeBtn = canRemove
+    ? `<button class="prompt-editor-remove" onclick="removePromptEditor(this)" title="Remove this prompt">&times; Remove</button>`
+    : '';
+
+  div.innerHTML = `
+    <div class="prompt-editor-header">
+      <span class="prompt-editor-number">Prompt ${index + 1}</span>
+      ${removeBtn}
+    </div>
+    <div class="form-group">
+      <label>Label</label>
+      <input type="text" class="prompt-label-input" value="${escAttr(prompt.label || '')}" placeholder="e.g. Professional Showcase">
+    </div>
+    <div class="form-group">
+      <label>Template</label>
+      <textarea class="prompt-template-input" rows="3" placeholder="Describe the video style...">${escHtml(prompt.template || '')}</textarea>
+      <div class="prompt-placeholder-hint">Use {product_name} as placeholder for the product name.</div>
+    </div>
+  `;
+  return div;
+}
+
+function addPromptEditor() {
+  const container = document.getElementById('prompts-editor-list');
+  const existing = container.querySelectorAll('.prompt-editor').length;
+  const newPrompt = { label: `Prompt ${existing + 1}`, template: '' };
+  container.appendChild(createPromptEditorEl(newPrompt, existing, existing + 1));
+  // Re-enable remove buttons now that we have more than 1
+  refreshRemoveButtons();
+}
+
+function removePromptEditor(btn) {
+  const editor = btn.closest('.prompt-editor');
+  const container = document.getElementById('prompts-editor-list');
+  if (container.querySelectorAll('.prompt-editor').length <= 1) {
+    toast('At least one prompt is required', 'error');
+    return;
+  }
+  editor.remove();
+  // Re-number and refresh remove buttons
+  const editors = container.querySelectorAll('.prompt-editor');
+  editors.forEach((el, idx) => {
+    el.querySelector('.prompt-editor-number').textContent = `Prompt ${idx + 1}`;
+    el.dataset.index = idx;
+  });
+  refreshRemoveButtons();
+}
+
+function refreshRemoveButtons() {
+  const container = document.getElementById('prompts-editor-list');
+  const editors = container.querySelectorAll('.prompt-editor');
+  editors.forEach((el, idx) => {
+    const header = el.querySelector('.prompt-editor-header');
+    const existingRemove = header.querySelector('.prompt-editor-remove');
+    if (editors.length <= 1) {
+      if (existingRemove) existingRemove.remove();
+    } else if (!existingRemove) {
+      const btn = document.createElement('button');
+      btn.className = 'prompt-editor-remove';
+      btn.title = 'Remove this prompt';
+      btn.innerHTML = '&times; Remove';
+      btn.onclick = function() { removePromptEditor(this); };
+      header.appendChild(btn);
+    }
+  });
+}
+
+async function saveStorePrompts() {
+  const container = document.getElementById('prompts-editor-list');
+  const editors = container.querySelectorAll('.prompt-editor');
+  const prompts = [];
+
+  for (const el of editors) {
+    const label = el.querySelector('.prompt-label-input').value.trim();
+    const template = el.querySelector('.prompt-template-input').value.trim();
+    if (!label || !template) {
+      toast('Each prompt must have a label and template', 'error');
+      return;
+    }
+    prompts.push({ label, template });
+  }
+
+  if (prompts.length === 0) {
+    toast('At least one prompt is required', 'error');
+    return;
+  }
+
+  const data = await api(`/api/stores/${_editingStoreId}/prompts`, {
+    method: 'PUT',
+    body: JSON.stringify({ prompts })
+  });
+
+  if (data?.success) {
+    toast(`Saved ${prompts.length} prompts`, 'success');
+    document.getElementById('prompts-modal').classList.remove('active');
+    // Refresh stores table to show updated prompt count
+    loadStoresTable();
+    // Update prompt count if the same store is selected in Winners tab
+    const storeSelectVal = document.getElementById('store-select').value;
+    if (storeSelectVal === _editingStoreId) {
+      _currentStorePromptCount = prompts.length;
+      updateSelectionUI();
+    }
+  } else {
+    toast(data?.error || 'Failed to save prompts', 'error');
+  }
+}
+
+function closePromptsModal(e) {
+  if (e.target === document.getElementById('prompts-modal')) {
+    document.getElementById('prompts-modal').classList.remove('active');
   }
 }
 
@@ -1822,12 +2086,17 @@ async function _loadQueuePage(page, replace) {
       ? `<img class="job-thumb" src="${j.imageUrl}" alt="">`
       : `<div class="job-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--gray-100);color:var(--gray-400);font-size:14px;">&#128247;</div>`;
 
+    const promptLabelHtml = j.promptLabel
+      ? `<div style="font-size:11px;color:var(--gray-400);margin-top:2px;">${escHtml(j.promptLabel)}</div>`
+      : '';
+
     tr.innerHTML = `
       <td>
         <div class="job-product">
           ${thumbHtml}
           <div>
             <div class="job-name">${escHtml(j.productName)}</div>
+            ${promptLabelHtml}
           </div>
         </div>
       </td>
