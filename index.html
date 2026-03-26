@@ -1765,6 +1765,7 @@ async function generateVideos() {
     .map(p => ({
       storeId: storeId,
       storeName: store.name,
+      storeDomain: store.domain || '',
       productId: p.id,
       productName: p.name,
       handle: p.handle,
@@ -2132,7 +2133,9 @@ function renderGroupCard(groupId, jobs) {
     <div class="queue-group-header">
       ${thumbHtml}
       <div class="queue-group-info">
-        <div class="queue-group-name">${escHtml(firstJob.productName)}</div>
+        <div class="queue-group-name">${firstJob.storeDomain && firstJob.productHandle
+          ? `<a href="https://${escAttr(firstJob.storeDomain)}/products/${escAttr(firstJob.productHandle)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;text-underline-offset:2px;">${escHtml(firstJob.productName)}</a>`
+          : escHtml(firstJob.productName)}</div>
         <div class="queue-group-meta">${escHtml(firstJob.storeName || '')} &middot; ${created}</div>
       </div>
       <div class="queue-group-cost">${costDisplay}</div>
