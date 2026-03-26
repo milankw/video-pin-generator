@@ -189,6 +189,25 @@ def _get_drive_service():
         return None, str(e)
 
 
+def _find_or_create_drive_folder(service, folder_name, parent_id):
+    """Find a folder by name under parent, or create it. Returns folder ID."""
+    # Escape single quotes in folder name for Drive API query
+    safe_name = folder_name.replace("'", "\\'")
+    q = f"name='{safe_name}' and '{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    existing = service.files().list(q=q, fields='files(id,name)', pageSize=1).execute()
+
+    if existing.get('files'):
+        return existing['files'][0]['id']
+
+    folder_metadata = {
+        'name': folder_name,
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [parent_id]
+    }
+    folder = service.files().create(body=folder_metadata, fields='id').execute()
+    return folder['id']
+
+
 # ===== Job queue + background worker =====
 _jobs_lock = threading.Lock()
 _worker_running = False
@@ -346,6 +365,59 @@ def _save_jobs_safe(updated_job):
                 break
         _save_jobs(jobs)
 
+def _auto_upload_to_drive(job):
+    """Automatically upload a completed video to Google Drive if Drive is configured."""
+    settings = _load_settings()
+    root_folder_id = settings.get('gdrive_root_folder_id', '')
+    if not root_folder_id:
+        return  # Drive not configured, skip silently
+
+    if not job.get('localPath'):
+        return
+
+    full_path = os.path.join(VIDEOS_DIR, job['localPath'])
+    if not os.path.exists(full_path):
+        return
+
+    service, err = _get_drive_service()
+    if not service:
+        log.warning(f"Drive auto-upload skipped: {err}")
+        return
+
+    try:
+        from googleapiclient.http import MediaFileUpload
+
+        store_name = job.get('storeName', 'Unknown Store')
+        product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
+
+        # Create folder structure: Root > Store Name > Product Handle
+        store_folder_id = _find_or_create_drive_folder(service, store_name, root_folder_id)
+        product_folder_id = _find_or_create_drive_folder(service, product_handle, store_folder_id)
+
+        # Upload
+        file_name = os.path.basename(full_path)
+        file_metadata = {'name': file_name, 'parents': [product_folder_id]}
+        media = MediaFileUpload(full_path, mimetype='video/mp4', resumable=True)
+        uploaded = service.files().create(
+            body=file_metadata, media_body=media, fields='id,webViewLink'
+        ).execute()
+
+        drive_url = uploaded.get('webViewLink', '')
+        with _jobs_lock:
+            jobs = _load_jobs()
+            for j in jobs:
+                if j['id'] == job['id']:
+                    j['driveUrl'] = drive_url
+                    break
+            _save_jobs(jobs)
+
+        log.info(f"Auto-uploaded {job['id']} to Drive: {drive_url}")
+    except ImportError:
+        log.warning("Drive auto-upload skipped: google-api-python-client not installed")
+    except Exception as e:
+        log.warning(f"Drive auto-upload error: {e}")
+
+
 def _worker_loop():
     """Background worker that processes queued video jobs."""
     global _worker_running
@@ -371,6 +443,11 @@ def _worker_loop():
 
             if job['status'] == 'done':
                 log.info(f"Job {job['id']} completed: {job.get('localPath', 'N/A')}")
+                # Auto-upload to Google Drive if configured
+                try:
+                    _auto_upload_to_drive(job)
+                except Exception as ue:
+                    log.warning(f"Auto-upload to Drive failed for {job['id']}: {ue}")
             else:
                 log.warning(f"Job {job['id']} failed: {job.get('error', 'unknown')}")
 
@@ -863,30 +940,21 @@ def upload_to_drive(job_id):
     try:
         from googleapiclient.http import MediaFileUpload
 
-        # Create store subfolder if needed
+        # Create folder structure: Root > Store Name > Product Handle
         store_name = job.get('storeName', 'Unknown Store')
-        safe_store = re.sub(r'[^\w\- ]', '', store_name).strip() or 'Unknown'
+        product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
 
-        # Check if store folder exists
-        q = f"name='{safe_store}' and '{root_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-        existing = service.files().list(q=q, fields='files(id,name)', pageSize=1).execute()
+        # Find or create store folder
+        store_folder_id = _find_or_create_drive_folder(service, store_name, root_folder_id)
 
-        if existing.get('files'):
-            store_folder_id = existing['files'][0]['id']
-        else:
-            folder_metadata = {
-                'name': safe_store,
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [root_folder_id]
-            }
-            folder = service.files().create(body=folder_metadata, fields='id').execute()
-            store_folder_id = folder['id']
+        # Find or create product subfolder inside store folder
+        product_folder_id = _find_or_create_drive_folder(service, product_handle, store_folder_id)
 
-        # Upload file
+        # Upload file into product folder
         file_name = os.path.basename(full_path)
         file_metadata = {
-            'name': f"{job.get('productHandle', 'video')}_{file_name}",
-            'parents': [store_folder_id]
+            'name': file_name,
+            'parents': [product_folder_id]
         }
         media = MediaFileUpload(full_path, mimetype='video/mp4', resumable=True)
         uploaded = service.files().create(
@@ -1004,12 +1072,22 @@ def shopify_winners(store_id):
             except:
                 pass
 
-        # Check which products already have video jobs
+        # Check which products already have video jobs (done, in-progress, or queued)
         jobs = _load_jobs()
-        products_with_videos = set()
+        product_video_status = {}  # pid -> 'done' | 'in_progress' | 'queued'
         for j in jobs:
-            if j.get('storeId') == store_id and j.get('status') == 'done':
-                products_with_videos.add(str(j.get('productId', '')))
+            if j.get('storeId') != store_id:
+                continue
+            pid_str = str(j.get('productId', ''))
+            jstatus = j.get('status', '')
+            # Priority: done > in_progress > queued
+            existing = product_video_status.get(pid_str)
+            if jstatus == 'done':
+                product_video_status[pid_str] = 'done'
+            elif jstatus in ('generating', 'polling') and existing != 'done':
+                product_video_status[pid_str] = 'in_progress'
+            elif jstatus == 'queued' and existing not in ('done', 'in_progress'):
+                product_video_status[pid_str] = 'queued'
 
         # Build results
         results = []
@@ -1019,7 +1097,7 @@ def shopify_winners(store_id):
             handle = detail.get('handle', '')
             image_url = detail.get('image', '')
             product_type = detail.get('product_type', '')
-            has_video = str(pid) in products_with_videos
+            video_status = product_video_status.get(str(pid), 'none')  # none = no video at all
 
             results.append({
                 'id': str(pid),
@@ -1031,7 +1109,8 @@ def shopify_winners(store_id):
                 'image': image_url,
                 'handle': handle,
                 'productType': product_type,
-                'hasVideo': has_video,
+                'hasVideo': video_status == 'done',
+                'videoStatus': video_status,
             })
 
         return jsonify({

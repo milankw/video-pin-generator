@@ -1398,9 +1398,16 @@ function renderProducts() {
       ? `<img class="product-card-img" src="${p.image}" alt="${p.name}" loading="lazy">`
       : `<div class="product-card-img-placeholder">&#128722;</div>`;
 
-    const badgeHtml = p.hasVideo
-      ? `<div class="product-card-badge"><span class="badge-status badge-has-video">Has Video</span></div>`
-      : `<div class="product-card-badge"><span class="badge-status badge-new">New</span></div>`;
+    let badgeHtml;
+    if (p.videoStatus === 'done') {
+      badgeHtml = `<div class="product-card-badge"><span class="badge-status badge-done">Done</span></div>`;
+    } else if (p.videoStatus === 'in_progress') {
+      badgeHtml = `<div class="product-card-badge"><span class="badge-status badge-generating">Generating</span></div>`;
+    } else if (p.videoStatus === 'queued') {
+      badgeHtml = `<div class="product-card-badge"><span class="badge-status badge-queued">Queued</span></div>`;
+    } else {
+      badgeHtml = `<div class="product-card-badge"><span class="badge-status badge-new">New</span></div>`;
+    }
 
     card.innerHTML = `
       <div class="product-card-check"></div>
