@@ -313,7 +313,7 @@ def _process_job(job):
     }
 
     # Step 1: Submit video generation request
-    video_model = settings.get('xai_video_model', 'grok-imagine-video')
+    video_model = job.get('videoModel') or settings.get('xai_video_model', 'grok-imagine-video')
     payload = {
         'model': video_model,
         'prompt': prompt,
@@ -1231,6 +1231,9 @@ def generate_videos():
     if not settings.get('xai_api_key'):
         return jsonify({'success': False, 'error': 'xAI API key not configured. Go to Settings tab.'}), 400
 
+    # Optional per-request video model override
+    video_model = data.get('video_model', '').strip() or None
+
     new_jobs = []
     with _jobs_lock:
         jobs = _load_jobs()
@@ -1254,7 +1257,8 @@ def generate_videos():
                 'error': None,
                 'createdAt': datetime.datetime.utcnow().isoformat() + 'Z',
                 'completedAt': None,
-                'prompt': prompt
+                'prompt': prompt,
+                'videoModel': video_model
             }
             jobs.append(job)
             new_jobs.append(job)
