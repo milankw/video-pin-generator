@@ -429,6 +429,63 @@ textarea { resize: vertical; min-height: 80px; }
 .queue-table .job-store { color: var(--gray-500); font-size: 12px; }
 .queue-table .job-actions { display: flex; gap: 6px; }
 
+/* ===== Queue Group Cards ===== */
+.queue-group-card {
+  background: #fff;
+  border-radius: 12px;
+  border: 1px solid var(--gray-200);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+.queue-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.queue-group-header .job-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--gray-100);
+  flex-shrink: 0;
+}
+.queue-group-info { flex: 1; min-width: 0; }
+.queue-group-name { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-group-meta { font-size: 12px; color: var(--gray-500); }
+.queue-group-cost { font-weight: 600; text-align: right; white-space: nowrap; }
+.queue-group-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.queue-slot {
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--gray-50);
+}
+.queue-slot-label { font-weight: 500; font-size: 12px; margin-bottom: 6px; }
+.queue-slot-status { margin-bottom: 6px; }
+.queue-slot-cost { font-size: 11px; color: var(--gray-500); margin-bottom: 6px; }
+.queue-slot-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.queue-slot-error { font-size: 11px; color: var(--red); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-group-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--gray-100);
+  align-items: center;
+}
+.queue-group-footer .queue-drive-status {
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 500;
+}
+
 /* ===== Gallery ===== */
 .gallery-store {
   margin-bottom: 24px;
@@ -1143,21 +1200,8 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="empty-state-text">No video jobs yet</div>
       <div class="empty-state-sub">Select products from the Winners tab and click Generate Videos.</div>
     </div>
-    <div class="card" id="queue-card" style="display:none;padding:0;overflow:hidden;">
-      <table class="queue-table">
-        <thead>
-          <tr>
-            <th>Product</th>
-            <th>Store</th>
-            <th>Status</th>
-            <th>Cost</th>
-            <th>Created</th>
-            <th>Completed</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="queue-body"></tbody>
-      </table>
+    <div id="queue-card" style="display:none;">
+      <div id="queue-groups"></div>
     </div>
     <div id="queue-load-more" style="display:none;text-align:center;padding:16px;">
       <button class="btn btn-secondary" onclick="loadMoreQueue()">Load More</button>
@@ -1189,7 +1233,6 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
 
     <!-- Local Videos Section -->
-    <div id="gallery-stats" class="stats-row" style="display:none;"></div>
     <div class="loading-overlay" id="gallery-loading"><div class="spinner"></div> Loading gallery...</div>
     <div class="empty-state" id="gallery-empty">
       <div class="empty-state-icon">&#127909;</div>
@@ -1232,6 +1275,30 @@ textarea { resize: vertical; min-height: 80px; }
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="document.getElementById('prompts-modal').classList.remove('active')">Cancel</button>
       <button class="btn btn-primary" onclick="saveStorePrompts()">Save Prompts</button>
+    </div>
+  </div>
+</div>
+
+<!-- Retry prompt modal -->
+<div class="modal-overlay" id="retry-modal" onclick="closeRetryModal(event)">
+  <div class="modal" style="max-width:500px;position:relative;">
+    <button class="modal-close-btn" onclick="document.getElementById('retry-modal').classList.remove('active')">&times;</button>
+    <div class="modal-header"><h3>Retry Video</h3></div>
+    <div class="modal-body" style="padding:16px;">
+      <div class="form-group">
+        <label>Pick a store prompt (optional)</label>
+        <select id="retry-prompt-select" onchange="onRetryPromptSelect()" style="width:100%;">
+          <option value="">&mdash; Custom / keep current &mdash;</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Prompt</label>
+        <textarea id="retry-prompt-text" rows="4" style="width:100%;"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="document.getElementById('retry-modal').classList.remove('active')">Cancel</button>
+      <button class="btn btn-primary" onclick="submitRetry()">Retry with this prompt</button>
     </div>
   </div>
 </div>
@@ -2038,77 +2105,157 @@ async function _loadQueuePage(page, replace) {
   // Show/hide Load More
   document.getElementById('queue-load-more').style.display = _queueHasMore ? 'block' : 'none';
 
-  const tbody = document.getElementById('queue-body');
-  tbody.innerHTML = '';
-
+  // Group jobs by groupId
+  const groups = new Map();
+  const ungrouped = [];
   _queueJobs.forEach(j => {
-    const tr = document.createElement('tr');
-
-    const statusClass = {
-      queued: 'badge-queued', generating: 'badge-generating', polling: 'badge-polling',
-      done: 'badge-done', failed: 'badge-failed', cancelled: 'badge-cancelled'
-    }[j.status] || 'badge-queued';
-
-    const statusLabel = {
-      queued: 'Queued', generating: 'Generating', polling: 'Polling',
-      done: 'Done', failed: 'Failed', cancelled: 'Cancelled'
-    }[j.status] || j.status;
-
-    // Cost display
-    let costHtml = '<span class="cost-cell cost-none">&mdash;</span>';
-    if (j.status === 'done') {
-      const cost = j.actualCost != null ? j.actualCost : (j.estimatedCost || 0);
-      costHtml = `<span class="cost-cell cost-done">$${cost.toFixed(2)}</span>`;
-    } else if (['queued', 'generating', 'polling'].includes(j.status)) {
-      const est = j.estimatedCost || 0;
-      costHtml = `<span class="cost-cell cost-estimate">~$${est.toFixed(2)}</span>`;
+    const gid = j.groupId;
+    if (gid) {
+      if (!groups.has(gid)) groups.set(gid, []);
+      groups.get(gid).push(j);
+    } else {
+      ungrouped.push(j);
     }
-
-    let actions = '';
-    if (j.status === 'failed') {
-      actions = `<button class="btn btn-secondary btn-xs" onclick="retryJob('${j.id}')">Retry</button>`;
-    } else if (j.status === 'queued') {
-      actions = `<button class="btn btn-danger btn-xs" onclick="cancelJob('${j.id}')">Cancel</button>`;
-    } else if (j.status === 'done' && j.localPath) {
-      const driveBtn = j.driveUrl
-        ? `<a class="btn btn-xs" style="background:var(--green-bg);color:var(--green);border:1px solid var(--green);" href="${j.driveUrl}" target="_blank">In Drive ✓</a>`
-        : `<button class="btn btn-secondary btn-xs" onclick="uploadJobToDrive('${j.id}',this)">Upload to Drive</button>`;
-      actions = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${j.id}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>
-                 <a class="btn btn-secondary btn-xs" href="/api/videos/${j.id}/download" download>Download</a>
-                 ${driveBtn}`;
-    }
-
-    const created = j.createdAt ? new Date(j.createdAt).toLocaleString() : '\u2014';
-    const completed = j.completedAt ? new Date(j.completedAt).toLocaleString() : '\u2014';
-    const errorTip = j.error ? ` title="${escAttr(j.error)}"` : '';
-
-    const thumbHtml = j.imageUrl
-      ? `<img class="job-thumb" src="${j.imageUrl}" alt="">`
-      : `<div class="job-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--gray-100);color:var(--gray-400);font-size:14px;">&#128247;</div>`;
-
-    const promptLabelHtml = j.promptLabel
-      ? `<div style="font-size:11px;color:var(--gray-400);margin-top:2px;">${escHtml(j.promptLabel)}</div>`
-      : '';
-
-    tr.innerHTML = `
-      <td>
-        <div class="job-product">
-          ${thumbHtml}
-          <div>
-            <div class="job-name">${escHtml(j.productName)}</div>
-            ${promptLabelHtml}
-          </div>
-        </div>
-      </td>
-      <td><span class="job-store">${escHtml(j.storeName || '')}</span></td>
-      <td><span class="badge-status ${statusClass}"${errorTip}>${statusLabel}</span></td>
-      <td>${costHtml}</td>
-      <td style="font-size:12px;color:var(--gray-500);">${created}</td>
-      <td style="font-size:12px;color:var(--gray-500);">${completed}</td>
-      <td><div class="job-actions">${actions}</div></td>
-    `;
-    tbody.appendChild(tr);
   });
+
+  const container = document.getElementById('queue-groups');
+  container.innerHTML = '';
+
+  // Sort groups by most recent createdAt (descending)
+  const sortedGroups = [...groups.entries()].sort((a, b) => {
+    const aTime = new Date(a[1][0].createdAt || 0);
+    const bTime = new Date(b[1][0].createdAt || 0);
+    return bTime - aTime;
+  });
+
+  // Render each group
+  for (const [groupId, jobs] of sortedGroups) {
+    container.appendChild(renderGroupCard(groupId, jobs));
+  }
+
+  // Render ungrouped as individual cards
+  ungrouped.forEach(j => {
+    container.appendChild(renderGroupCard(null, [j]));
+  });
+}
+
+function _getStatusBadge(j) {
+  const statusClass = {
+    queued: 'badge-queued', generating: 'badge-generating', polling: 'badge-polling',
+    done: 'badge-done', failed: 'badge-failed', cancelled: 'badge-cancelled'
+  }[j.status] || 'badge-queued';
+  const statusLabel = {
+    queued: 'Queued', generating: 'Generating', polling: 'Polling',
+    done: 'Done', failed: 'Failed', cancelled: 'Cancelled'
+  }[j.status] || j.status;
+  const errorTip = j.error ? ` title="${escAttr(j.error)}"` : '';
+  return `<span class="badge-status ${statusClass}"${errorTip}>${statusLabel}</span>`;
+}
+
+function _getSlotCost(j) {
+  if (j.status === 'done') {
+    const cost = j.actualCost != null ? j.actualCost : (j.estimatedCost || 0);
+    return `<span class="cost-cell cost-done">$${cost.toFixed(2)}</span>`;
+  } else if (['queued', 'generating', 'polling'].includes(j.status)) {
+    const est = j.estimatedCost || 0;
+    return `<span class="cost-cell cost-estimate">~$${est.toFixed(2)}</span>`;
+  }
+  return '';
+}
+
+function _getSlotActions(j) {
+  let html = '';
+  if (j.status === 'failed') {
+    html = `<button class="btn btn-secondary btn-xs" onclick="openRetryModal('${escAttr(j.id)}','${escAttr(j.storeId || '')}')">Retry</button>`;
+  } else if (j.status === 'queued') {
+    html = `<button class="btn btn-danger btn-xs" onclick="cancelJob('${escAttr(j.id)}')">Cancel</button>`;
+  } else if (j.status === 'done' && j.localPath) {
+    html = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${escAttr(j.id)}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>`;
+    html += ` <a class="btn btn-secondary btn-xs" href="/api/videos/${encodeURIComponent(j.id)}/download" download>Download</a>`;
+    if (j.driveUrl) {
+      html += ` <span style="font-size:11px;color:var(--green);">Uploaded \u2713</span>`;
+    }
+  }
+  return html;
+}
+
+function renderGroupCard(groupId, jobs) {
+  const card = document.createElement('div');
+  card.className = 'queue-group-card';
+
+  const firstJob = jobs[0];
+  const thumbHtml = firstJob.imageUrl
+    ? `<img class="job-thumb" src="${firstJob.imageUrl}" alt="">`
+    : `<div class="job-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--gray-100);color:var(--gray-400);font-size:14px;">&#128247;</div>`;
+
+  const created = firstJob.createdAt ? new Date(firstJob.createdAt).toLocaleDateString() : '\u2014';
+
+  // Total cost for the group
+  let totalCost = 0;
+  jobs.forEach(j => {
+    if (j.status === 'done') {
+      totalCost += (j.actualCost != null ? j.actualCost : (j.estimatedCost || 0));
+    } else if (['queued', 'generating', 'polling'].includes(j.status)) {
+      totalCost += (j.estimatedCost || 0);
+    }
+  });
+  const costDisplay = totalCost > 0 ? `$${totalCost.toFixed(2)}` : '';
+
+  // Header
+  let headerHtml = `
+    <div class="queue-group-header">
+      ${thumbHtml}
+      <div class="queue-group-info">
+        <div class="queue-group-name">${escHtml(firstJob.productName)}</div>
+        <div class="queue-group-meta">${escHtml(firstJob.storeName || '')} &middot; ${created}</div>
+      </div>
+      <div class="queue-group-cost">${costDisplay}</div>
+    </div>
+  `;
+
+  // Slots grid
+  let slotsHtml = '<div class="queue-group-slots">';
+  jobs.forEach(j => {
+    const label = j.promptLabel || 'Video';
+    const errorHtml = (j.status === 'failed' && j.error)
+      ? `<div class="queue-slot-error" title="${escAttr(j.error)}">${escHtml(j.error)}</div>`
+      : '';
+    slotsHtml += `
+      <div class="queue-slot">
+        <div class="queue-slot-label">${escHtml(label)}</div>
+        <div class="queue-slot-status">${_getStatusBadge(j)}</div>
+        ${errorHtml}
+        <div class="queue-slot-cost">${_getSlotCost(j)}</div>
+        <div class="queue-slot-actions">${_getSlotActions(j)}</div>
+      </div>
+    `;
+  });
+  slotsHtml += '</div>';
+
+  // Footer
+  let footerHtml = '<div class="queue-group-footer">';
+  const doneJobs = jobs.filter(j => j.status === 'done' && j.localPath);
+  const doneWithoutDrive = doneJobs.filter(j => !j.driveUrl);
+
+  if (doneJobs.length > 0 && groupId) {
+    if (doneWithoutDrive.length > 0) {
+      footerHtml += `<button class="btn btn-secondary btn-sm" onclick="uploadGroupToDrive('${escAttr(groupId)}',this)">Upload to Drive (${doneWithoutDrive.length})</button>`;
+    } else {
+      footerHtml += `<span class="queue-drive-status">All in Drive \u2713</span>`;
+    }
+  } else if (doneJobs.length > 0 && !groupId) {
+    // Single ungrouped job — show individual upload
+    const j = doneJobs[0];
+    if (!j.driveUrl) {
+      footerHtml += `<button class="btn btn-secondary btn-sm" onclick="uploadJobToDrive('${escAttr(j.id)}',this)">Upload to Drive</button>`;
+    } else {
+      footerHtml += `<span class="queue-drive-status">In Drive \u2713</span>`;
+    }
+  }
+  footerHtml += '</div>';
+
+  card.innerHTML = headerHtml + slotsHtml + footerHtml;
+  return card;
 }
 
 async function clearCompleted() {
@@ -2140,6 +2287,85 @@ async function retryJob(id) {
   await api(`/api/videos/${id}/retry`, {method:'POST'});
   toast('Job requeued', 'info');
   refreshQueue();
+}
+
+// Retry with prompt selection modal
+let _retryJobId = null;
+let _retryStoreId = null;
+
+async function openRetryModal(jobId, storeId) {
+  _retryJobId = jobId;
+  _retryStoreId = storeId;
+  // Look up current prompt from job data
+  const job = _queueJobs.find(j => j.id === jobId);
+  const currentPrompt = job?.prompt || '';
+  document.getElementById('retry-prompt-text').value = currentPrompt;
+
+  // Load store prompts into dropdown
+  const select = document.getElementById('retry-prompt-select');
+  select.innerHTML = '<option value="">\u2014 Custom / keep current \u2014</option>';
+  if (storeId) {
+    try {
+      const data = await api(`/api/stores/${storeId}/prompts`);
+      if (data?.success && data.prompts) {
+        data.prompts.forEach((p, i) => {
+          const opt = document.createElement('option');
+          opt.value = p.template;
+          opt.textContent = p.label || `Prompt ${i+1}`;
+          select.appendChild(opt);
+        });
+      }
+    } catch(e) {}
+  }
+
+  document.getElementById('retry-modal').classList.add('active');
+}
+
+function onRetryPromptSelect() {
+  const val = document.getElementById('retry-prompt-select').value;
+  if (val) {
+    document.getElementById('retry-prompt-text').value = val;
+  }
+}
+
+async function submitRetry() {
+  const prompt = document.getElementById('retry-prompt-text').value.trim();
+  if (!prompt) { toast('Prompt cannot be empty', 'error'); return; }
+
+  const body = { prompt };
+  await api(`/api/videos/${_retryJobId}/retry`, { method: 'POST', body: JSON.stringify(body) });
+  document.getElementById('retry-modal').classList.remove('active');
+  toast('Job requeued with updated prompt', 'info');
+  refreshQueue();
+}
+
+function closeRetryModal(e) {
+  if (e.target === document.getElementById('retry-modal')) {
+    document.getElementById('retry-modal').classList.remove('active');
+  }
+}
+
+// Group upload to Drive
+async function uploadGroupToDrive(groupId, btn) {
+  const origText = btn.textContent;
+  btn.textContent = 'Uploading...';
+  btn.disabled = true;
+
+  const data = await api('/api/drive/upload-group', {
+    method: 'POST',
+    body: JSON.stringify({ groupId })
+  });
+
+  if (data?.success) {
+    const uploaded = data.results.filter(r => r.status === 'uploaded').length;
+    const already = data.results.filter(r => r.status === 'already_uploaded').length;
+    toast(`Uploaded ${uploaded} videos to Drive` + (already ? ` (${already} already there)` : ''), 'success');
+    refreshQueue();
+  } else {
+    toast(data?.error || 'Upload failed', 'error');
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
 }
 
 async function cancelJob(id) {
@@ -2450,8 +2676,6 @@ async function refreshGallery() {
   document.getElementById('gallery-loading').classList.add('active');
   document.getElementById('gallery-empty').style.display = 'none';
   document.getElementById('gallery-content').innerHTML = '';
-  document.getElementById('gallery-stats').style.display = 'none';
-
   const data = await api('/api/gallery');
   document.getElementById('gallery-loading').classList.remove('active');
 
@@ -2466,15 +2690,6 @@ async function refreshGallery() {
     gb.textContent = data.totalVideos;
     gb.style.display = 'inline-flex';
   }
-
-  // Stats
-  const statsHtml = `
-    <div class="stat-card"><div class="stat-value">${data.totalVideos}</div><div class="stat-label">Total Videos</div></div>
-    <div class="stat-card"><div class="stat-value">${data.stores.length}</div><div class="stat-label">Stores</div></div>
-    <div class="stat-card"><div class="stat-value">${data.stores.reduce((a,s)=>a+s.products.length,0)}</div><div class="stat-label">Products</div></div>
-  `;
-  document.getElementById('gallery-stats').innerHTML = statsHtml;
-  document.getElementById('gallery-stats').style.display = 'grid';
 
   const container = document.getElementById('gallery-content');
   data.stores.forEach(store => {

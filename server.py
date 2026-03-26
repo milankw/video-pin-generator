@@ -1743,6 +1743,9 @@ def clear_completed():
 @app.route('/api/videos/<job_id>/retry', methods=['POST'])
 @login_required
 def retry_job(job_id):
+    data = request.get_json(silent=True) or {}
+    new_prompt = data.get('prompt', '').strip() if data.get('prompt') else ''
+
     found = False
     with _jobs_lock:
         jobs = _load_jobs()
@@ -1754,6 +1757,9 @@ def retry_job(job_id):
                 j['videoUrl'] = None
                 j['localPath'] = None
                 j['completedAt'] = None
+                if new_prompt:
+                    j['prompt'] = new_prompt
+                    j['promptLabel'] = j.get('promptLabel', '') or 'Retried'
                 found = True
                 break
         if found:
@@ -1771,6 +1777,9 @@ def retry_job(job_id):
                     j['localPath'] = None
                     j['completedAt'] = None
                     j.pop('archivedAt', None)
+                    if new_prompt:
+                        j['prompt'] = new_prompt
+                        j['promptLabel'] = j.get('promptLabel', '') or 'Retried'
                     jobs.append(j)
                     found = True
                 else:
@@ -1780,6 +1789,75 @@ def retry_job(job_id):
                 _save_jobs(jobs)
     _ensure_worker()
     return jsonify({'success': True})
+
+@app.route('/api/drive/upload-group', methods=['POST'])
+@login_required
+def upload_group_to_drive():
+    data = request.json
+    group_id = data.get('groupId', '') if data else ''
+    if not group_id:
+        return jsonify({'success': False, 'error': 'No groupId provided'}), 400
+
+    all_jobs = _load_all_jobs()
+    group_jobs = [j for j in all_jobs if j.get('groupId') == group_id and j['status'] == 'done' and j.get('localPath')]
+
+    if not group_jobs:
+        return jsonify({'success': False, 'error': 'No completed videos in this group'}), 400
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    results = []
+    for job in group_jobs:
+        if job.get('driveUrl'):
+            results.append({'id': job['id'], 'status': 'already_uploaded', 'driveUrl': job['driveUrl']})
+            continue
+
+        full_path = os.path.join(VIDEOS_DIR, job['localPath'])
+        if not os.path.exists(full_path):
+            results.append({'id': job['id'], 'status': 'file_missing'})
+            continue
+
+        try:
+            from googleapiclient.http import MediaFileUpload
+            root_folder_id = _get_or_create_root_folder(service)
+            store_name = job.get('storeName', 'Unknown Store')
+            product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
+            store_folder_id = _find_or_create_drive_folder(service, store_name, root_folder_id)
+            product_folder_id = _find_or_create_numbered_product_folder(service, product_handle, store_folder_id)
+
+            file_name = os.path.basename(full_path)
+            file_metadata = {'name': file_name, 'parents': [product_folder_id]}
+            media = MediaFileUpload(full_path, mimetype='video/mp4', resumable=True)
+            uploaded = service.files().create(body=file_metadata, media_body=media, fields='id,webViewLink').execute()
+            drive_url = uploaded.get('webViewLink', '')
+
+            # Update job driveUrl
+            with _jobs_lock:
+                found_active = False
+                jobs_list = _load_jobs()
+                for j in jobs_list:
+                    if j['id'] == job['id']:
+                        j['driveUrl'] = drive_url
+                        found_active = True
+                        break
+                if found_active:
+                    _save_jobs(jobs_list)
+                else:
+                    archive = _load_archive()
+                    for j in archive:
+                        if j['id'] == job['id']:
+                            j['driveUrl'] = drive_url
+                            break
+                    _save_archive(archive)
+
+            results.append({'id': job['id'], 'status': 'uploaded', 'driveUrl': drive_url})
+        except Exception as e:
+            results.append({'id': job['id'], 'status': 'error', 'error': str(e)})
+
+    return jsonify({'success': True, 'results': results})
+
 
 @app.route('/api/videos/<job_id>/cancel', methods=['POST'])
 @login_required
