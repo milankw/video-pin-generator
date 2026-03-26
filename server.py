@@ -831,7 +831,6 @@ def drive_auth_url():
         )
         authorization_url, state = flow.authorization_url(
             access_type='offline',
-            include_granted_scopes='true',
             prompt='consent'
         )
         # Store state in session for CSRF protection
@@ -864,29 +863,28 @@ def drive_oauth_callback():
         return redirect('/?tab=settings&drive=error')
 
     try:
-        from google_auth_oauthlib.flow import Flow
-
+        # Exchange authorization code for tokens directly (avoids scope mismatch
+        # errors when Google returns additional previously-granted scopes)
         redirect_uri = f'{request.host_url.rstrip("/")}/api/drive/callback'
-        flow = Flow.from_client_config(
-            {
-                "web": {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                }
-            },
-            scopes=['https://www.googleapis.com/auth/drive'],
-            redirect_uri=redirect_uri,
-            state=state
-        )
-        flow.fetch_token(code=code)
-        credentials = flow.credentials
+        token_resp = http_requests.post('https://oauth2.googleapis.com/token', data={
+            'code': code,
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'redirect_uri': redirect_uri,
+            'grant_type': 'authorization_code',
+        }, timeout=15)
 
-        settings['gdrive_access_token'] = credentials.token
-        settings['gdrive_refresh_token'] = credentials.refresh_token or ''
-        if credentials.expiry:
-            settings['gdrive_token_expiry'] = credentials.expiry.isoformat()
+        if token_resp.status_code != 200:
+            log.error(f'Token exchange failed: {token_resp.status_code} {token_resp.text[:500]}')
+            return redirect('/?tab=settings&drive=error')
+
+        tokens = token_resp.json()
+        settings['gdrive_access_token'] = tokens.get('access_token', '')
+        settings['gdrive_refresh_token'] = tokens.get('refresh_token', '')
+        expires_in = tokens.get('expires_in')
+        if expires_in:
+            import datetime as _dt
+            settings['gdrive_token_expiry'] = (_dt.datetime.utcnow() + _dt.timedelta(seconds=int(expires_in))).isoformat()
         settings['gdrive_status'] = 'connected'
         _save_settings(settings)
 
