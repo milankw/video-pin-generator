@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Video Pin Generator</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  --primary: #0ea5e9;
+  --primary-hover: #0284c7;
+  --primary-light: rgba(14,165,233,0.08);
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-300: #d1d5db;
+  --gray-400: #9ca3af;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-800: #1f2937;
+  --gray-900: #111827;
+  --green-bg: #f0fdf4;
+  --green: #16a34a;
+  --red-bg: #fef2f2;
+  --red: #dc2626;
+  --amber-bg: #fffbeb;
+  --amber: #d97706;
+  --blue-bg: #eff6ff;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --transition: 0.15s ease;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--gray-100);
+  color: var(--gray-800);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ===== Header ===== */
+.header {
+  background: #fff;
+  border-bottom: 1px solid var(--gray-200);
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-logo {
+  width: 28px;
+  height: 28px;
+}
+.header-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.header-right a {
+  color: var(--gray-500);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  transition: color var(--transition);
+}
+.header-right a:hover { color: var(--gray-700); }
+
+/* ===== Tabs ===== */
+.tabs {
+  display: flex;
+  gap: 0;
+  background: #fff;
+  border-bottom: 1px solid var(--gray-200);
+  padding: 0 24px;
+}
+.tab {
+  padding: 12px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gray-500);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+  user-select: none;
+}
+.tab:hover { color: var(--gray-700); }
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+.tab .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 6px;
+}
+.tab .badge-blue { background: var(--blue-bg); color: var(--primary); }
+.tab .badge-green { background: var(--green-bg); color: var(--green); }
+.tab .badge-amber { background: var(--amber-bg); color: var(--amber); }
+
+/* ===== Content ===== */
+.content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ===== Cards ===== */
+.card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-sm);
+}
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-900);
+  margin-bottom: 4px;
+}
+.card-desc {
+  font-size: 13px;
+  color: var(--gray-500);
+  margin-bottom: 20px;
+}
+
+/* ===== Form Controls ===== */
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gray-700);
+  margin-bottom: 6px;
+}
+input[type="text"], input[type="password"], input[type="number"], textarea, select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--gray-800);
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  background: #fff;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(14,165,233,0.1);
+}
+textarea { resize: vertical; min-height: 80px; }
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.form-group { margin-bottom: 16px; }
+.form-hint { font-size: 12px; color: var(--gray-400); margin-top: 4px; }
+
+/* ===== Buttons ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--transition);
+  line-height: 1;
+}
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary { background: var(--gray-100); color: var(--gray-700); border: 1px solid var(--gray-300); }
+.btn-secondary:hover { background: var(--gray-200); }
+.btn-success { background: var(--green); color: #fff; }
+.btn-success:hover { background: #15803d; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+
+/* ===== Status Badges ===== */
+.badge-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.badge-queued { background: var(--gray-100); color: var(--gray-600); }
+.badge-generating { background: var(--blue-bg); color: var(--primary); }
+.badge-polling { background: var(--amber-bg); color: var(--amber); }
+.badge-done { background: var(--green-bg); color: var(--green); }
+.badge-failed { background: var(--red-bg); color: var(--red); }
+.badge-cancelled { background: var(--gray-100); color: var(--gray-400); }
+.badge-new { background: var(--blue-bg); color: var(--primary); }
+.badge-has-video { background: var(--green-bg); color: var(--green); }
+
+/* Pulse animation for generating */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.badge-generating::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+.badge-polling::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* ===== Alert / Toast ===== */
+.toast-container {
+  position: fixed;
+  top: 72px;
+  right: 24px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 20px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--shadow-md);
+  animation: slideIn 0.3s ease;
+  max-width: 400px;
+}
+.toast-success { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+.toast-error { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.toast-info { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+@keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* ===== Empty State ===== */
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--gray-400);
+}
+.empty-state-icon { font-size: 36px; margin-bottom: 12px; }
+.empty-state-text { font-size: 14px; margin-bottom: 4px; color: var(--gray-500); }
+.empty-state-sub { font-size: 13px; color: var(--gray-400); }
+
+/* ===== Toolbar ===== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.toolbar-spacer { flex: 1; }
+
+/* ===== Product Grid ===== */
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.product-card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  cursor: pointer;
+  position: relative;
+}
+.product-card:hover { border-color: var(--gray-300); box-shadow: var(--shadow); }
+.product-card.selected { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(14,165,233,0.2); }
+.product-card-img {
+  width: 100%;
+  height: 180px;
+  object-fit: cover;
+  background: var(--gray-100);
+  display: block;
+}
+.product-card-img-placeholder {
+  width: 100%;
+  height: 180px;
+  background: var(--gray-100);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gray-400);
+  font-size: 32px;
+}
+.product-card-body { padding: 14px; }
+.product-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-800);
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.product-card-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--gray-500);
+}
+.product-card-stats strong { color: var(--gray-700); }
+.product-card-check {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid var(--gray-300);
+  background: rgba(255,255,255,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.product-card.selected .product-card-check {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.product-card.selected .product-card-check::after {
+  content: '';
+  width: 5px;
+  height: 9px;
+  border: 2px solid #fff;
+  border-top: none;
+  border-left: none;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+.product-card-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+/* ===== Queue Table ===== */
+.queue-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.queue-table th {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-500);
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--gray-200);
+  background: var(--gray-50);
+}
+.queue-table td {
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--gray-100);
+  vertical-align: middle;
+}
+.queue-table tr:hover td { background: var(--gray-50); }
+.queue-table .job-product { display: flex; align-items: center; gap: 10px; }
+.queue-table .job-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--gray-100);
+}
+.queue-table .job-name { font-weight: 500; }
+.queue-table .job-store { color: var(--gray-500); font-size: 12px; }
+.queue-table .job-actions { display: flex; gap: 6px; }
+
+/* ===== Gallery ===== */
+.gallery-store {
+  margin-bottom: 24px;
+}
+.gallery-store-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  cursor: pointer;
+  user-select: none;
+}
+.gallery-store-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-800);
+}
+.gallery-store-count {
+  font-size: 12px;
+  color: var(--gray-400);
+}
+.gallery-store-arrow {
+  color: var(--gray-400);
+  font-size: 12px;
+  transition: transform var(--transition);
+}
+.gallery-store.open .gallery-store-arrow { transform: rotate(90deg); }
+.gallery-store-body { display: none; padding-left: 4px; }
+.gallery-store.open .gallery-store-body { display: block; }
+
+.gallery-product {
+  margin-bottom: 16px;
+}
+.gallery-product-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-700);
+  margin-bottom: 10px;
+  padding-left: 8px;
+  border-left: 3px solid var(--primary);
+}
+.gallery-videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+.gallery-video-card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.gallery-video-preview {
+  width: 100%;
+  aspect-ratio: 9/16;
+  max-height: 280px;
+  object-fit: cover;
+  background: #000;
+  display: block;
+}
+.gallery-video-meta {
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.gallery-video-date { font-size: 12px; color: var(--gray-500); }
+
+/* ===== Stats Row ===== */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.stat-card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+}
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+.stat-label {
+  font-size: 12px;
+  color: var(--gray-500);
+  margin-top: 2px;
+}
+
+/* ===== Loader ===== */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--gray-200);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-overlay {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px;
+  color: var(--gray-500);
+  font-size: 14px;
+}
+.loading-overlay.active { display: flex; }
+
+/* ===== Prompt Modal ===== */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--gray-200);
+}
+.modal-header h3 { font-size: 16px; font-weight: 600; }
+.modal-body { padding: 20px 24px; }
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--gray-200);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ===== Video preview modal ===== */
+.video-modal-content {
+  max-width: 360px;
+  margin: 0 auto;
+}
+.video-modal-content video {
+  width: 100%;
+  border-radius: var(--radius);
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-left">
+    <img src="/favicon.svg" class="header-logo" alt="">
+    <span class="header-title">Video Pin Generator</span>
+  </div>
+  <div class="header-right">
+    <a href="/logout">Sign Out</a>
+  </div>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+  <div class="tab active" data-tab="settings">Settings</div>
+  <div class="tab" data-tab="winners">Winners</div>
+  <div class="tab" data-tab="queue">Queue <span class="badge badge-blue" id="queue-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="gallery">Gallery <span class="badge badge-green" id="gallery-badge" style="display:none">0</span></div>
+</div>
+
+<!-- Content -->
+<div class="content">
+
+  <!-- ===== SETTINGS TAB ===== -->
+  <div class="tab-panel active" id="panel-settings">
+
+    <div class="card">
+      <div class="card-title">xAI API Configuration</div>
+      <div class="card-desc">Configure your xAI Grok API key for video generation.</div>
+      <div class="form-group">
+        <label>API Key</label>
+        <div style="display:flex;gap:8px;">
+          <input type="password" id="xai-key" placeholder="xai-...">
+          <button class="btn btn-secondary" onclick="testXaiKey()">Test</button>
+          <button class="btn btn-primary" onclick="saveApiKey()">Save</button>
+        </div>
+        <div class="form-hint" id="xai-status"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Video Defaults</div>
+      <div class="card-desc">Default settings for generated videos.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Duration</label>
+          <select id="video-duration">
+            <option value="5">5 seconds</option>
+            <option value="8" selected>8 seconds</option>
+            <option value="10">10 seconds</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Resolution</label>
+          <select id="video-resolution">
+            <option value="720p" selected>720p</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Aspect Ratio</label>
+        <input type="text" value="9:16 (Pinterest)" disabled style="background:var(--gray-50);">
+        <div class="form-hint">Locked to 9:16 for Pinterest video pins.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Prompt Templates</div>
+      <div class="card-desc">Customize the video generation prompt per store category. Use {product_name} as placeholder.</div>
+      <div id="prompt-templates"></div>
+      <button class="btn btn-primary" onclick="savePromptTemplates()" style="margin-top:12px;">Save Templates</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Store Sync</div>
+      <div class="card-desc">Sync Shopify stores from your Dropship Autopilot installation.</div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="btn btn-primary" onclick="syncStores()">Sync Stores</button>
+        <span id="sync-status" style="font-size:13px;color:var(--gray-500);"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Google Drive (Optional)</div>
+      <div class="card-desc">Upload completed videos to Google Drive. Not required for MVP — videos are stored locally.</div>
+      <div class="form-group">
+        <label>Root Folder ID</label>
+        <input type="text" id="gdrive-folder-id" placeholder="Google Drive folder ID (optional)">
+        <div class="form-hint">The folder where store subfolders will be created.</div>
+      </div>
+      <button class="btn btn-secondary" onclick="saveGdriveSettings()">Save Drive Settings</button>
+    </div>
+  </div>
+
+  <!-- ===== WINNERS TAB ===== -->
+  <div class="tab-panel" id="panel-winners">
+    <div class="toolbar">
+      <select id="store-select" style="width:240px;">
+        <option value="">Select a store...</option>
+      </select>
+      <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;">
+        <label style="margin-bottom:0;white-space:nowrap;">Min Sales:</label>
+        <input type="number" id="threshold" value="5" min="1" style="width:80px;">
+      </div>
+      <button class="btn btn-primary" onclick="fetchWinners()" id="fetch-btn">Fetch Winners</button>
+      <div class="toolbar-spacer"></div>
+      <button class="btn btn-secondary btn-sm" onclick="toggleSelectAll()" id="select-all-btn" style="display:none;">Select All</button>
+      <button class="btn btn-success" onclick="generateVideos()" id="generate-btn" style="display:none;">
+        Generate Videos (<span id="selected-count">0</span>)
+      </button>
+    </div>
+
+    <div id="winners-stats" class="stats-row" style="display:none;"></div>
+    <div class="loading-overlay" id="winners-loading"><div class="spinner"></div> Fetching winning products...</div>
+    <div class="empty-state" id="winners-empty">
+      <div class="empty-state-icon">&#128640;</div>
+      <div class="empty-state-text">Select a store and fetch winners</div>
+      <div class="empty-state-sub">Products that meet your sales threshold will appear here.</div>
+    </div>
+    <div class="product-grid" id="product-grid"></div>
+  </div>
+
+  <!-- ===== QUEUE TAB ===== -->
+  <div class="tab-panel" id="panel-queue">
+    <div class="toolbar">
+      <div class="toolbar-spacer"></div>
+      <span style="font-size:12px;color:var(--gray-400);" id="queue-refresh-info">Auto-refreshes every 10s</span>
+      <button class="btn btn-secondary btn-sm" onclick="refreshQueue()">Refresh</button>
+    </div>
+    <div class="loading-overlay" id="queue-loading"><div class="spinner"></div> Loading queue...</div>
+    <div class="empty-state" id="queue-empty">
+      <div class="empty-state-icon">&#128247;</div>
+      <div class="empty-state-text">No video jobs yet</div>
+      <div class="empty-state-sub">Select products from the Winners tab and click Generate Videos.</div>
+    </div>
+    <div class="card" id="queue-card" style="display:none;padding:0;overflow:hidden;">
+      <table class="queue-table">
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Store</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Completed</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="queue-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== GALLERY TAB ===== -->
+  <div class="tab-panel" id="panel-gallery">
+    <div id="gallery-stats" class="stats-row" style="display:none;"></div>
+    <div class="loading-overlay" id="gallery-loading"><div class="spinner"></div> Loading gallery...</div>
+    <div class="empty-state" id="gallery-empty">
+      <div class="empty-state-icon">&#127909;</div>
+      <div class="empty-state-text">No videos yet</div>
+      <div class="empty-state-sub">Generated videos will appear here organized by store and product.</div>
+    </div>
+    <div id="gallery-content"></div>
+  </div>
+
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Video preview modal -->
+<div class="modal-overlay" id="video-modal" onclick="closeVideoModal(event)">
+  <div class="modal">
+    <div class="modal-header"><h3 id="video-modal-title">Video Preview</h3></div>
+    <div class="modal-body">
+      <div class="video-modal-content">
+        <video id="video-modal-player" controls></video>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <a id="video-modal-download" class="btn btn-secondary btn-sm" href="#" download>Download</a>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('video-modal').classList.remove('active')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== State =====
+let stores = [];
+let winners = [];
+let selectedProducts = new Set();
+let queueInterval = null;
+let allSelectState = false;
+
+// ===== Toast =====
+function toast(msg, type='info') {
+  const c = document.getElementById('toast-container');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// ===== API helper =====
+async function api(url, opts={}) {
+  const resp = await fetch(url, {
+    headers: {'Content-Type': 'application/json', ...opts.headers},
+    ...opts
+  });
+  if (resp.status === 401) {
+    window.location.href = '/login';
+    return null;
+  }
+  return resp.json();
+}
+
+// ===== Tab navigation =====
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+
+    if (tab.dataset.tab === 'queue') refreshQueue();
+    if (tab.dataset.tab === 'gallery') refreshGallery();
+    if (tab.dataset.tab === 'winners') loadStoreSelector();
+  });
+});
+
+// ===== Settings =====
+async function loadSettings() {
+  const data = await api('/api/settings');
+  if (!data || !data.success) return;
+  const s = data.settings;
+
+  if (s.xai_api_key_set) {
+    document.getElementById('xai-key').placeholder = s.xai_api_key_masked;
+    document.getElementById('xai-status').textContent = 'API key is configured';
+    document.getElementById('xai-status').style.color = 'var(--green)';
+  }
+
+  document.getElementById('video-duration').value = s.video_duration || 8;
+  document.getElementById('video-resolution').value = s.video_resolution || '720p';
+  document.getElementById('gdrive-folder-id').value = s.gdrive_root_folder_id || '';
+
+  // Render prompt templates
+  const container = document.getElementById('prompt-templates');
+  container.innerHTML = '';
+  const templates = s.prompt_templates || {};
+  const categories = ['clothing', 'jewelry', 'home', 'beauty', 'default'];
+  const catLabels = {clothing:'Clothing / Fashion', jewelry:'Jewelry / Accessories', home:'Home / Decor', beauty:'Beauty / Cosmetics', default:'Default (Fallback)'};
+
+  categories.forEach(cat => {
+    const div = document.createElement('div');
+    div.className = 'form-group';
+    div.innerHTML = `
+      <label>${catLabels[cat] || cat}</label>
+      <textarea id="prompt-${cat}" rows="3">${templates[cat] || ''}</textarea>
+      <div class="form-hint">Use {product_name} for the product name.</div>
+    `;
+    container.appendChild(div);
+  });
+
+  // Add any extra templates that exist
+  Object.keys(templates).forEach(cat => {
+    if (!categories.includes(cat)) {
+      categories.push(cat);
+      const div = document.createElement('div');
+      div.className = 'form-group';
+      div.innerHTML = `
+        <label>${cat}</label>
+        <textarea id="prompt-${cat}" rows="3">${templates[cat] || ''}</textarea>
+      `;
+      container.appendChild(div);
+    }
+  });
+}
+
+async function saveApiKey() {
+  const key = document.getElementById('xai-key').value.trim();
+  if (!key) { toast('Enter an API key', 'error'); return; }
+  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({xai_api_key: key})});
+  if (data?.success) {
+    toast('API key saved', 'success');
+    loadSettings();
+    document.getElementById('xai-key').value = '';
+  } else {
+    toast(data?.error || 'Failed to save', 'error');
+  }
+}
+
+async function testXaiKey() {
+  const status = document.getElementById('xai-status');
+  status.textContent = 'Testing...';
+  status.style.color = 'var(--gray-500)';
+  const data = await api('/api/settings/test-xai', {method:'POST'});
+  if (data?.success) {
+    const videoNote = data.hasVideoModel ? ' (video model available)' : ' (video model not found in list)';
+    status.textContent = `Connected! ${data.models?.length || 0} models${videoNote}`;
+    status.style.color = 'var(--green)';
+  } else {
+    status.textContent = data?.error || 'Connection failed';
+    status.style.color = 'var(--red)';
+  }
+}
+
+async function savePromptTemplates() {
+  const templates = {};
+  document.querySelectorAll('[id^="prompt-"]').forEach(ta => {
+    const cat = ta.id.replace('prompt-', '');
+    templates[cat] = ta.value;
+  });
+  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({prompt_templates: templates})});
+  if (data?.success) toast('Templates saved', 'success');
+  else toast(data?.error || 'Failed', 'error');
+}
+
+async function saveGdriveSettings() {
+  const folderId = document.getElementById('gdrive-folder-id').value.trim();
+  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({gdrive_root_folder_id: folderId})});
+  if (data?.success) toast('Drive settings saved', 'success');
+  else toast(data?.error || 'Failed', 'error');
+}
+
+async function saveDuration() {
+  const dur = document.getElementById('video-duration').value;
+  await api('/api/settings', {method:'POST', body:JSON.stringify({video_duration: parseInt(dur)})});
+}
+document.getElementById('video-duration').addEventListener('change', saveDuration);
+
+async function syncStores() {
+  const status = document.getElementById('sync-status');
+  status.textContent = 'Syncing...';
+  const data = await api('/api/stores/sync', {method:'POST'});
+  if (data?.success) {
+    status.textContent = `Synced ${data.count} stores`;
+    status.style.color = 'var(--green)';
+    toast(`${data.count} stores synced`, 'success');
+    loadStoreSelector();
+  } else {
+    status.textContent = data?.error || 'Sync failed';
+    status.style.color = 'var(--red)';
+    toast(data?.error || 'Sync failed', 'error');
+  }
+}
+
+// ===== Store Selector =====
+async function loadStoreSelector() {
+  const data = await api('/api/stores');
+  if (!data?.success) return;
+  stores = data.stores;
+  const sel = document.getElementById('store-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Select a store...</option>';
+  stores.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id;
+    opt.textContent = `${s.name} (${s.storeCategory || 'general'})`;
+    sel.appendChild(opt);
+  });
+  if (current) sel.value = current;
+}
+
+// ===== Winners =====
+async function fetchWinners() {
+  const storeId = document.getElementById('store-select').value;
+  if (!storeId) { toast('Select a store first', 'error'); return; }
+  const threshold = document.getElementById('threshold').value || 5;
+
+  document.getElementById('winners-empty').style.display = 'none';
+  document.getElementById('product-grid').innerHTML = '';
+  document.getElementById('winners-stats').style.display = 'none';
+  document.getElementById('winners-loading').classList.add('active');
+  document.getElementById('fetch-btn').disabled = true;
+
+  const data = await api(`/api/shopify/winners/${storeId}?threshold=${threshold}`);
+
+  document.getElementById('winners-loading').classList.remove('active');
+  document.getElementById('fetch-btn').disabled = false;
+
+  if (!data?.success) {
+    toast(data?.error || 'Failed to fetch winners', 'error');
+    document.getElementById('winners-empty').style.display = 'block';
+    return;
+  }
+
+  winners = data.products;
+  selectedProducts.clear();
+  allSelectState = false;
+
+  if (winners.length === 0) {
+    document.getElementById('winners-empty').style.display = 'block';
+    document.getElementById('select-all-btn').style.display = 'none';
+    document.getElementById('generate-btn').style.display = 'none';
+    return;
+  }
+
+  // Stats
+  const statsHtml = `
+    <div class="stat-card"><div class="stat-value">${data.qualifiedCount}</div><div class="stat-label">Qualified Products</div></div>
+    <div class="stat-card"><div class="stat-value">${data.totalProducts}</div><div class="stat-label">Total Products</div></div>
+    <div class="stat-card"><div class="stat-value">${data.totalOrders}</div><div class="stat-label">Total Units Sold</div></div>
+    <div class="stat-card"><div class="stat-value">${data.pagesScanned}</div><div class="stat-label">Order Pages</div></div>
+  `;
+  document.getElementById('winners-stats').innerHTML = statsHtml;
+  document.getElementById('winners-stats').style.display = 'grid';
+  document.getElementById('select-all-btn').style.display = 'inline-flex';
+
+  renderProducts();
+}
+
+function renderProducts() {
+  const grid = document.getElementById('product-grid');
+  grid.innerHTML = '';
+  const store = stores.find(s => s.id === document.getElementById('store-select').value);
+
+  winners.forEach(p => {
+    const card = document.createElement('div');
+    card.className = `product-card${selectedProducts.has(p.id) ? ' selected' : ''}`;
+    card.onclick = () => toggleProduct(p.id);
+
+    const imgHtml = p.image
+      ? `<img class="product-card-img" src="${p.image}" alt="${p.name}" loading="lazy">`
+      : `<div class="product-card-img-placeholder">&#128722;</div>`;
+
+    const badgeHtml = p.hasVideo
+      ? `<div class="product-card-badge"><span class="badge-status badge-has-video">Has Video</span></div>`
+      : `<div class="product-card-badge"><span class="badge-status badge-new">New</span></div>`;
+
+    card.innerHTML = `
+      <div class="product-card-check"></div>
+      ${badgeHtml}
+      ${imgHtml}
+      <div class="product-card-body">
+        <div class="product-card-name">${escHtml(p.name)}</div>
+        <div class="product-card-stats">
+          <span><strong>${p.sales}</strong> sales</span>
+          <span><strong>$${p.revenue.toFixed(2)}</strong> revenue</span>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+  updateSelectionUI();
+}
+
+function toggleProduct(id) {
+  if (selectedProducts.has(id)) selectedProducts.delete(id);
+  else selectedProducts.add(id);
+  renderProducts();
+}
+
+function toggleSelectAll() {
+  allSelectState = !allSelectState;
+  if (allSelectState) {
+    winners.forEach(p => selectedProducts.add(p.id));
+  } else {
+    selectedProducts.clear();
+  }
+  renderProducts();
+}
+
+function updateSelectionUI() {
+  const count = selectedProducts.size;
+  document.getElementById('selected-count').textContent = count;
+  document.getElementById('generate-btn').style.display = count > 0 ? 'inline-flex' : 'none';
+  document.getElementById('select-all-btn').textContent = allSelectState && count === winners.length ? 'Deselect All' : 'Select All';
+}
+
+async function generateVideos() {
+  if (selectedProducts.size === 0) return;
+  const storeId = document.getElementById('store-select').value;
+  const store = stores.find(s => s.id === storeId);
+  if (!store) return;
+
+  const products = winners
+    .filter(p => selectedProducts.has(p.id))
+    .map(p => ({
+      storeId: storeId,
+      storeName: store.name,
+      productId: p.id,
+      productName: p.name,
+      handle: p.handle,
+      imageUrl: p.image,
+      storeCategory: store.storeCategory || 'default'
+    }));
+
+  const data = await api('/api/videos/generate', {
+    method: 'POST',
+    body: JSON.stringify({products})
+  });
+
+  if (data?.success) {
+    toast(`${data.queued} videos queued for generation`, 'success');
+    selectedProducts.clear();
+    renderProducts();
+    // Switch to queue tab
+    document.querySelector('[data-tab="queue"]').click();
+  } else {
+    toast(data?.error || 'Failed to queue videos', 'error');
+  }
+}
+
+// ===== Queue =====
+async function refreshQueue() {
+  const data = await api('/api/videos/queue');
+  if (!data?.success) return;
+
+  const jobs = data.jobs;
+  const activeCount = jobs.filter(j => ['queued','generating','polling'].includes(j.status)).length;
+  const doneCount = jobs.filter(j => j.status === 'done').length;
+
+  // Update badge
+  const badge = document.getElementById('queue-badge');
+  if (activeCount > 0) {
+    badge.textContent = activeCount;
+    badge.style.display = 'inline-flex';
+    badge.className = 'badge badge-amber';
+  } else if (doneCount > 0) {
+    badge.textContent = doneCount;
+    badge.style.display = 'inline-flex';
+    badge.className = 'badge badge-green';
+  } else {
+    badge.style.display = 'none';
+  }
+
+  if (jobs.length === 0) {
+    document.getElementById('queue-empty').style.display = 'block';
+    document.getElementById('queue-card').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('queue-empty').style.display = 'none';
+  document.getElementById('queue-card').style.display = 'block';
+
+  const tbody = document.getElementById('queue-body');
+  tbody.innerHTML = '';
+
+  jobs.forEach(j => {
+    const tr = document.createElement('tr');
+
+    const statusClass = {
+      queued: 'badge-queued', generating: 'badge-generating', polling: 'badge-polling',
+      done: 'badge-done', failed: 'badge-failed', cancelled: 'badge-cancelled'
+    }[j.status] || 'badge-queued';
+
+    const statusLabel = {
+      queued: 'Queued', generating: 'Generating', polling: 'Polling',
+      done: 'Done', failed: 'Failed', cancelled: 'Cancelled'
+    }[j.status] || j.status;
+
+    let actions = '';
+    if (j.status === 'failed') {
+      actions = `<button class="btn btn-secondary btn-xs" onclick="retryJob('${j.id}')">Retry</button>`;
+    } else if (j.status === 'queued') {
+      actions = `<button class="btn btn-danger btn-xs" onclick="cancelJob('${j.id}')">Cancel</button>`;
+    } else if (j.status === 'done' && j.localPath) {
+      actions = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${j.id}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>
+                 <a class="btn btn-secondary btn-xs" href="/api/videos/${j.id}/download" download>Download</a>`;
+    }
+
+    const created = j.createdAt ? new Date(j.createdAt).toLocaleString() : '—';
+    const completed = j.completedAt ? new Date(j.completedAt).toLocaleString() : '—';
+    const errorTip = j.error ? ` title="${escAttr(j.error)}"` : '';
+
+    const thumbHtml = j.imageUrl
+      ? `<img class="job-thumb" src="${j.imageUrl}" alt="">`
+      : `<div class="job-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--gray-100);color:var(--gray-400);font-size:14px;">&#128247;</div>`;
+
+    tr.innerHTML = `
+      <td>
+        <div class="job-product">
+          ${thumbHtml}
+          <div>
+            <div class="job-name">${escHtml(j.productName)}</div>
+          </div>
+        </div>
+      </td>
+      <td><span class="job-store">${escHtml(j.storeName || '')}</span></td>
+      <td><span class="badge-status ${statusClass}"${errorTip}>${statusLabel}</span></td>
+      <td style="font-size:12px;color:var(--gray-500);">${created}</td>
+      <td style="font-size:12px;color:var(--gray-500);">${completed}</td>
+      <td><div class="job-actions">${actions}</div></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function retryJob(id) {
+  await api(`/api/videos/${id}/retry`, {method:'POST'});
+  toast('Job requeued', 'info');
+  refreshQueue();
+}
+
+async function cancelJob(id) {
+  await api(`/api/videos/${id}/cancel`, {method:'POST'});
+  toast('Job cancelled', 'info');
+  refreshQueue();
+}
+
+function previewVideo(jobId, name, localPath) {
+  const modal = document.getElementById('video-modal');
+  const player = document.getElementById('video-modal-player');
+  const title = document.getElementById('video-modal-title');
+  const dl = document.getElementById('video-modal-download');
+
+  title.textContent = name;
+  player.src = `/data/videos/${localPath}`;
+  dl.href = `/api/videos/${jobId}/download`;
+  modal.classList.add('active');
+  player.play().catch(() => {});
+}
+
+function closeVideoModal(e) {
+  if (e.target === document.getElementById('video-modal')) {
+    document.getElementById('video-modal').classList.remove('active');
+    document.getElementById('video-modal-player').pause();
+  }
+}
+
+// Auto-refresh queue
+function startQueueRefresh() {
+  if (queueInterval) clearInterval(queueInterval);
+  queueInterval = setInterval(() => {
+    if (document.getElementById('panel-queue').classList.contains('active')) {
+      refreshQueue();
+    }
+  }, 10000);
+}
+
+// ===== Gallery =====
+async function refreshGallery() {
+  document.getElementById('gallery-loading').classList.add('active');
+  document.getElementById('gallery-empty').style.display = 'none';
+  document.getElementById('gallery-content').innerHTML = '';
+  document.getElementById('gallery-stats').style.display = 'none';
+
+  const data = await api('/api/gallery');
+  document.getElementById('gallery-loading').classList.remove('active');
+
+  if (!data?.success || data.stores.length === 0) {
+    document.getElementById('gallery-empty').style.display = 'block';
+    return;
+  }
+
+  // Update gallery badge
+  const gb = document.getElementById('gallery-badge');
+  if (data.totalVideos > 0) {
+    gb.textContent = data.totalVideos;
+    gb.style.display = 'inline-flex';
+  }
+
+  // Stats
+  const statsHtml = `
+    <div class="stat-card"><div class="stat-value">${data.totalVideos}</div><div class="stat-label">Total Videos</div></div>
+    <div class="stat-card"><div class="stat-value">${data.stores.length}</div><div class="stat-label">Stores</div></div>
+    <div class="stat-card"><div class="stat-value">${data.stores.reduce((a,s)=>a+s.products.length,0)}</div><div class="stat-label">Products</div></div>
+  `;
+  document.getElementById('gallery-stats').innerHTML = statsHtml;
+  document.getElementById('gallery-stats').style.display = 'grid';
+
+  const container = document.getElementById('gallery-content');
+  data.stores.forEach(store => {
+    const div = document.createElement('div');
+    div.className = 'gallery-store open';
+    div.innerHTML = `
+      <div class="gallery-store-header" onclick="this.parentElement.classList.toggle('open')">
+        <span class="gallery-store-arrow">&#9654;</span>
+        <span class="gallery-store-name">${escHtml(store.name)}</span>
+        <span class="gallery-store-count">${store.totalVideos} videos</span>
+      </div>
+      <div class="gallery-store-body"></div>
+    `;
+
+    const body = div.querySelector('.gallery-store-body');
+    store.products.forEach(prod => {
+      const prodDiv = document.createElement('div');
+      prodDiv.className = 'gallery-product';
+      prodDiv.innerHTML = `<div class="gallery-product-name">${escHtml(prod.name)}</div><div class="gallery-videos"></div>`;
+
+      const videosDiv = prodDiv.querySelector('.gallery-videos');
+      prod.videos.forEach(v => {
+        const vcard = document.createElement('div');
+        vcard.className = 'gallery-video-card';
+        const date = v.completedAt ? new Date(v.completedAt).toLocaleDateString() : '';
+        vcard.innerHTML = `
+          <video class="gallery-video-preview" src="${v.videoUrl}" preload="metadata" onclick="previewVideo('${v.jobId}','${escAttr(prod.name)}','${escAttr(v.localPath)}')" style="cursor:pointer;"></video>
+          <div class="gallery-video-meta">
+            <span class="gallery-video-date">${date}</span>
+            <a class="btn btn-secondary btn-xs" href="/api/videos/${v.jobId}/download" download>Download</a>
+          </div>
+        `;
+        videosDiv.appendChild(vcard);
+      });
+
+      body.appendChild(prodDiv);
+    });
+
+    container.appendChild(div);
+  });
+}
+
+// ===== Utility =====
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+function escAttr(s) {
+  return (s||'').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ===== Init =====
+loadSettings();
+loadStoreSelector();
+startQueueRefresh();
+refreshQueue();
+</script>
+</body>
+</html>

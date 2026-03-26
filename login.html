@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login — Video Pin Generator</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: #f3f4f6;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    padding: 48px 40px;
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+  }
+  .logo { font-size: 40px; margin-bottom: 8px; }
+  h1 { font-size: 20px; font-weight: 600; color: #111827; margin-bottom: 4px; }
+  .subtitle { font-size: 14px; color: #6b7280; margin-bottom: 32px; }
+  form { display: flex; flex-direction: column; gap: 16px; }
+  input[type="password"] {
+    width: 100%;
+    padding: 12px 16px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input[type="password"]:focus { border-color: #0ea5e9; box-shadow: 0 0 0 3px rgba(14,165,233,0.1); }
+  button {
+    padding: 12px;
+    background: #0ea5e9;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: #0284c7; }
+  .error {
+    background: #fef2f2;
+    color: #dc2626;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    display: none;
+  }
+  .error.show { display: block; }
+</style>
+</head>
+<body>
+<div class="login-card">
+  <div class="logo">&#9654;&#65039;</div>
+  <h1>Video Pin Generator</h1>
+  <p class="subtitle">Enter your password to continue</p>
+  <div class="error" id="error">Invalid password. Please try again.</div>
+  <form method="POST" action="/login">
+    <input type="password" name="password" placeholder="Password" autofocus required>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
+<script>
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('error')) document.getElementById('error').classList.add('show');
+  if (params.has('locked')) {
+    const el = document.getElementById('error');
+    el.textContent = `Too many attempts. Try again in ${Math.ceil(parseInt(params.get('locked'))/60)} minutes.`;
+    el.classList.add('show');
+  }
+</script>
+</body>
+</html>
