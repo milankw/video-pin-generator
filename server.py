@@ -175,6 +175,50 @@ def _load_jobs():
 def _save_jobs(jobs):
     _save_json('video_jobs.json', jobs)
 
+def _load_archive():
+    return _load_json('video_jobs_archive.json', [])
+
+def _save_archive(jobs):
+    _save_json('video_jobs_archive.json', jobs)
+
+def _archive_old_jobs():
+    """Move completed/failed/cancelled jobs older than 1 hour to archive."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with _jobs_lock:
+        jobs = _load_jobs()
+        active = []
+        to_archive = []
+        for j in jobs:
+            status = j.get('status', '')
+            if status in ('done', 'failed', 'cancelled'):
+                # Use completedAt for done, or createdAt as fallback
+                ts_str = j.get('completedAt', '') or j.get('createdAt', '')
+                if ts_str:
+                    try:
+                        dt = datetime.datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+                        age_seconds = (now - dt).total_seconds()
+                        if age_seconds > 3600:  # 1 hour
+                            j['archivedAt'] = now.isoformat().replace('+00:00', 'Z')
+                            to_archive.append(j)
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+            active.append(j)
+
+        if to_archive:
+            archive = _load_archive()
+            archive.extend(to_archive)
+            _save_archive(archive)
+            _save_jobs(active)
+            log.info(f"Archived {len(to_archive)} old jobs ({len(active)} active remain)")
+
+def _load_all_jobs():
+    """Load jobs from both active and archive files."""
+    with _jobs_lock:
+        active = _load_jobs()
+        archive = _load_archive()
+    return active + archive
+
 
 # ===== Google Drive helper =====
 def _get_drive_service():
@@ -519,12 +563,22 @@ def _auto_upload_to_drive(job):
 
         drive_url = uploaded.get('webViewLink', '')
         with _jobs_lock:
+            found_in_active = False
             jobs = _load_jobs()
             for j in jobs:
                 if j['id'] == job['id']:
                     j['driveUrl'] = drive_url
+                    found_in_active = True
                     break
-            _save_jobs(jobs)
+            if found_in_active:
+                _save_jobs(jobs)
+            else:
+                archive = _load_archive()
+                for j in archive:
+                    if j['id'] == job['id']:
+                        j['driveUrl'] = drive_url
+                        break
+                _save_archive(archive)
 
         log.info(f"Auto-uploaded {job['id']} to Drive: {drive_url}")
     except ImportError:
@@ -539,8 +593,19 @@ def _worker_loop():
     _worker_running = True
     log.info("Video worker started")
 
+    _archive_counter = 0
+
     while True:
         try:
+            # Periodically archive old completed jobs (every 10 iterations ~ 30s idle)
+            _archive_counter += 1
+            if _archive_counter >= 10:
+                _archive_counter = 0
+                try:
+                    _archive_old_jobs()
+                except Exception as ae:
+                    log.warning(f"Archive error: {ae}")
+
             # Find next queued job
             with _jobs_lock:
                 jobs = _load_jobs()
@@ -1062,8 +1127,8 @@ def drive_folder_contents(folder_id):
 @login_required
 def upload_to_drive(job_id):
     """Upload a completed video to Google Drive."""
-    jobs = _load_jobs()
-    job = next((j for j in jobs if j['id'] == job_id), None)
+    all_jobs = _load_all_jobs()
+    job = next((j for j in all_jobs if j['id'] == job_id), None)
     if not job:
         return jsonify({'success': False, 'error': 'Job not found'}), 404
     if not job.get('localPath'):
@@ -1105,15 +1170,25 @@ def upload_to_drive(job_id):
             fields='id,webViewLink'
         ).execute()
 
-        # Update job with drive URL
+        # Update job with drive URL (check both active and archive)
         drive_url = uploaded.get('webViewLink', '')
         with _jobs_lock:
+            found_in_active = False
             jobs = _load_jobs()
             for j in jobs:
                 if j['id'] == job_id:
                     j['driveUrl'] = drive_url
+                    found_in_active = True
                     break
-            _save_jobs(jobs)
+            if found_in_active:
+                _save_jobs(jobs)
+            else:
+                archive = _load_archive()
+                for j in archive:
+                    if j['id'] == job_id:
+                        j['driveUrl'] = drive_url
+                        break
+                _save_archive(archive)
 
         return jsonify({'success': True, 'driveUrl': drive_url, 'fileId': uploaded['id']})
 
@@ -1311,9 +1386,10 @@ def shopify_winners(store_id):
                 pass
 
         # Check which products already have video jobs (done, in-progress, or queued)
-        jobs = _load_jobs()
+        # Search both active jobs AND archive for complete status picture
+        all_jobs = _load_all_jobs()
         product_video_status = {}  # pid -> 'done' | 'in_progress' | 'queued'
-        for j in jobs:
+        for j in all_jobs:
             if j.get('storeId') != store_id:
                 continue
             pid_str = str(j.get('productId', ''))
@@ -1426,15 +1502,112 @@ def generate_videos():
 @app.route('/api/videos/queue', methods=['GET'])
 @login_required
 def get_queue():
-    """Get all video jobs with status."""
-    jobs = _load_jobs()
+    """Get video jobs with pagination.
+    Query params:
+      page (int, default 1)
+      per_page (int, default 50, max 200)
+      include_archive (bool, default false)
+      status (str, default 'all') - filter by status
+    """
+    page = max(1, int(request.args.get('page', 1)))
+    per_page = min(200, max(1, int(request.args.get('per_page', 50))))
+    include_archive = request.args.get('include_archive', 'false').lower() == 'true'
+    status_filter = request.args.get('status', 'all').lower()
+
+    with _jobs_lock:
+        jobs = _load_jobs()
+        if include_archive:
+            jobs = jobs + _load_archive()
+
+    # Filter by status
+    if status_filter != 'all':
+        jobs = [j for j in jobs if j.get('status', '') == status_filter]
+
     # Most recent first
     jobs.sort(key=lambda j: j.get('createdAt', ''), reverse=True)
-    return jsonify({'success': True, 'jobs': jobs})
+
+    total = len(jobs)
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_jobs = jobs[start:end]
+    has_more = end < total
+
+    return jsonify({
+        'success': True,
+        'jobs': page_jobs,
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'has_more': has_more
+    })
+
+
+@app.route('/api/videos/queue/stats', methods=['GET'])
+@login_required
+def get_queue_stats():
+    """Get queue summary stats from both active and archive without returning all jobs."""
+    with _jobs_lock:
+        active_jobs = _load_jobs()
+        archive_jobs = _load_archive()
+
+    all_jobs = active_jobs + archive_jobs
+
+    counts = {'queued': 0, 'generating': 0, 'polling': 0, 'done': 0, 'failed': 0, 'cancelled': 0}
+    total_spent = 0.0
+    total_pending = 0.0
+
+    for j in all_jobs:
+        status = j.get('status', '')
+        if status in counts:
+            counts[status] += 1
+
+        if status == 'done':
+            cost = j.get('actualCost')
+            if cost is None:
+                cost = j.get('estimatedCost', 0) or 0
+            total_spent += cost
+        elif status in ('queued', 'generating', 'polling'):
+            total_pending += j.get('estimatedCost', 0) or 0
+
+    return jsonify({
+        'success': True,
+        'total': len(all_jobs),
+        'active_total': len(active_jobs),
+        'archive_total': len(archive_jobs),
+        'counts': counts,
+        'totalSpent': round(total_spent, 2),
+        'totalPending': round(total_pending, 2)
+    })
+
+
+@app.route('/api/videos/queue/clear-completed', methods=['POST'])
+@login_required
+def clear_completed():
+    """Move all done/failed/cancelled jobs from active to archive immediately."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with _jobs_lock:
+        jobs = _load_jobs()
+        active = []
+        to_archive = []
+        for j in jobs:
+            if j.get('status', '') in ('done', 'failed', 'cancelled'):
+                j['archivedAt'] = now.isoformat().replace('+00:00', 'Z')
+                to_archive.append(j)
+            else:
+                active.append(j)
+
+        if to_archive:
+            archive = _load_archive()
+            archive.extend(to_archive)
+            _save_archive(archive)
+            _save_jobs(active)
+
+    return jsonify({'success': True, 'cleared': len(to_archive)})
 
 @app.route('/api/videos/<job_id>/retry', methods=['POST'])
 @login_required
 def retry_job(job_id):
+    found = False
     with _jobs_lock:
         jobs = _load_jobs()
         for j in jobs:
@@ -1445,8 +1618,30 @@ def retry_job(job_id):
                 j['videoUrl'] = None
                 j['localPath'] = None
                 j['completedAt'] = None
+                found = True
                 break
-        _save_jobs(jobs)
+        if found:
+            _save_jobs(jobs)
+        else:
+            # Check archive — move back to active if found
+            archive = _load_archive()
+            new_archive = []
+            for j in archive:
+                if j['id'] == job_id and j['status'] == 'failed':
+                    j['status'] = 'queued'
+                    j['error'] = None
+                    j['xaiRequestId'] = None
+                    j['videoUrl'] = None
+                    j['localPath'] = None
+                    j['completedAt'] = None
+                    j.pop('archivedAt', None)
+                    jobs.append(j)
+                    found = True
+                else:
+                    new_archive.append(j)
+            if found:
+                _save_archive(new_archive)
+                _save_jobs(jobs)
     _ensure_worker()
     return jsonify({'success': True})
 
@@ -1465,8 +1660,8 @@ def cancel_job(job_id):
 @app.route('/api/videos/<job_id>/download', methods=['GET'])
 @login_required
 def download_video(job_id):
-    jobs = _load_jobs()
-    job = next((j for j in jobs if j['id'] == job_id), None)
+    all_jobs = _load_all_jobs()
+    job = next((j for j in all_jobs if j['id'] == job_id), None)
     if not job:
         return jsonify({'success': False, 'error': 'Job not found'}), 404
     if not job.get('localPath'):
@@ -1493,9 +1688,9 @@ def serve_video(filepath):
 @app.route('/api/gallery', methods=['GET'])
 @login_required
 def get_gallery():
-    """Get all videos organized by store/product."""
-    jobs = _load_jobs()
-    done_jobs = [j for j in jobs if j['status'] == 'done' and j.get('localPath')]
+    """Get all videos organized by store/product (from both active and archive)."""
+    all_jobs = _load_all_jobs()
+    done_jobs = [j for j in all_jobs if j['status'] == 'done' and j.get('localPath')]
 
     # Organize by store -> product
     gallery = {}

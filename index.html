@@ -1040,6 +1040,7 @@ textarea { resize: vertical; min-height: 80px; }
     <div class="toolbar">
       <div class="toolbar-spacer"></div>
       <span style="font-size:12px;color:var(--gray-400);" id="queue-refresh-info">Auto-refreshes every 10s</span>
+      <button class="btn btn-secondary btn-sm" onclick="clearCompleted()" id="clear-completed-btn" style="display:none;">Clear Completed</button>
       <button class="btn btn-secondary btn-sm" onclick="refreshQueue()">Refresh</button>
     </div>
     <div id="queue-cost-summary" class="cost-summary" style="display:none;"></div>
@@ -1064,6 +1065,9 @@ textarea { resize: vertical; min-height: 80px; }
         </thead>
         <tbody id="queue-body"></tbody>
       </table>
+    </div>
+    <div id="queue-load-more" style="display:none;text-align:center;padding:16px;">
+      <button class="btn btn-secondary" onclick="loadMoreQueue()">Load More</button>
     </div>
   </div>
 
@@ -1659,69 +1663,106 @@ async function generateVideos() {
 }
 
 // ===== Queue =====
+let _queuePage = 1;
+const _queuePerPage = 50;
+let _queueHasMore = false;
+let _queueJobs = [];
+
 async function refreshQueue() {
-  const data = await api('/api/videos/queue');
+  _queuePage = 1;
+  _queueJobs = [];
+  await _loadQueuePage(1, true);
+}
+
+async function loadMoreQueue() {
+  if (!_queueHasMore) return;
+  _queuePage++;
+  await _loadQueuePage(_queuePage, false);
+}
+
+async function _loadQueuePage(page, replace) {
+  const data = await api(`/api/videos/queue?page=${page}&per_page=${_queuePerPage}`);
   if (!data?.success) return;
 
   const jobs = data.jobs;
-  const activeCount = jobs.filter(j => ['queued','generating','polling'].includes(j.status)).length;
-  const doneCount = jobs.filter(j => j.status === 'done').length;
+  _queueHasMore = data.has_more;
 
-  // Update badge
-  const badge = document.getElementById('queue-badge');
-  if (activeCount > 0) {
-    badge.textContent = activeCount;
-    badge.style.display = 'inline-flex';
-    badge.className = 'badge badge-amber';
-  } else if (doneCount > 0) {
-    badge.textContent = doneCount;
-    badge.style.display = 'inline-flex';
-    badge.className = 'badge badge-green';
+  if (replace) {
+    _queueJobs = jobs;
   } else {
-    badge.style.display = 'none';
+    _queueJobs = _queueJobs.concat(jobs);
   }
 
-  // Cost summary
-  const costSummary = document.getElementById('queue-cost-summary');
-  let totalSpent = 0;
-  let totalPending = 0;
-  jobs.forEach(j => {
-    if (j.status === 'done') {
-      totalSpent += (j.actualCost != null ? j.actualCost : (j.estimatedCost || 0));
-    } else if (['queued', 'generating', 'polling'].includes(j.status)) {
-      totalPending += (j.estimatedCost || 0);
-    }
-  });
+  // Load stats from dedicated endpoint for accurate totals (both active + archive)
+  const stats = await api('/api/videos/queue/stats');
 
-  if (jobs.length > 0) {
+  // Update badge using stats counts
+  const badge = document.getElementById('queue-badge');
+  if (stats?.success) {
+    const c = stats.counts;
+    const activeCount = (c.queued || 0) + (c.generating || 0) + (c.polling || 0);
+    const doneCount = c.done || 0;
+    if (activeCount > 0) {
+      badge.textContent = activeCount;
+      badge.style.display = 'inline-flex';
+      badge.className = 'badge badge-amber';
+    } else if (doneCount > 0) {
+      badge.textContent = doneCount;
+      badge.style.display = 'inline-flex';
+      badge.className = 'badge badge-green';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // Cost summary from stats endpoint
+  const costSummary = document.getElementById('queue-cost-summary');
+  if (stats?.success && stats.total > 0) {
     costSummary.style.display = 'flex';
     costSummary.innerHTML = `
       <div class="cost-summary-item">
         <span class="cost-summary-label">Total Spent:</span>
-        <span class="cost-summary-value cost-spent">$${totalSpent.toFixed(2)}</span>
+        <span class="cost-summary-value cost-spent">$${stats.totalSpent.toFixed(2)}</span>
       </div>
       <div class="cost-summary-item">
         <span class="cost-summary-label">Pending:</span>
-        <span class="cost-summary-value cost-pending">~$${totalPending.toFixed(2)}</span>
+        <span class="cost-summary-value cost-pending">~$${stats.totalPending.toFixed(2)}</span>
+      </div>
+      <div class="cost-summary-item">
+        <span class="cost-summary-label" style="margin-left:8px;">Active:</span>
+        <span class="cost-summary-value" style="color:var(--gray-700);">${stats.active_total}</span>
+      </div>
+      <div class="cost-summary-item">
+        <span class="cost-summary-label">Archived:</span>
+        <span class="cost-summary-value" style="color:var(--gray-400);">${stats.archive_total}</span>
       </div>
     `;
   } else {
     costSummary.style.display = 'none';
   }
 
-  if (jobs.length === 0) {
+  // Show/hide Clear Completed button
+  const clearBtn = document.getElementById('clear-completed-btn');
+  const hasCompleted = _queueJobs.some(j => ['done','failed','cancelled'].includes(j.status));
+  clearBtn.style.display = hasCompleted ? 'inline-flex' : 'none';
+
+  if (_queueJobs.length === 0) {
     document.getElementById('queue-empty').style.display = 'block';
     document.getElementById('queue-card').style.display = 'none';
+    document.getElementById('queue-load-more').style.display = 'none';
     return;
   }
 
   document.getElementById('queue-empty').style.display = 'none';
   document.getElementById('queue-card').style.display = 'block';
 
+  // Show/hide Load More
+  document.getElementById('queue-load-more').style.display = _queueHasMore ? 'block' : 'none';
+
   const tbody = document.getElementById('queue-body');
   tbody.innerHTML = '';
 
-  jobs.forEach(j => {
+  _queueJobs.forEach(j => {
     const tr = document.createElement('tr');
 
     const statusClass = {
@@ -1754,8 +1795,8 @@ async function refreshQueue() {
                  <a class="btn btn-secondary btn-xs" href="/api/videos/${j.id}/download" download>Download</a>`;
     }
 
-    const created = j.createdAt ? new Date(j.createdAt).toLocaleString() : '—';
-    const completed = j.completedAt ? new Date(j.completedAt).toLocaleString() : '—';
+    const created = j.createdAt ? new Date(j.createdAt).toLocaleString() : '\u2014';
+    const completed = j.completedAt ? new Date(j.completedAt).toLocaleString() : '\u2014';
     const errorTip = j.error ? ` title="${escAttr(j.error)}"` : '';
 
     const thumbHtml = j.imageUrl
@@ -1780,6 +1821,16 @@ async function refreshQueue() {
     `;
     tbody.appendChild(tr);
   });
+}
+
+async function clearCompleted() {
+  const data = await api('/api/videos/queue/clear-completed', {method:'POST'});
+  if (data?.success) {
+    toast(`Cleared ${data.cleared} completed jobs`, 'success');
+    refreshQueue();
+  } else {
+    toast(data?.error || 'Failed to clear completed jobs', 'error');
+  }
 }
 
 async function retryJob(id) {
