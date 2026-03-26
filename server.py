@@ -273,6 +273,49 @@ def _find_or_create_drive_folder(service, folder_name, parent_id):
     return folder['id']
 
 
+def _find_or_create_numbered_product_folder(service, product_handle, store_folder_id):
+    """Find existing numbered product folder or create next one like #001-handle, #002-handle."""
+    # List all folders in the store folder
+    q = f"'{store_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = service.files().list(q=q, fields='files(id,name)', pageSize=500).execute()
+    folders = results.get('files', [])
+
+    # Check if this product already has a numbered folder
+    for f in folders:
+        name = f['name']
+        # Match pattern like #001-product-handle or #002-product-handle
+        if name.split('-', 1)[-1] == product_handle or name.lstrip('#').split('-', 1)[-1] == product_handle:
+            return f['id']
+        # Also check without the number prefix for backwards compatibility
+        if name == product_handle:
+            return f['id']
+
+    # Find the highest existing number
+    max_num = 0
+    for f in folders:
+        name = f['name']
+        if name.startswith('#') and '-' in name:
+            try:
+                num_str = name.split('-', 1)[0].lstrip('#')
+                num = int(num_str)
+                if num > max_num:
+                    max_num = num
+            except (ValueError, IndexError):
+                pass
+
+    # Create new numbered folder
+    next_num = max_num + 1
+    numbered_name = f'#{next_num:03d}-{product_handle}'
+
+    folder_metadata = {
+        'name': numbered_name,
+        'mimeType': 'application/vnd.google-apps.folder',
+        'parents': [store_folder_id]
+    }
+    folder = service.files().create(body=folder_metadata, fields='id').execute()
+    return folder['id']
+
+
 # ===== Job queue + background worker =====
 _jobs_lock = threading.Lock()
 _worker_running = False
@@ -452,9 +495,9 @@ def _auto_upload_to_drive(job):
         store_name = job.get('storeName', 'Unknown Store')
         product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
 
-        # Create folder structure: Root > Store Name > Product Handle
+        # Create folder structure: Root > Store Name > #NNN-product-handle
         store_folder_id = _find_or_create_drive_folder(service, store_name, root_folder_id)
-        product_folder_id = _find_or_create_drive_folder(service, product_handle, store_folder_id)
+        product_folder_id = _find_or_create_numbered_product_folder(service, product_handle, store_folder_id)
 
         # Upload
         file_name = os.path.basename(full_path)
@@ -1029,15 +1072,15 @@ def upload_to_drive(job_id):
 
         root_folder_id = _get_or_create_root_folder(service)
 
-        # Create folder structure: Root > Store Name > Product Handle
+        # Create folder structure: Root > Store Name > #NNN-product-handle
         store_name = job.get('storeName', 'Unknown Store')
         product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
 
         # Find or create store folder
         store_folder_id = _find_or_create_drive_folder(service, store_name, root_folder_id)
 
-        # Find or create product subfolder inside store folder
-        product_folder_id = _find_or_create_drive_folder(service, product_handle, store_folder_id)
+        # Find or create numbered product subfolder inside store folder
+        product_folder_id = _find_or_create_numbered_product_folder(service, product_handle, store_folder_id)
 
         # Upload file into product folder
         file_name = os.path.basename(full_path)
