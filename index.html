@@ -486,73 +486,6 @@ textarea { resize: vertical; min-height: 80px; }
   font-weight: 500;
 }
 
-/* ===== Gallery ===== */
-.gallery-store {
-  margin-bottom: 24px;
-}
-.gallery-store-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  cursor: pointer;
-  user-select: none;
-}
-.gallery-store-name {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--gray-800);
-}
-.gallery-store-count {
-  font-size: 12px;
-  color: var(--gray-400);
-}
-.gallery-store-arrow {
-  color: var(--gray-400);
-  font-size: 12px;
-  transition: transform var(--transition);
-}
-.gallery-store.open .gallery-store-arrow { transform: rotate(90deg); }
-.gallery-store-body { display: none; padding-left: 4px; }
-.gallery-store.open .gallery-store-body { display: block; }
-
-.gallery-product {
-  margin-bottom: 16px;
-}
-.gallery-product-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--gray-700);
-  margin-bottom: 10px;
-  padding-left: 8px;
-  border-left: 3px solid var(--primary);
-}
-.gallery-videos {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-}
-.gallery-video-card {
-  background: #fff;
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.gallery-video-preview {
-  width: 100%;
-  aspect-ratio: 9/16;
-  max-height: 280px;
-  object-fit: cover;
-  background: #000;
-  display: block;
-}
-.gallery-video-meta {
-  padding: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.gallery-video-date { font-size: 12px; color: var(--gray-500); }
 
 /* ===== Stats Row ===== */
 .stats-row {
@@ -1232,14 +1165,7 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
-    <!-- Local Videos Section -->
-    <div class="loading-overlay" id="gallery-loading"><div class="spinner"></div> Loading gallery...</div>
-    <div class="empty-state" id="gallery-empty">
-      <div class="empty-state-icon">&#127909;</div>
-      <div class="empty-state-text">No videos yet</div>
-      <div class="empty-state-sub">Generated videos will appear here organized by store and product.</div>
-    </div>
-    <div id="gallery-content"></div>
+
   </div>
 
 </div>
@@ -1345,7 +1271,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
 
     if (tab.dataset.tab === 'queue') refreshQueue();
-    if (tab.dataset.tab === 'gallery') { refreshGallery(); loadDriveFolders(); }
+    if (tab.dataset.tab === 'gallery') { loadDriveFolders(); }
     if (tab.dataset.tab === 'winners') { loadStoreSelector(); loadVideoModels(); }
     if (tab.dataset.tab === 'stores') loadStoresTable();
   });
@@ -2671,89 +2597,7 @@ async function promptNewFolder(parentId) {
   }
 }
 
-// ===== Gallery =====
-async function refreshGallery() {
-  document.getElementById('gallery-loading').classList.add('active');
-  document.getElementById('gallery-empty').style.display = 'none';
-  document.getElementById('gallery-content').innerHTML = '';
-  const data = await api('/api/gallery');
-  document.getElementById('gallery-loading').classList.remove('active');
 
-  if (!data?.success || data.stores.length === 0) {
-    document.getElementById('gallery-empty').style.display = 'block';
-    return;
-  }
-
-  // Update gallery badge
-  const gb = document.getElementById('gallery-badge');
-  if (data.totalVideos > 0) {
-    gb.textContent = data.totalVideos;
-    gb.style.display = 'inline-flex';
-  }
-
-  const container = document.getElementById('gallery-content');
-  data.stores.forEach(store => {
-    const div = document.createElement('div');
-    div.className = 'gallery-store open';
-    div.innerHTML = `
-      <div class="gallery-store-header" onclick="this.parentElement.classList.toggle('open')">
-        <span class="gallery-store-arrow">&#9654;</span>
-        <span class="gallery-store-name">${escHtml(store.name)}</span>
-        <span class="gallery-store-count">${store.totalVideos} videos</span>
-      </div>
-      <div class="gallery-store-body"></div>
-    `;
-
-    const body = div.querySelector('.gallery-store-body');
-    store.products.forEach(prod => {
-      const prodDiv = document.createElement('div');
-      prodDiv.className = 'gallery-product';
-      prodDiv.innerHTML = `<div class="gallery-product-name">${escHtml(prod.name)}</div><div class="gallery-videos"></div>`;
-
-      const videosDiv = prodDiv.querySelector('.gallery-videos');
-      prod.videos.forEach(v => {
-        const vcard = document.createElement('div');
-        vcard.className = 'gallery-video-card';
-        const date = v.completedAt ? new Date(v.completedAt).toLocaleDateString() : '';
-        const sizeStr = v.fileSize ? formatFileSize(v.fileSize) : '';
-
-        let uploadBtn = '';
-        if (!v.driveUrl) {
-          uploadBtn = `<button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();uploadToDrive('${v.jobId}')" title="Upload to Drive">&#9729; Upload</button>`;
-        } else {
-          uploadBtn = `<a class="btn btn-secondary btn-xs" href="${v.driveUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">&#9729; Drive</a>`;
-        }
-
-        vcard.innerHTML = `
-          <video class="gallery-video-preview" src="${v.videoUrl}" preload="metadata" onclick="previewVideo('${v.jobId}','${escAttr(prod.name)}','${escAttr(v.localPath)}')" style="cursor:pointer;"></video>
-          <div class="gallery-video-meta">
-            <span class="gallery-video-date">${date} ${sizeStr ? '&middot; ' + sizeStr : ''}</span>
-            <div style="display:flex;gap:4px;">
-              ${uploadBtn}
-              <a class="btn btn-secondary btn-xs" href="/api/videos/${v.jobId}/download" download>Download</a>
-            </div>
-          </div>
-        `;
-        videosDiv.appendChild(vcard);
-      });
-
-      body.appendChild(prodDiv);
-    });
-
-    container.appendChild(div);
-  });
-}
-
-async function uploadToDrive(jobId) {
-  toast('Uploading to Drive...', 'info');
-  const data = await api(`/api/drive/upload/${jobId}`, {method:'POST'});
-  if (data?.success) {
-    toast('Uploaded to Drive', 'success');
-    refreshGallery();
-  } else {
-    toast(data?.error || 'Upload failed', 'error');
-  }
-}
 
 // ===== Utility =====
 function escHtml(s) {

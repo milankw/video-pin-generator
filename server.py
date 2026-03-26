@@ -1898,65 +1898,6 @@ def serve_video(filepath):
     return send_file(full_path, mimetype='video/mp4')
 
 
-# ===== Routes: Gallery =====
-@app.route('/api/gallery', methods=['GET'])
-@login_required
-def get_gallery():
-    """Get all videos organized by store/product (from both active and archive)."""
-    all_jobs = _load_all_jobs()
-    done_jobs = [j for j in all_jobs if j['status'] == 'done' and j.get('localPath')]
-
-    # Organize by store -> product
-    gallery = {}
-    for j in done_jobs:
-        store_name = j.get('storeName', 'Unknown Store')
-        product_name = j.get('productName', 'Unknown Product')
-        handle = j.get('productHandle', 'unknown')
-
-        if store_name not in gallery:
-            gallery[store_name] = {'name': store_name, 'storeId': j.get('storeId', ''), 'products': {}}
-
-        if handle not in gallery[store_name]['products']:
-            gallery[store_name]['products'][handle] = {
-                'name': product_name,
-                'handle': handle,
-                'videos': []
-            }
-
-        # Get file size
-        local_full_path = os.path.join(VIDEOS_DIR, j['localPath'])
-        file_size = None
-        if os.path.exists(local_full_path):
-            file_size = os.path.getsize(local_full_path)
-
-        gallery[store_name]['products'][handle]['videos'].append({
-            'jobId': j['id'],
-            'localPath': j['localPath'],
-            'videoUrl': f"/data/videos/{j['localPath']}",
-            'createdAt': j.get('createdAt', ''),
-            'completedAt': j.get('completedAt', ''),
-            'prompt': j.get('prompt', ''),
-            'driveUrl': j.get('driveUrl'),
-            'imageUrl': j.get('imageUrl', ''),
-            'fileSize': file_size
-        })
-
-    # Convert to list format
-    result = []
-    for store_name, store_data in sorted(gallery.items()):
-        products = []
-        for handle, prod_data in sorted(store_data['products'].items()):
-            products.append(prod_data)
-        result.append({
-            'name': store_data['name'],
-            'storeId': store_data['storeId'],
-            'products': products,
-            'totalVideos': sum(len(p['videos']) for p in products)
-        })
-
-    total = sum(s['totalVideos'] for s in result)
-    return jsonify({'success': True, 'stores': result, 'totalVideos': total})
-
 
 # ===== Main =====
 if __name__ == '__main__':
