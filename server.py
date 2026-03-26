@@ -623,11 +623,6 @@ def _worker_loop():
 
             if job['status'] == 'done':
                 log.info(f"Job {job['id']} completed: {job.get('localPath', 'N/A')}")
-                # Auto-upload to Google Drive if configured
-                try:
-                    _auto_upload_to_drive(job)
-                except Exception as ue:
-                    log.warning(f"Auto-upload to Drive failed for {job['id']}: {ue}")
             else:
                 log.warning(f"Job {job['id']} failed: {job.get('error', 'unknown')}")
 

@@ -1791,8 +1791,12 @@ async function _loadQueuePage(page, replace) {
     } else if (j.status === 'queued') {
       actions = `<button class="btn btn-danger btn-xs" onclick="cancelJob('${j.id}')">Cancel</button>`;
     } else if (j.status === 'done' && j.localPath) {
+      const driveBtn = j.driveUrl
+        ? `<a class="btn btn-xs" style="background:var(--green-bg);color:var(--green);border:1px solid var(--green);" href="${j.driveUrl}" target="_blank">In Drive ✓</a>`
+        : `<button class="btn btn-secondary btn-xs" onclick="uploadJobToDrive('${j.id}',this)">Upload to Drive</button>`;
       actions = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${j.id}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>
-                 <a class="btn btn-secondary btn-xs" href="/api/videos/${j.id}/download" download>Download</a>`;
+                 <a class="btn btn-secondary btn-xs" href="/api/videos/${j.id}/download" download>Download</a>
+                 ${driveBtn}`;
     }
 
     const created = j.createdAt ? new Date(j.createdAt).toLocaleString() : '\u2014';
@@ -1830,6 +1834,21 @@ async function clearCompleted() {
     refreshQueue();
   } else {
     toast(data?.error || 'Failed to clear completed jobs', 'error');
+  }
+}
+
+async function uploadJobToDrive(id, btn) {
+  const origText = btn.textContent;
+  btn.textContent = 'Uploading...';
+  btn.disabled = true;
+  const data = await api(`/api/drive/upload/${id}`, {method:'POST'});
+  if (data?.success) {
+    toast('Uploaded to Google Drive', 'success');
+    btn.outerHTML = `<a class="btn btn-xs" style="background:var(--green-bg);color:var(--green);border:1px solid var(--green);" href="${data.driveUrl || '#'}" target="_blank">In Drive \u2713</a>`;
+  } else {
+    toast(data?.error || 'Upload failed', 'error');
+    btn.textContent = origText;
+    btn.disabled = false;
   }
 }
 
