@@ -3,11 +3,13 @@
 Single-file Flask backend. Port 5110.
 """
 
-from flask import Flask, send_file, request, jsonify, redirect, session, make_response
+from flask import Flask, send_file, request, jsonify, redirect, session, make_response, url_for
 from functools import wraps
 import bcrypt
 import secrets
 import os
+
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 import json
 import time
 import uuid
@@ -128,6 +130,7 @@ def _save_stores(stores):
 def _load_settings():
     defaults = {
         'xai_api_key': '',
+        'xai_video_model': 'grok-imagine-video',
         'video_duration': 8,
         'video_resolution': '720p',
         'aspect_ratio': '9:16',
@@ -140,8 +143,12 @@ def _load_settings():
         },
         'google_ai_key': '',
         'google_ai_model': 'gemini-2.0-flash',
+        'gdrive_client_id': '',
+        'gdrive_client_secret': '',
+        'gdrive_access_token': '',
+        'gdrive_refresh_token': '',
+        'gdrive_token_expiry': '',
         'gdrive_root_folder_id': '',
-        'gdrive_service_account_email': '',
         'gdrive_status': '',
     }
     settings = _load_json('settings.json', defaults)
@@ -167,26 +174,80 @@ def _save_jobs(jobs):
 
 # ===== Google Drive helper =====
 def _get_drive_service():
-    """Build a Google Drive API service using stored service account credentials."""
-    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
-    if not os.path.exists(sa_path):
-        return None, 'No service account JSON configured'
+    """Build a Google Drive API service using OAuth credentials."""
+    settings = _load_settings()
+    access_token = settings.get('gdrive_access_token', '')
+    refresh_token = settings.get('gdrive_refresh_token', '')
+    client_id = settings.get('gdrive_client_id', '')
+    client_secret = settings.get('gdrive_client_secret', '')
+
+    if not access_token or not refresh_token:
+        return None, 'Google Drive not connected. Connect in Settings.'
 
     try:
-        from google.oauth2 import service_account as sa_module
+        from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build as build_service
     except ImportError:
         return None, 'google-auth / google-api-python-client not installed'
 
     try:
-        creds = sa_module.Credentials.from_service_account_file(
-            sa_path,
+        creds = Credentials(
+            token=access_token,
+            refresh_token=refresh_token,
+            token_uri='https://oauth2.googleapis.com/token',
+            client_id=client_id,
+            client_secret=client_secret,
             scopes=['https://www.googleapis.com/auth/drive']
         )
+
+        # Auto-refresh if expired
+        if creds.expired and creds.refresh_token:
+            from google.auth.transport.requests import Request
+            creds.refresh(Request())
+            # Save new tokens
+            settings['gdrive_access_token'] = creds.token
+            if creds.expiry:
+                settings['gdrive_token_expiry'] = creds.expiry.isoformat()
+            _save_settings(settings)
+
         service = build_service('drive', 'v3', credentials=creds, cache_discovery=False)
         return service, None
     except Exception as e:
         return None, str(e)
+
+
+def _get_or_create_root_folder(service):
+    """Find or create the 'Video Pin Generator' root folder in Drive."""
+    settings = _load_settings()
+    root_id = settings.get('gdrive_root_folder_id', '')
+
+    # If we have a stored root folder ID, verify it still exists
+    if root_id:
+        try:
+            f = service.files().get(fileId=root_id, fields='id,name,trashed').execute()
+            if not f.get('trashed'):
+                return root_id
+        except:
+            pass  # Folder deleted or inaccessible, create new one
+
+    # Search for existing folder
+    q = "name='Video Pin Generator' and mimeType='application/vnd.google-apps.folder' and trashed=false and 'root' in parents"
+    results = service.files().list(q=q, fields='files(id,name)', pageSize=1).execute()
+    if results.get('files'):
+        root_id = results['files'][0]['id']
+    else:
+        # Create it
+        folder_metadata = {
+            'name': 'Video Pin Generator',
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+        folder = service.files().create(body=folder_metadata, fields='id').execute()
+        root_id = folder['id']
+
+    # Save for future use
+    settings['gdrive_root_folder_id'] = root_id
+    _save_settings(settings)
+    return root_id
 
 
 def _find_or_create_drive_folder(service, folder_name, parent_id):
@@ -252,8 +313,9 @@ def _process_job(job):
     }
 
     # Step 1: Submit video generation request
+    video_model = settings.get('xai_video_model', 'grok-imagine-video')
     payload = {
-        'model': 'grok-imagine-video',
+        'model': video_model,
         'prompt': prompt,
         'image': {'url': job['imageUrl']},
         'duration': duration,
@@ -367,11 +429,6 @@ def _save_jobs_safe(updated_job):
 
 def _auto_upload_to_drive(job):
     """Automatically upload a completed video to Google Drive if Drive is configured."""
-    settings = _load_settings()
-    root_folder_id = settings.get('gdrive_root_folder_id', '')
-    if not root_folder_id:
-        return  # Drive not configured, skip silently
-
     if not job.get('localPath'):
         return
 
@@ -387,6 +444,7 @@ def _auto_upload_to_drive(job):
     try:
         from googleapiclient.http import MediaFileUpload
 
+        root_folder_id = _get_or_create_root_folder(service)
         store_name = job.get('storeName', 'Unknown Store')
         product_handle = job.get('productHandle', '') or job.get('productName', 'unknown-product')
 
@@ -619,40 +677,11 @@ def sync_stores():
 @login_required
 def get_settings():
     settings = _load_settings()
-    # Mask API keys
     safe = dict(settings)
-
-    # xAI key
-    if safe.get('xai_api_key'):
-        key = safe['xai_api_key']
-        safe['xai_api_key_masked'] = key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
-        safe['xai_api_key_set'] = True
-    else:
-        safe['xai_api_key_masked'] = ''
-        safe['xai_api_key_set'] = False
-    del safe['xai_api_key']
-
-    # Google AI key
-    if safe.get('google_ai_key'):
-        key = safe['google_ai_key']
-        safe['google_ai_key_masked'] = key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
-        safe['google_ai_key_set'] = True
-    else:
-        safe['google_ai_key_masked'] = ''
-        safe['google_ai_key_set'] = False
-    del safe['google_ai_key']
-
-    # Drive service account status
-    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
-    safe['gdrive_sa_configured'] = os.path.exists(sa_path)
-    if safe['gdrive_sa_configured']:
-        try:
-            with open(sa_path, 'r') as f:
-                sa_data = json.load(f)
-            safe['gdrive_service_account_email'] = sa_data.get('client_email', '')
-        except:
-            safe['gdrive_service_account_email'] = ''
-
+    # Remove sensitive Drive tokens from response (but keep client_id/secret for display)
+    safe.pop('gdrive_access_token', None)
+    safe.pop('gdrive_refresh_token', None)
+    safe.pop('gdrive_token_expiry', None)
     return jsonify({'success': True, 'settings': safe})
 
 @app.route('/api/settings', methods=['POST'])
@@ -663,14 +692,14 @@ def save_settings():
 
     if 'xai_api_key' in data and data['xai_api_key']:
         settings['xai_api_key'] = data['xai_api_key']
+    if 'xai_video_model' in data:
+        settings['xai_video_model'] = data['xai_video_model']
     if 'video_duration' in data:
         settings['video_duration'] = int(data['video_duration'])
     if 'video_resolution' in data:
         settings['video_resolution'] = data['video_resolution']
     if 'prompt_templates' in data and isinstance(data['prompt_templates'], dict):
         settings['prompt_templates'].update(data['prompt_templates'])
-    if 'gdrive_root_folder_id' in data:
-        settings['gdrive_root_folder_id'] = data['gdrive_root_folder_id']
     if 'google_ai_key' in data and data['google_ai_key']:
         settings['google_ai_key'] = data['google_ai_key']
     if 'google_ai_model' in data:
@@ -682,7 +711,7 @@ def save_settings():
 @app.route('/api/settings/test-xai', methods=['POST'])
 @login_required
 def test_xai_connection():
-    """Test xAI API key by listing models."""
+    """Test xAI API key by listing models and video generation models."""
     settings = _load_settings()
     api_key = settings.get('xai_api_key', '')
     if not api_key:
@@ -697,7 +726,21 @@ def test_xai_connection():
         if resp.status_code == 200:
             models = [m.get('id', '') for m in resp.json().get('data', [])]
             has_video = any('video' in m.lower() for m in models)
-            return jsonify({'success': True, 'models': models, 'hasVideoModel': has_video})
+
+            # Also fetch video generation models
+            video_models = []
+            try:
+                vresp = http_requests.get(
+                    'https://api.x.ai/v1/video-generation-models',
+                    headers={'Authorization': f'Bearer {api_key}'},
+                    timeout=10
+                )
+                if vresp.status_code == 200:
+                    video_models = [m.get('id', '') for m in vresp.json().get('data', [])]
+            except:
+                pass
+
+            return jsonify({'success': True, 'models': models, 'hasVideoModel': has_video, 'videoModels': video_models})
         else:
             return jsonify({'success': False, 'error': f'API returned {resp.status_code}: {resp.text[:200]}'})
     except Exception as e:
@@ -749,85 +792,132 @@ def test_google_ai():
 
 
 # ===== Routes: Google Drive =====
-@app.route('/api/drive/test', methods=['POST'])
+@app.route('/api/drive/auth-url', methods=['POST'])
 @login_required
-def test_drive_connection():
-    """Test Google Drive connection with service account."""
-    data = request.json
-    sa_json_str = data.get('serviceAccountJson', '')
-    folder_id = data.get('folderId', '')
+def drive_auth_url():
+    """Generate OAuth authorization URL for Google Drive."""
+    data = request.json or {}
+    client_id = data.get('clientId', '').strip()
+    client_secret = data.get('clientSecret', '').strip()
 
-    if not sa_json_str:
-        return jsonify({'success': False, 'error': 'No service account JSON provided'})
+    if not client_id or not client_secret:
+        return jsonify({'success': False, 'error': 'Client ID and Client Secret are required'})
 
-    # Validate JSON
-    try:
-        sa_data = json.loads(sa_json_str)
-    except json.JSONDecodeError as e:
-        return jsonify({'success': False, 'error': f'Invalid JSON: {str(e)}'})
-
-    if 'client_email' not in sa_data:
-        return jsonify({'success': False, 'error': 'Missing client_email in service account JSON'})
-
-    # Save service account JSON to file
-    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
-    with open(sa_path, 'w') as f:
-        json.dump(sa_data, f, indent=2)
-
-    # Save folder ID in settings
+    # Save client credentials to settings
     settings = _load_settings()
-    settings['gdrive_root_folder_id'] = folder_id
-    settings['gdrive_service_account_email'] = sa_data.get('client_email', '')
-
-    # Try to connect
-    try:
-        from google.oauth2 import service_account as sa_module
-        from googleapiclient.discovery import build as build_service
-    except ImportError:
-        settings['gdrive_status'] = 'error'
-        _save_settings(settings)
-        return jsonify({'success': False, 'error': 'google-auth / google-api-python-client not installed. Install with: pip install google-auth google-api-python-client'})
+    settings['gdrive_client_id'] = client_id
+    settings['gdrive_client_secret'] = client_secret
+    _save_settings(settings)
 
     try:
-        creds = sa_module.Credentials.from_service_account_file(
-            sa_path,
-            scopes=['https://www.googleapis.com/auth/drive']
+        from google_auth_oauthlib.flow import Flow
+
+        redirect_uri = f'{request.host_url.rstrip("/")}/api/drive/callback'
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            },
+            scopes=['https://www.googleapis.com/auth/drive'],
+            redirect_uri=redirect_uri
         )
-        service = build_service('drive', 'v3', credentials=creds, cache_discovery=False)
-
-        # Test by listing the root folder
-        if folder_id:
-            result = service.files().get(fileId=folder_id, fields='id,name,mimeType').execute()
-            folder_name = result.get('name', 'Unknown')
-            settings['gdrive_status'] = 'connected'
-            _save_settings(settings)
-            return jsonify({'success': True, 'email': sa_data.get('client_email', ''), 'folderName': folder_name})
-        else:
-            # Just test auth works
-            result = service.about().get(fields='user').execute()
-            settings['gdrive_status'] = 'connected'
-            _save_settings(settings)
-            return jsonify({'success': True, 'email': sa_data.get('client_email', ''), 'folderName': '(no root folder set)'})
-
+        authorization_url, state = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        # Store state in session for CSRF protection
+        session['oauth_state'] = state
+        return jsonify({'success': True, 'authUrl': authorization_url})
     except Exception as e:
-        settings['gdrive_status'] = 'error'
-        _save_settings(settings)
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/drive/callback', methods=['GET'])
+def drive_oauth_callback():
+    """OAuth callback handler — NO @login_required since Google redirects here."""
+    code = request.args.get('code', '')
+    state = request.args.get('state', '')
+
+    if not code:
+        return redirect('/?tab=settings&drive=error')
+
+    # Validate state for CSRF protection
+    saved_state = session.get('oauth_state', '')
+    if not saved_state or state != saved_state:
+        log.warning('OAuth state mismatch — possible CSRF')
+        return redirect('/?tab=settings&drive=error')
+
+    settings = _load_settings()
+    client_id = settings.get('gdrive_client_id', '')
+    client_secret = settings.get('gdrive_client_secret', '')
+
+    if not client_id or not client_secret:
+        return redirect('/?tab=settings&drive=error')
+
+    try:
+        from google_auth_oauthlib.flow import Flow
+
+        redirect_uri = f'{request.host_url.rstrip("/")}/api/drive/callback'
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+            },
+            scopes=['https://www.googleapis.com/auth/drive'],
+            redirect_uri=redirect_uri,
+            state=state
+        )
+        flow.fetch_token(code=code)
+        credentials = flow.credentials
+
+        settings['gdrive_access_token'] = credentials.token
+        settings['gdrive_refresh_token'] = credentials.refresh_token or ''
+        if credentials.expiry:
+            settings['gdrive_token_expiry'] = credentials.expiry.isoformat()
+        settings['gdrive_status'] = 'connected'
+        _save_settings(settings)
+
+        # Clear OAuth state from session
+        session.pop('oauth_state', None)
+
+        return redirect('/?tab=settings&drive=connected')
+    except Exception as e:
+        log.error(f'OAuth callback error: {e}')
+        return redirect('/?tab=settings&drive=error')
+
+
+@app.route('/api/drive/disconnect', methods=['POST'])
+@login_required
+def drive_disconnect():
+    """Disconnect Google Drive by clearing OAuth tokens."""
+    settings = _load_settings()
+    settings['gdrive_access_token'] = ''
+    settings['gdrive_refresh_token'] = ''
+    settings['gdrive_token_expiry'] = ''
+    settings['gdrive_status'] = ''
+    settings['gdrive_root_folder_id'] = ''
+    _save_settings(settings)
+    return jsonify({'success': True})
 
 @app.route('/api/drive/folders', methods=['GET'])
 @login_required
 def drive_folders():
     """List contents of the root Drive folder."""
-    settings = _load_settings()
-    folder_id = settings.get('gdrive_root_folder_id', '')
-    if not folder_id:
-        return jsonify({'success': False, 'error': 'No root folder ID configured. Set it in Settings > Google Drive.'})
-
     service, err = _get_drive_service()
     if not service:
         return jsonify({'success': False, 'error': err})
 
     try:
+        folder_id = _get_or_create_root_folder(service)
         # Get root folder info
         root = service.files().get(fileId=folder_id, fields='id,name,mimeType').execute()
 
@@ -928,17 +1018,14 @@ def upload_to_drive(job_id):
     if not os.path.exists(full_path):
         return jsonify({'success': False, 'error': 'Video file not found on disk'}), 404
 
-    settings = _load_settings()
-    root_folder_id = settings.get('gdrive_root_folder_id', '')
-    if not root_folder_id:
-        return jsonify({'success': False, 'error': 'No root folder configured in Settings > Google Drive'}), 400
-
     service, err = _get_drive_service()
     if not service:
         return jsonify({'success': False, 'error': err}), 500
 
     try:
         from googleapiclient.http import MediaFileUpload
+
+        root_folder_id = _get_or_create_root_folder(service)
 
         # Create folder structure: Root > Store Name > Product Handle
         store_name = job.get('storeName', 'Unknown Store')

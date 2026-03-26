@@ -784,14 +784,23 @@ textarea { resize: vertical; min-height: 80px; }
     <div class="card">
       <div class="card-title">xAI API Configuration</div>
       <div class="card-desc">Configure your xAI Grok API key for video generation.</div>
-      <div class="form-group">
-        <label>API Key</label>
-        <div style="display:flex;gap:8px;">
-          <input type="password" id="xai-key" placeholder="xai-...">
-          <button class="btn btn-secondary" onclick="testXaiKey()">Test</button>
-          <button class="btn btn-primary" onclick="saveApiKey()">Save</button>
+      <div class="form-row">
+        <div class="form-group">
+          <label>API Key</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="xai-key" placeholder="xai-...">
+            <button class="btn btn-secondary" onclick="testXaiKey()">Test</button>
+            <button class="btn btn-primary" onclick="saveApiKey()">Save</button>
+          </div>
+          <div class="form-hint" id="xai-status"></div>
         </div>
-        <div class="form-hint" id="xai-status"></div>
+        <div class="form-group">
+          <label>Video Model</label>
+          <select id="xai-video-model">
+            <option value="grok-imagine-video">grok-imagine-video</option>
+          </select>
+          <div class="form-hint">Click Test to refresh available models from xAI.</div>
+        </div>
       </div>
     </div>
 
@@ -802,7 +811,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="form-row">
         <div class="form-group">
           <label>API Key</label>
-          <input type="password" id="google-ai-key" placeholder="AIza...">
+          <input type="text" id="google-ai-key" placeholder="AIza...">
         </div>
         <div class="form-group">
           <label>Model</label>
@@ -822,19 +831,20 @@ textarea { resize: vertical; min-height: 80px; }
     <!-- 3. Google Drive -->
     <div class="card">
       <div class="card-title">Google Drive</div>
-      <div class="card-desc">Configure a Google Drive service account for video storage and browsing.</div>
-      <div class="form-group">
-        <label>Service Account JSON</label>
-        <textarea id="gdrive-sa-json" rows="6" placeholder='Paste your service account JSON key here...' style="font-size:12px;font-family:monospace;"></textarea>
-        <div class="form-hint">Paste the full JSON key file contents from Google Cloud Console.</div>
-      </div>
-      <div class="form-group">
-        <label>Root Folder ID</label>
-        <input type="text" id="gdrive-folder-id" placeholder="e.g. 1ABC...xyz">
-        <div class="form-hint">The Google Drive folder ID where store subfolders will be created.</div>
+      <div class="card-desc">Connect your Google Drive for automatic video storage. Videos will be saved in a "Video Pin Generator" folder.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Client ID</label>
+          <input type="text" id="gdrive-client-id" placeholder="xxxxx.apps.googleusercontent.com">
+        </div>
+        <div class="form-group">
+          <label>Client Secret</label>
+          <input type="text" id="gdrive-client-secret" placeholder="GOCSPX-...">
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:12px;">
-        <button class="btn btn-secondary" onclick="testDriveConnection()">Test & Save</button>
+        <button class="btn btn-primary" id="gdrive-connect-btn" onclick="connectGoogleDrive()">Connect Google Drive</button>
+        <button class="btn btn-secondary" id="gdrive-disconnect-btn" onclick="disconnectGoogleDrive()" style="display:none;">Disconnect</button>
         <span id="gdrive-status"></span>
       </div>
     </div>
@@ -973,7 +983,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div id="drive-browser-empty" class="empty-state" style="padding:24px;">
         <div class="empty-state-icon">&#128193;</div>
         <div class="empty-state-text">Google Drive not configured</div>
-        <div class="empty-state-sub">Set up your service account and folder ID in Settings to browse Drive.</div>
+        <div class="empty-state-sub">Connect Google Drive in Settings to browse your video folders.</div>
       </div>
       <div id="drive-browser-loading" class="loading-overlay"><div class="spinner"></div> Loading Drive folders...</div>
       <div id="drive-browser-content" style="display:none;">
@@ -1070,15 +1080,18 @@ async function loadSettings() {
   const s = data.settings;
 
   // xAI
-  if (s.xai_api_key_set) {
-    document.getElementById('xai-key').placeholder = s.xai_api_key_masked;
+  if (s.xai_api_key) {
+    document.getElementById('xai-key').value = s.xai_api_key;
     document.getElementById('xai-status').textContent = 'API key is configured';
     document.getElementById('xai-status').style.color = 'var(--green)';
   }
+  if (s.xai_video_model) {
+    document.getElementById('xai-video-model').value = s.xai_video_model;
+  }
 
   // Google AI
-  if (s.google_ai_key_set) {
-    document.getElementById('google-ai-key').placeholder = s.google_ai_key_masked;
+  if (s.google_ai_key) {
+    document.getElementById('google-ai-key').value = s.google_ai_key;
     const statusEl = document.getElementById('google-ai-status');
     statusEl.innerHTML = '<span class="status-indicator status-connected">Connected</span>';
   }
@@ -1087,16 +1100,20 @@ async function loadSettings() {
   }
 
   // Google Drive
-  document.getElementById('gdrive-folder-id').value = s.gdrive_root_folder_id || '';
-  if (s.gdrive_sa_configured) {
-    const statusEl = document.getElementById('gdrive-status');
-    const email = s.gdrive_service_account_email || 'configured';
-    if (s.gdrive_status === 'connected') {
-      statusEl.innerHTML = `<span class="status-indicator status-connected">Connected</span> <span style="font-size:12px;color:var(--gray-500);margin-left:4px;">${escHtml(email)}</span>`;
-    } else {
-      statusEl.innerHTML = `<span class="status-indicator status-disconnected">Configured (not tested)</span>`;
-    }
-    document.getElementById('gdrive-sa-json').placeholder = 'Service account JSON is saved. Paste new JSON to replace.';
+  if (s.gdrive_client_id) {
+    document.getElementById('gdrive-client-id').value = s.gdrive_client_id;
+  }
+  if (s.gdrive_client_secret) {
+    document.getElementById('gdrive-client-secret').value = s.gdrive_client_secret;
+  }
+  if (s.gdrive_status === 'connected') {
+    document.getElementById('gdrive-status').innerHTML = '<span class="status-indicator status-connected">Connected</span>';
+    document.getElementById('gdrive-connect-btn').textContent = 'Reconnect';
+    document.getElementById('gdrive-disconnect-btn').style.display = '';
+  } else {
+    document.getElementById('gdrive-status').innerHTML = '';
+    document.getElementById('gdrive-connect-btn').textContent = 'Connect Google Drive';
+    document.getElementById('gdrive-disconnect-btn').style.display = 'none';
   }
 
   // Video defaults
@@ -1139,11 +1156,11 @@ async function loadSettings() {
 async function saveApiKey() {
   const key = document.getElementById('xai-key').value.trim();
   if (!key) { toast('Enter an API key', 'error'); return; }
-  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({xai_api_key: key})});
+  const videoModel = document.getElementById('xai-video-model').value;
+  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({xai_api_key: key, xai_video_model: videoModel})});
   if (data?.success) {
     toast('API key saved', 'success');
     loadSettings();
-    document.getElementById('xai-key').value = '';
   } else {
     toast(data?.error || 'Failed to save', 'error');
   }
@@ -1158,6 +1175,23 @@ async function testXaiKey() {
     const videoNote = data.hasVideoModel ? ' (video model available)' : ' (video model not found in list)';
     status.textContent = `Connected! ${data.models?.length || 0} models${videoNote}`;
     status.style.color = 'var(--green)';
+
+    // Populate video model dropdown if video models returned
+    if (data.videoModels && data.videoModels.length > 0) {
+      const sel = document.getElementById('xai-video-model');
+      const currentVal = sel.value;
+      sel.innerHTML = '';
+      data.videoModels.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        sel.appendChild(opt);
+      });
+      // Restore previous selection if still available, else keep first
+      if (data.videoModels.includes(currentVal)) {
+        sel.value = currentVal;
+      }
+    }
   } else {
     status.textContent = data?.error || 'Connection failed';
     status.style.color = 'var(--red)';
@@ -1185,7 +1219,6 @@ async function testGoogleAi() {
   if (data?.success) {
     statusEl.innerHTML = '<span class="status-indicator status-connected">Connected</span>';
     toast(`Google AI connected (${data.model})`, 'success');
-    keyInput.value = '';
     loadSettings();
   } else {
     statusEl.innerHTML = `<span class="status-indicator status-error">${escHtml(data?.error || 'Failed')}</span>`;
@@ -1193,32 +1226,35 @@ async function testGoogleAi() {
   }
 }
 
-async function testDriveConnection() {
-  const statusEl = document.getElementById('gdrive-status');
-  const saJson = document.getElementById('gdrive-sa-json').value.trim();
-  const folderId = document.getElementById('gdrive-folder-id').value.trim();
-
-  if (!saJson) {
-    toast('Paste the service account JSON', 'error');
+async function connectGoogleDrive() {
+  const clientId = document.getElementById('gdrive-client-id').value.trim();
+  const clientSecret = document.getElementById('gdrive-client-secret').value.trim();
+  if (!clientId || !clientSecret) {
+    toast('Enter both Client ID and Client Secret', 'error');
     return;
   }
 
-  statusEl.innerHTML = '<span style="color:var(--gray-500);font-size:12px;">Testing...</span>';
+  const statusEl = document.getElementById('gdrive-status');
+  statusEl.innerHTML = '<span style="color:var(--gray-500);font-size:12px;">Redirecting to Google...</span>';
 
-  const data = await api('/api/drive/test', {
+  const data = await api('/api/drive/auth-url', {
     method: 'POST',
-    body: JSON.stringify({ serviceAccountJson: saJson, folderId })
+    body: JSON.stringify({ clientId, clientSecret })
   });
 
-  if (data?.success) {
-    const info = data.folderName ? ` — ${data.folderName}` : '';
-    statusEl.innerHTML = `<span class="status-indicator status-connected">Connected${escHtml(info)}</span> <span style="font-size:12px;color:var(--gray-500);margin-left:4px;">${escHtml(data.email || '')}</span>`;
-    toast('Google Drive connected', 'success');
-    document.getElementById('gdrive-sa-json').value = '';
-    document.getElementById('gdrive-sa-json').placeholder = 'Service account JSON is saved. Paste new JSON to replace.';
+  if (data?.success && data.authUrl) {
+    window.location.href = data.authUrl;
   } else {
     statusEl.innerHTML = `<span class="status-indicator status-error">${escHtml(data?.error || 'Failed')}</span>`;
-    toast(data?.error || 'Connection failed', 'error');
+    toast(data?.error || 'Failed to start OAuth', 'error');
+  }
+}
+
+async function disconnectGoogleDrive() {
+  const data = await api('/api/drive/disconnect', { method: 'POST' });
+  if (data?.success) {
+    toast('Google Drive disconnected', 'success');
+    loadSettings();
   }
 }
 
@@ -1616,12 +1652,12 @@ async function loadDriveFolders() {
   const loadingEl = document.getElementById('drive-browser-loading');
   const contentEl = document.getElementById('drive-browser-content');
 
-  // Check if Drive is configured by looking at settings
+  // Check if Drive is connected by looking at settings
   const settingsData = await api('/api/settings');
   if (!settingsData?.success) return;
 
   const s = settingsData.settings;
-  if (!s.gdrive_sa_configured || !s.gdrive_root_folder_id) {
+  if (s.gdrive_status !== 'connected') {
     emptyEl.style.display = 'block';
     contentEl.style.display = 'none';
     return;
@@ -1859,6 +1895,37 @@ function formatFileSize(bytes) {
 }
 
 // ===== Init =====
+// Handle OAuth callback redirect
+(function handleOAuthRedirect() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('drive') === 'connected') {
+    toast('Google Drive connected successfully', 'success');
+    // Switch to settings tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const settingsTab = document.querySelector('[data-tab="settings"]');
+    if (settingsTab) settingsTab.classList.add('active');
+    document.getElementById('panel-settings').classList.add('active');
+    // Clean URL
+    window.history.replaceState({}, '', '/');
+  } else if (params.get('drive') === 'error') {
+    toast('Google Drive connection failed', 'error');
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const settingsTab = document.querySelector('[data-tab="settings"]');
+    if (settingsTab) settingsTab.classList.add('active');
+    document.getElementById('panel-settings').classList.add('active');
+    window.history.replaceState({}, '', '/');
+  } else if (params.get('tab') === 'settings') {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const settingsTab = document.querySelector('[data-tab="settings"]');
+    if (settingsTab) settingsTab.classList.add('active');
+    document.getElementById('panel-settings').classList.add('active');
+    window.history.replaceState({}, '', '/');
+  }
+})();
+
 loadSettings();
 loadStoreSelector();
 loadStoresTable();
