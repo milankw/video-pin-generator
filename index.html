@@ -1015,9 +1015,21 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="toolbar-spacer"></div>
       <button class="btn btn-secondary btn-sm" onclick="toggleSelectAll()" id="select-all-btn" style="display:none;">Select All</button>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;display:none;" id="video-model-group">
-        <label style="margin-bottom:0;white-space:nowrap;">Video Model:</label>
-        <select id="winners-video-model" style="width:220px;">
+        <label style="margin-bottom:0;white-space:nowrap;">Model:</label>
+        <select id="winners-video-model" style="width:200px;">
           <option value="grok-imagine-video">grok-imagine-video</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;display:none;" id="aspect-ratio-group">
+        <label style="margin-bottom:0;white-space:nowrap;">Ratio:</label>
+        <select id="winners-aspect-ratio" style="width:130px;">
+          <option value="9:16">9:16 Pinterest</option>
+          <option value="1:1">1:1 Square</option>
+          <option value="16:9">16:9 Landscape</option>
+          <option value="4:3">4:3</option>
+          <option value="3:4">3:4</option>
+          <option value="3:2">3:2</option>
+          <option value="2:3">2:3</option>
         </select>
       </div>
       <button class="btn btn-success" onclick="generateVideos()" id="generate-btn" style="display:none;">
@@ -1544,6 +1556,7 @@ async function fetchWinners() {
     document.getElementById('select-all-btn').style.display = 'none';
     document.getElementById('generate-btn').style.display = 'none';
     document.getElementById('video-model-group').style.display = 'none';
+    document.getElementById('aspect-ratio-group').style.display = 'none';
     return;
   }
 
@@ -1558,6 +1571,7 @@ async function fetchWinners() {
   document.getElementById('winners-stats').style.display = 'grid';
   document.getElementById('select-all-btn').style.display = 'inline-flex';
   document.getElementById('video-model-group').style.display = 'flex';
+  document.getElementById('aspect-ratio-group').style.display = 'flex';
 
   renderProducts();
 }
@@ -1646,9 +1660,10 @@ async function generateVideos() {
     }));
 
   const selectedModel = document.getElementById('winners-video-model')?.value || '';
+  const selectedAspectRatio = document.getElementById('winners-aspect-ratio')?.value || '9:16';
   const data = await api('/api/videos/generate', {
     method: 'POST',
-    body: JSON.stringify({products, video_model: selectedModel})
+    body: JSON.stringify({products, video_model: selectedModel, aspect_ratio: selectedAspectRatio})
   });
 
   if (data?.success) {

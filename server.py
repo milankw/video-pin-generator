@@ -396,7 +396,7 @@ def _process_job(job):
 
     duration = settings.get('video_duration', 8)
     resolution = settings.get('video_resolution', '720p')
-    aspect_ratio = settings.get('aspect_ratio', '9:16')
+    aspect_ratio = job.get('aspectRatio') or settings.get('aspect_ratio', '9:16')
 
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -1455,6 +1455,8 @@ def generate_videos():
 
     # Optional per-request video model override
     video_model = data.get('video_model', '').strip() or None
+    # Optional per-request aspect ratio override
+    aspect_ratio = data.get('aspect_ratio', '').strip() or settings.get('aspect_ratio', '9:16')
 
     duration = settings.get('video_duration', 8)
 
@@ -1483,6 +1485,7 @@ def generate_videos():
                 'completedAt': None,
                 'prompt': prompt,
                 'videoModel': video_model,
+                'aspectRatio': aspect_ratio,
                 'videoDuration': duration,
                 'estimatedCost': round(duration * 0.05, 2),
                 'actualCost': None
