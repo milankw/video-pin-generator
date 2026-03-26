@@ -29,6 +29,8 @@
   --amber-bg: #fffbeb;
   --amber: #d97706;
   --blue-bg: #eff6ff;
+  --purple-bg: #faf5ff;
+  --purple: #9333ea;
   --radius: 8px;
   --radius-sm: 6px;
   --radius-lg: 12px;
@@ -127,6 +129,7 @@ body {
 .tab .badge-blue { background: var(--blue-bg); color: var(--primary); }
 .tab .badge-green { background: var(--green-bg); color: var(--green); }
 .tab .badge-amber { background: var(--amber-bg); color: var(--amber); }
+.tab .badge-purple { background: var(--purple-bg); color: var(--purple); }
 
 /* ===== Content ===== */
 .content {
@@ -237,6 +240,8 @@ textarea { resize: vertical; min-height: 80px; }
 .badge-cancelled { background: var(--gray-100); color: var(--gray-400); }
 .badge-new { background: var(--blue-bg); color: var(--primary); }
 .badge-has-video { background: var(--green-bg); color: var(--green); }
+.badge-connected { background: var(--green-bg); color: var(--green); }
+.badge-disconnected { background: var(--red-bg); color: var(--red); }
 
 /* Pulse animation for generating */
 @keyframes pulse-dot {
@@ -582,6 +587,169 @@ textarea { resize: vertical; min-height: 80px; }
   width: 100%;
   border-radius: var(--radius);
 }
+
+/* ===== Stores Table ===== */
+.stores-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.stores-table th {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-500);
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--gray-200);
+  background: var(--gray-50);
+}
+.stores-table td {
+  padding: 12px 14px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--gray-100);
+  vertical-align: middle;
+}
+.stores-table tr:hover td { background: var(--gray-50); }
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.status-dot.green { background: var(--green); }
+.status-dot.red { background: var(--red); }
+.status-dot.gray { background: var(--gray-400); }
+
+.domain-text {
+  font-size: 12px;
+  color: var(--gray-500);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.category-badge {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--gray-100);
+  color: var(--gray-600);
+  text-transform: capitalize;
+}
+
+/* ===== Drive Browser ===== */
+.drive-tree {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.drive-folder-item {
+  border-bottom: 1px solid var(--gray-100);
+}
+.drive-folder-item:last-child { border-bottom: none; }
+.drive-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition);
+}
+.drive-folder-header:hover { background: var(--gray-50); }
+.drive-folder-arrow {
+  font-size: 10px;
+  color: var(--gray-400);
+  transition: transform 0.2s ease;
+  width: 14px;
+  text-align: center;
+}
+.drive-folder-item.open > .drive-folder-header .drive-folder-arrow {
+  transform: rotate(90deg);
+}
+.drive-folder-icon { font-size: 16px; }
+.drive-folder-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gray-800);
+  flex: 1;
+}
+.drive-folder-count {
+  font-size: 11px;
+  color: var(--gray-400);
+}
+.drive-folder-children {
+  display: none;
+  padding-left: 24px;
+  background: var(--gray-50);
+}
+.drive-folder-item.open > .drive-folder-children { display: block; }
+.drive-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--gray-100);
+  font-size: 13px;
+}
+.drive-file-item:last-child { border-bottom: none; }
+.drive-file-icon { font-size: 14px; }
+.drive-file-name {
+  flex: 1;
+  color: var(--gray-700);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-file-name a {
+  color: var(--gray-700);
+  text-decoration: none;
+}
+.drive-file-name a:hover { color: var(--primary); text-decoration: underline; }
+.drive-file-size {
+  font-size: 11px;
+  color: var(--gray-400);
+  white-space: nowrap;
+}
+.drive-file-date {
+  font-size: 11px;
+  color: var(--gray-400);
+  white-space: nowrap;
+}
+.drive-loading {
+  padding: 12px;
+  color: var(--gray-400);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ===== Connection Status Indicator ===== */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 10px;
+}
+.status-connected { background: var(--green-bg); color: var(--green); }
+.status-disconnected { background: var(--gray-100); color: var(--gray-500); }
+.status-error { background: var(--red-bg); color: var(--red); }
+
+/* ===== Section Separator ===== */
+.section-sep {
+  border: none;
+  border-top: 1px solid var(--gray-200);
+  margin: 20px 0;
+}
 </style>
 </head>
 <body>
@@ -600,6 +768,7 @@ textarea { resize: vertical; min-height: 80px; }
 <!-- Tabs -->
 <div class="tabs">
   <div class="tab active" data-tab="settings">Settings</div>
+  <div class="tab" data-tab="stores">Stores <span class="badge badge-purple" id="stores-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="winners">Winners</div>
   <div class="tab" data-tab="queue">Queue <span class="badge badge-blue" id="queue-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="gallery">Gallery <span class="badge badge-green" id="gallery-badge" style="display:none">0</span></div>
@@ -611,6 +780,7 @@ textarea { resize: vertical; min-height: 80px; }
   <!-- ===== SETTINGS TAB ===== -->
   <div class="tab-panel active" id="panel-settings">
 
+    <!-- 1. xAI API Configuration -->
     <div class="card">
       <div class="card-title">xAI API Configuration</div>
       <div class="card-desc">Configure your xAI Grok API key for video generation.</div>
@@ -625,6 +795,51 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
+    <!-- 2. Google AI (Gemini) -->
+    <div class="card">
+      <div class="card-title">Google AI (Gemini)</div>
+      <div class="card-desc">Configure your Google AI Studio API key for content generation.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>API Key</label>
+          <input type="password" id="google-ai-key" placeholder="AIza...">
+        </div>
+        <div class="form-group">
+          <label>Model</label>
+          <select id="google-ai-model">
+            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+            <option value="gemini-2.0-pro">gemini-2.0-pro</option>
+            <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="btn btn-secondary" onclick="testGoogleAi()">Test & Save</button>
+        <span id="google-ai-status"></span>
+      </div>
+    </div>
+
+    <!-- 3. Google Drive -->
+    <div class="card">
+      <div class="card-title">Google Drive</div>
+      <div class="card-desc">Configure a Google Drive service account for video storage and browsing.</div>
+      <div class="form-group">
+        <label>Service Account JSON</label>
+        <textarea id="gdrive-sa-json" rows="6" placeholder='Paste your service account JSON key here...' style="font-size:12px;font-family:monospace;"></textarea>
+        <div class="form-hint">Paste the full JSON key file contents from Google Cloud Console.</div>
+      </div>
+      <div class="form-group">
+        <label>Root Folder ID</label>
+        <input type="text" id="gdrive-folder-id" placeholder="e.g. 1ABC...xyz">
+        <div class="form-hint">The Google Drive folder ID where store subfolders will be created.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="btn btn-secondary" onclick="testDriveConnection()">Test & Save</button>
+        <span id="gdrive-status"></span>
+      </div>
+    </div>
+
+    <!-- 4. Video Defaults -->
     <div class="card">
       <div class="card-title">Video Defaults</div>
       <div class="card-desc">Default settings for generated videos.</div>
@@ -651,31 +866,42 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
+    <!-- 5. Prompt Templates -->
     <div class="card">
       <div class="card-title">Prompt Templates</div>
       <div class="card-desc">Customize the video generation prompt per store category. Use {product_name} as placeholder.</div>
       <div id="prompt-templates"></div>
       <button class="btn btn-primary" onclick="savePromptTemplates()" style="margin-top:12px;">Save Templates</button>
     </div>
+  </div>
 
-    <div class="card">
-      <div class="card-title">Store Sync</div>
-      <div class="card-desc">Sync Shopify stores from your Dropship Autopilot installation.</div>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <button class="btn btn-primary" onclick="syncStores()">Sync Stores</button>
-        <span id="sync-status" style="font-size:13px;color:var(--gray-500);"></span>
-      </div>
+  <!-- ===== STORES TAB ===== -->
+  <div class="tab-panel" id="panel-stores">
+    <div class="toolbar">
+      <button class="btn btn-primary" onclick="syncStores()">Sync from Pinterest Autopilot</button>
+      <span id="sync-status" style="font-size:13px;color:var(--gray-500);"></span>
+      <div class="toolbar-spacer"></div>
+      <span id="stores-count" style="font-size:13px;color:var(--gray-500);"></span>
     </div>
-
-    <div class="card">
-      <div class="card-title">Google Drive (Optional)</div>
-      <div class="card-desc">Upload completed videos to Google Drive. Not required for MVP — videos are stored locally.</div>
-      <div class="form-group">
-        <label>Root Folder ID</label>
-        <input type="text" id="gdrive-folder-id" placeholder="Google Drive folder ID (optional)">
-        <div class="form-hint">The folder where store subfolders will be created.</div>
-      </div>
-      <button class="btn btn-secondary" onclick="saveGdriveSettings()">Save Drive Settings</button>
+    <div class="empty-state" id="stores-empty">
+      <div class="empty-state-icon">&#128722;</div>
+      <div class="empty-state-text">No stores synced yet</div>
+      <div class="empty-state-sub">Click "Sync from Pinterest Autopilot" to import your Shopify stores.</div>
+    </div>
+    <div class="card" id="stores-card" style="display:none;padding:0;overflow:hidden;">
+      <table class="stores-table">
+        <thead>
+          <tr>
+            <th style="width:36px;"></th>
+            <th>Store Name</th>
+            <th>Domain</th>
+            <th>Category</th>
+            <th>Status</th>
+            <th>Products</th>
+          </tr>
+        </thead>
+        <tbody id="stores-body"></tbody>
+      </table>
     </div>
   </div>
 
@@ -739,6 +965,27 @@ textarea { resize: vertical; min-height: 80px; }
 
   <!-- ===== GALLERY TAB ===== -->
   <div class="tab-panel" id="panel-gallery">
+
+    <!-- Google Drive Section -->
+    <div class="card" id="drive-browser-card">
+      <div class="card-title">Google Drive</div>
+      <div class="card-desc">Browse your Google Drive video folder structure.</div>
+      <div id="drive-browser-empty" class="empty-state" style="padding:24px;">
+        <div class="empty-state-icon">&#128193;</div>
+        <div class="empty-state-text">Google Drive not configured</div>
+        <div class="empty-state-sub">Set up your service account and folder ID in Settings to browse Drive.</div>
+      </div>
+      <div id="drive-browser-loading" class="loading-overlay"><div class="spinner"></div> Loading Drive folders...</div>
+      <div id="drive-browser-content" style="display:none;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+          <span id="drive-root-name" style="font-weight:600;color:var(--gray-800);"></span>
+          <button class="btn btn-secondary btn-xs" onclick="loadDriveFolders()">Refresh</button>
+        </div>
+        <div id="drive-tree" class="drive-tree"></div>
+      </div>
+    </div>
+
+    <!-- Local Videos Section -->
     <div id="gallery-stats" class="stats-row" style="display:none;"></div>
     <div class="loading-overlay" id="gallery-loading"><div class="spinner"></div> Loading gallery...</div>
     <div class="empty-state" id="gallery-empty">
@@ -810,8 +1057,9 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
 
     if (tab.dataset.tab === 'queue') refreshQueue();
-    if (tab.dataset.tab === 'gallery') refreshGallery();
+    if (tab.dataset.tab === 'gallery') { refreshGallery(); loadDriveFolders(); }
     if (tab.dataset.tab === 'winners') loadStoreSelector();
+    if (tab.dataset.tab === 'stores') loadStoresTable();
   });
 });
 
@@ -821,15 +1069,39 @@ async function loadSettings() {
   if (!data || !data.success) return;
   const s = data.settings;
 
+  // xAI
   if (s.xai_api_key_set) {
     document.getElementById('xai-key').placeholder = s.xai_api_key_masked;
     document.getElementById('xai-status').textContent = 'API key is configured';
     document.getElementById('xai-status').style.color = 'var(--green)';
   }
 
+  // Google AI
+  if (s.google_ai_key_set) {
+    document.getElementById('google-ai-key').placeholder = s.google_ai_key_masked;
+    const statusEl = document.getElementById('google-ai-status');
+    statusEl.innerHTML = '<span class="status-indicator status-connected">Connected</span>';
+  }
+  if (s.google_ai_model) {
+    document.getElementById('google-ai-model').value = s.google_ai_model;
+  }
+
+  // Google Drive
+  document.getElementById('gdrive-folder-id').value = s.gdrive_root_folder_id || '';
+  if (s.gdrive_sa_configured) {
+    const statusEl = document.getElementById('gdrive-status');
+    const email = s.gdrive_service_account_email || 'configured';
+    if (s.gdrive_status === 'connected') {
+      statusEl.innerHTML = `<span class="status-indicator status-connected">Connected</span> <span style="font-size:12px;color:var(--gray-500);margin-left:4px;">${escHtml(email)}</span>`;
+    } else {
+      statusEl.innerHTML = `<span class="status-indicator status-disconnected">Configured (not tested)</span>`;
+    }
+    document.getElementById('gdrive-sa-json').placeholder = 'Service account JSON is saved. Paste new JSON to replace.';
+  }
+
+  // Video defaults
   document.getElementById('video-duration').value = s.video_duration || 8;
   document.getElementById('video-resolution').value = s.video_resolution || '720p';
-  document.getElementById('gdrive-folder-id').value = s.gdrive_root_folder_id || '';
 
   // Render prompt templates
   const container = document.getElementById('prompt-templates');
@@ -892,6 +1164,64 @@ async function testXaiKey() {
   }
 }
 
+async function testGoogleAi() {
+  const statusEl = document.getElementById('google-ai-status');
+  const keyInput = document.getElementById('google-ai-key');
+  const modelSelect = document.getElementById('google-ai-model');
+
+  const apiKey = keyInput.value.trim();
+  if (!apiKey) {
+    toast('Enter a Google AI API key', 'error');
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color:var(--gray-500);font-size:12px;">Testing...</span>';
+
+  const data = await api('/api/settings/test-google-ai', {
+    method: 'POST',
+    body: JSON.stringify({ apiKey, model: modelSelect.value })
+  });
+
+  if (data?.success) {
+    statusEl.innerHTML = '<span class="status-indicator status-connected">Connected</span>';
+    toast(`Google AI connected (${data.model})`, 'success');
+    keyInput.value = '';
+    loadSettings();
+  } else {
+    statusEl.innerHTML = `<span class="status-indicator status-error">${escHtml(data?.error || 'Failed')}</span>`;
+    toast(data?.error || 'Connection failed', 'error');
+  }
+}
+
+async function testDriveConnection() {
+  const statusEl = document.getElementById('gdrive-status');
+  const saJson = document.getElementById('gdrive-sa-json').value.trim();
+  const folderId = document.getElementById('gdrive-folder-id').value.trim();
+
+  if (!saJson) {
+    toast('Paste the service account JSON', 'error');
+    return;
+  }
+
+  statusEl.innerHTML = '<span style="color:var(--gray-500);font-size:12px;">Testing...</span>';
+
+  const data = await api('/api/drive/test', {
+    method: 'POST',
+    body: JSON.stringify({ serviceAccountJson: saJson, folderId })
+  });
+
+  if (data?.success) {
+    const info = data.folderName ? ` — ${data.folderName}` : '';
+    statusEl.innerHTML = `<span class="status-indicator status-connected">Connected${escHtml(info)}</span> <span style="font-size:12px;color:var(--gray-500);margin-left:4px;">${escHtml(data.email || '')}</span>`;
+    toast('Google Drive connected', 'success');
+    document.getElementById('gdrive-sa-json').value = '';
+    document.getElementById('gdrive-sa-json').placeholder = 'Service account JSON is saved. Paste new JSON to replace.';
+  } else {
+    statusEl.innerHTML = `<span class="status-indicator status-error">${escHtml(data?.error || 'Failed')}</span>`;
+    toast(data?.error || 'Connection failed', 'error');
+  }
+}
+
 async function savePromptTemplates() {
   const templates = {};
   document.querySelectorAll('[id^="prompt-"]').forEach(ta => {
@@ -903,28 +1233,27 @@ async function savePromptTemplates() {
   else toast(data?.error || 'Failed', 'error');
 }
 
-async function saveGdriveSettings() {
-  const folderId = document.getElementById('gdrive-folder-id').value.trim();
-  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({gdrive_root_folder_id: folderId})});
-  if (data?.success) toast('Drive settings saved', 'success');
-  else toast(data?.error || 'Failed', 'error');
-}
-
 async function saveDuration() {
   const dur = document.getElementById('video-duration').value;
   await api('/api/settings', {method:'POST', body:JSON.stringify({video_duration: parseInt(dur)})});
 }
 document.getElementById('video-duration').addEventListener('change', saveDuration);
 
+
+// ===== Stores Tab =====
 async function syncStores() {
   const status = document.getElementById('sync-status');
   status.textContent = 'Syncing...';
+  status.style.color = 'var(--gray-500)';
   const data = await api('/api/stores/sync', {method:'POST'});
   if (data?.success) {
-    status.textContent = `Synced ${data.count} stores`;
+    const geminiNote = data.geminiImported ? ' + Gemini key imported' : '';
+    status.textContent = `Synced ${data.count} stores (${data.connectedCount} connected)${geminiNote}`;
     status.style.color = 'var(--green)';
-    toast(`${data.count} stores synced`, 'success');
+    toast(`${data.count} stores synced${geminiNote}`, 'success');
+    loadStoresTable();
     loadStoreSelector();
+    if (data.geminiImported) loadSettings();
   } else {
     status.textContent = data?.error || 'Sync failed';
     status.style.color = 'var(--red)';
@@ -932,7 +1261,64 @@ async function syncStores() {
   }
 }
 
-// ===== Store Selector =====
+async function loadStoresTable() {
+  const data = await api('/api/stores');
+  if (!data?.success) return;
+
+  const allStores = data.stores;
+  stores = allStores;
+
+  // Update badge
+  const badge = document.getElementById('stores-badge');
+  if (allStores.length > 0) {
+    const connected = allStores.filter(s => s.shopifyStatus === 'connected').length;
+    badge.textContent = connected;
+    badge.style.display = 'inline-flex';
+  }
+
+  // Update count
+  const connected = allStores.filter(s => s.shopifyStatus === 'connected').length;
+  document.getElementById('stores-count').textContent = allStores.length > 0 ? `${connected} connected, ${allStores.length} total` : '';
+
+  if (allStores.length === 0) {
+    document.getElementById('stores-empty').style.display = 'block';
+    document.getElementById('stores-card').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('stores-empty').style.display = 'none';
+  document.getElementById('stores-card').style.display = 'block';
+
+  const tbody = document.getElementById('stores-body');
+  tbody.innerHTML = '';
+
+  allStores.forEach(s => {
+    const tr = document.createElement('tr');
+    const isConnected = s.shopifyStatus === 'connected';
+    const dotClass = isConnected ? 'green' : 'red';
+    const statusBadge = isConnected
+      ? '<span class="badge-status badge-connected">Connected</span>'
+      : '<span class="badge-status badge-disconnected">Disconnected</span>';
+
+    const domain = s.domain || '';
+    const truncDomain = domain.length > 30 ? domain.substring(0, 30) + '...' : domain;
+    const category = s.storeCategory || 'default';
+    const productCount = s.productCount != null ? s.productCount : '—';
+
+    tr.innerHTML = `
+      <td><span class="status-dot ${dotClass}"></span></td>
+      <td style="font-weight:500;">${escHtml(s.name || 'Unnamed')}</td>
+      <td><span class="domain-text" title="${escAttr(domain)}">${escHtml(truncDomain)}</span></td>
+      <td><span class="category-badge">${escHtml(category)}</span></td>
+      <td>${statusBadge}</td>
+      <td style="color:var(--gray-500);">${productCount}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+
+// ===== Store Selector (Winners tab) =====
 async function loadStoreSelector() {
   const data = await api('/api/stores');
   if (!data?.success) return;
@@ -940,7 +1326,8 @@ async function loadStoreSelector() {
   const sel = document.getElementById('store-select');
   const current = sel.value;
   sel.innerHTML = '<option value="">Select a store...</option>';
-  stores.forEach(s => {
+  // Only show connected stores in the Winners selector
+  stores.filter(s => s.shopifyStatus === 'connected').forEach(s => {
     const opt = document.createElement('option');
     opt.value = s.id;
     opt.textContent = `${s.name} (${s.storeCategory || 'general'})`;
@@ -1216,6 +1603,142 @@ function startQueueRefresh() {
   }, 10000);
 }
 
+// ===== Google Drive Browser =====
+async function loadDriveFolders() {
+  const emptyEl = document.getElementById('drive-browser-empty');
+  const loadingEl = document.getElementById('drive-browser-loading');
+  const contentEl = document.getElementById('drive-browser-content');
+
+  // Check if Drive is configured by looking at settings
+  const settingsData = await api('/api/settings');
+  if (!settingsData?.success) return;
+
+  const s = settingsData.settings;
+  if (!s.gdrive_sa_configured || !s.gdrive_root_folder_id) {
+    emptyEl.style.display = 'block';
+    contentEl.style.display = 'none';
+    return;
+  }
+
+  emptyEl.style.display = 'none';
+  loadingEl.classList.add('active');
+  contentEl.style.display = 'none';
+
+  const data = await api('/api/drive/folders');
+  loadingEl.classList.remove('active');
+
+  if (!data?.success) {
+    emptyEl.style.display = 'block';
+    emptyEl.querySelector('.empty-state-text').textContent = 'Drive connection error';
+    emptyEl.querySelector('.empty-state-sub').textContent = data?.error || 'Could not load folders';
+    return;
+  }
+
+  contentEl.style.display = 'block';
+  document.getElementById('drive-root-name').textContent = data.folder.name;
+
+  const tree = document.getElementById('drive-tree');
+  tree.innerHTML = '';
+
+  // Render folders
+  data.folders.forEach(folder => {
+    tree.appendChild(createDriveFolderNode(folder));
+  });
+
+  // Render files
+  data.files.forEach(file => {
+    tree.appendChild(createDriveFileNode(file));
+  });
+
+  if (data.folders.length === 0 && data.files.length === 0) {
+    tree.innerHTML = '<div style="padding:16px;color:var(--gray-400);text-align:center;font-size:13px;">Empty folder</div>';
+  }
+}
+
+function createDriveFolderNode(folder) {
+  const div = document.createElement('div');
+  div.className = 'drive-folder-item';
+  div.innerHTML = `
+    <div class="drive-folder-header" onclick="toggleDriveFolder(this, '${folder.id}')">
+      <span class="drive-folder-arrow">&#9654;</span>
+      <span class="drive-folder-icon">&#128193;</span>
+      <span class="drive-folder-name">${escHtml(folder.name)}</span>
+    </div>
+    <div class="drive-folder-children" data-folder-id="${folder.id}" data-loaded="false"></div>
+  `;
+  return div;
+}
+
+function createDriveFileNode(file) {
+  const div = document.createElement('div');
+  div.className = 'drive-file-item';
+
+  const isVideo = file.mimeType && (file.mimeType.includes('video') || file.name.match(/\.(mp4|mov|avi|mkv|webm)$/i));
+  const icon = isVideo ? '&#127916;' : '&#128196;';
+
+  const size = file.size ? formatFileSize(parseInt(file.size)) : '';
+  const date = file.createdTime ? new Date(file.createdTime).toLocaleDateString() : '';
+  const link = file.webViewLink ? `<a href="${file.webViewLink}" target="_blank" rel="noopener">${escHtml(file.name)}</a>` : escHtml(file.name);
+
+  div.innerHTML = `
+    <span class="drive-file-icon">${icon}</span>
+    <span class="drive-file-name">${link}</span>
+    <span class="drive-file-size">${size}</span>
+    <span class="drive-file-date">${date}</span>
+  `;
+  return div;
+}
+
+async function toggleDriveFolder(header, folderId) {
+  const item = header.parentElement;
+  const children = item.querySelector('.drive-folder-children');
+
+  if (item.classList.contains('open')) {
+    item.classList.remove('open');
+    return;
+  }
+
+  item.classList.add('open');
+
+  // Lazy load if not loaded
+  if (children.dataset.loaded === 'false') {
+    children.innerHTML = '<div class="drive-loading"><div class="spinner"></div> Loading...</div>';
+    children.dataset.loaded = 'loading';
+
+    const data = await api(`/api/drive/folders/${folderId}`);
+
+    if (!data?.success) {
+      children.innerHTML = `<div class="drive-loading" style="color:var(--red);">${escHtml(data?.error || 'Error loading folder')}</div>`;
+      children.dataset.loaded = 'false';
+      return;
+    }
+
+    children.innerHTML = '';
+    children.dataset.loaded = 'true';
+
+    data.folders.forEach(folder => {
+      children.appendChild(createDriveFolderNode(folder));
+    });
+
+    data.files.forEach(file => {
+      children.appendChild(createDriveFileNode(file));
+    });
+
+    if (data.folders.length === 0 && data.files.length === 0) {
+      children.innerHTML = '<div style="padding:8px 14px;color:var(--gray-400);font-size:12px;">Empty folder</div>';
+    }
+
+    // Update folder count
+    const countSpan = header.querySelector('.drive-folder-count');
+    if (!countSpan) {
+      const span = document.createElement('span');
+      span.className = 'drive-folder-count';
+      span.textContent = `${data.folders.length + data.files.length} items`;
+      header.querySelector('.drive-folder-name').after(span);
+    }
+  }
+}
+
 // ===== Gallery =====
 async function refreshGallery() {
   document.getElementById('gallery-loading').classList.add('active');
@@ -1271,11 +1794,23 @@ async function refreshGallery() {
         const vcard = document.createElement('div');
         vcard.className = 'gallery-video-card';
         const date = v.completedAt ? new Date(v.completedAt).toLocaleDateString() : '';
+        const sizeStr = v.fileSize ? formatFileSize(v.fileSize) : '';
+
+        let uploadBtn = '';
+        if (!v.driveUrl) {
+          uploadBtn = `<button class="btn btn-secondary btn-xs" onclick="event.stopPropagation();uploadToDrive('${v.jobId}')" title="Upload to Drive">&#9729; Upload</button>`;
+        } else {
+          uploadBtn = `<a class="btn btn-secondary btn-xs" href="${v.driveUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()">&#9729; Drive</a>`;
+        }
+
         vcard.innerHTML = `
           <video class="gallery-video-preview" src="${v.videoUrl}" preload="metadata" onclick="previewVideo('${v.jobId}','${escAttr(prod.name)}','${escAttr(v.localPath)}')" style="cursor:pointer;"></video>
           <div class="gallery-video-meta">
-            <span class="gallery-video-date">${date}</span>
-            <a class="btn btn-secondary btn-xs" href="/api/videos/${v.jobId}/download" download>Download</a>
+            <span class="gallery-video-date">${date} ${sizeStr ? '&middot; ' + sizeStr : ''}</span>
+            <div style="display:flex;gap:4px;">
+              ${uploadBtn}
+              <a class="btn btn-secondary btn-xs" href="/api/videos/${v.jobId}/download" download>Download</a>
+            </div>
           </div>
         `;
         videosDiv.appendChild(vcard);
@@ -1288,6 +1823,17 @@ async function refreshGallery() {
   });
 }
 
+async function uploadToDrive(jobId) {
+  toast('Uploading to Drive...', 'info');
+  const data = await api(`/api/drive/upload/${jobId}`, {method:'POST'});
+  if (data?.success) {
+    toast('Uploaded to Drive', 'success');
+    refreshGallery();
+  } else {
+    toast(data?.error || 'Upload failed', 'error');
+  }
+}
+
 // ===== Utility =====
 function escHtml(s) {
   const d = document.createElement('div');
@@ -1297,10 +1843,18 @@ function escHtml(s) {
 function escAttr(s) {
   return (s||'').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
 
 // ===== Init =====
 loadSettings();
 loadStoreSelector();
+loadStoresTable();
 startQueueRefresh();
 refreshQueue();
 </script>

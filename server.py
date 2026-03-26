@@ -138,8 +138,11 @@ def _load_settings():
             'beauty': 'Glamorous beauty shot of {product_name}, soft diffused lighting, close-up details, premium cosmetics commercial style',
             'default': 'Professional product showcase of {product_name}, clean studio lighting, smooth rotating view, commercial quality, elegant presentation'
         },
-        'gdrive_credentials': '',
-        'gdrive_root_folder_id': ''
+        'google_ai_key': '',
+        'google_ai_model': 'gemini-2.0-flash',
+        'gdrive_root_folder_id': '',
+        'gdrive_service_account_email': '',
+        'gdrive_status': '',
     }
     settings = _load_json('settings.json', defaults)
     # Ensure all default keys exist
@@ -160,6 +163,30 @@ def _load_jobs():
 
 def _save_jobs(jobs):
     _save_json('video_jobs.json', jobs)
+
+
+# ===== Google Drive helper =====
+def _get_drive_service():
+    """Build a Google Drive API service using stored service account credentials."""
+    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
+    if not os.path.exists(sa_path):
+        return None, 'No service account JSON configured'
+
+    try:
+        from google.oauth2 import service_account as sa_module
+        from googleapiclient.discovery import build as build_service
+    except ImportError:
+        return None, 'google-auth / google-api-python-client not installed'
+
+    try:
+        creds = sa_module.Credentials.from_service_account_file(
+            sa_path,
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        service = build_service('drive', 'v3', credentials=creds, cache_discovery=False)
+        return service, None
+    except Exception as e:
+        return None, str(e)
 
 
 # ===== Job queue + background worker =====
@@ -428,6 +455,7 @@ def get_stores():
             'domain': s.get('domain', ''),
             'shopifyStatus': s.get('shopifyStatus', ''),
             'storeCategory': s.get('storeCategory', ''),
+            'productCount': s.get('productCount', None),
             'hasToken': bool(s.get('shopifyAccessToken', ''))
         })
     return jsonify({'success': True, 'stores': safe})
@@ -435,15 +463,21 @@ def get_stores():
 @app.route('/api/stores/sync', methods=['POST'])
 @login_required
 def sync_stores():
-    """Sync stores from dropship-autopilot stores.json."""
-    # Try multiple locations
-    candidates = [
+    """Sync stores from dropship-autopilot stores.json and import Gemini config."""
+    # Try multiple locations for stores.json
+    store_candidates = [
         '/root/dropship-autopilot/stores.json',
         os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'stores.json'),
     ]
+    config_candidates = [
+        '/root/dropship-autopilot/config.json',
+        os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'config.json'),
+    ]
+
+    # --- Sync stores ---
     source_data = None
     source_path = None
-    for path in candidates:
+    for path in store_candidates:
         resolved = os.path.abspath(path)
         if os.path.exists(resolved):
             try:
@@ -455,14 +489,12 @@ def sync_stores():
                 continue
 
     if source_data is None:
-        return jsonify({'success': False, 'error': 'Could not find stores.json. Tried: ' + ', '.join(candidates)}), 404
+        return jsonify({'success': False, 'error': 'Could not find stores.json. Tried: ' + ', '.join(store_candidates)}), 404
 
-    # Extract relevant fields for connected stores
+    # Extract relevant fields for all stores (connected and disconnected)
     synced = []
     raw_stores = source_data if isinstance(source_data, list) else source_data.get('stores', [])
     for s in raw_stores:
-        if s.get('shopifyStatus') != 'connected':
-            continue
         synced.append({
             'id': s.get('id', ''),
             'name': s.get('name', ''),
@@ -470,10 +502,39 @@ def sync_stores():
             'shopifyAccessToken': s.get('shopifyAccessToken', ''),
             'shopifyStatus': s.get('shopifyStatus', ''),
             'storeCategory': s.get('storeCategory', 'default'),
+            'productCount': s.get('productCount', None),
         })
 
     _save_stores(synced)
-    return jsonify({'success': True, 'count': len(synced), 'source': source_path})
+    connected_count = sum(1 for s in synced if s.get('shopifyStatus') == 'connected')
+
+    # --- Import Gemini config ---
+    gemini_imported = False
+    for path in config_candidates:
+        resolved = os.path.abspath(path)
+        if os.path.exists(resolved):
+            try:
+                with open(resolved, 'r') as f:
+                    config_data = json.load(f)
+                gemini = config_data.get('gemini', {})
+                if gemini.get('apiKey'):
+                    settings = _load_settings()
+                    settings['google_ai_key'] = gemini['apiKey']
+                    if gemini.get('model'):
+                        settings['google_ai_model'] = gemini['model']
+                    _save_settings(settings)
+                    gemini_imported = True
+                break
+            except:
+                continue
+
+    return jsonify({
+        'success': True,
+        'count': len(synced),
+        'connectedCount': connected_count,
+        'source': source_path,
+        'geminiImported': gemini_imported
+    })
 
 
 # ===== Routes: Settings =====
@@ -481,8 +542,10 @@ def sync_stores():
 @login_required
 def get_settings():
     settings = _load_settings()
-    # Mask API key
+    # Mask API keys
     safe = dict(settings)
+
+    # xAI key
     if safe.get('xai_api_key'):
         key = safe['xai_api_key']
         safe['xai_api_key_masked'] = key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
@@ -491,6 +554,28 @@ def get_settings():
         safe['xai_api_key_masked'] = ''
         safe['xai_api_key_set'] = False
     del safe['xai_api_key']
+
+    # Google AI key
+    if safe.get('google_ai_key'):
+        key = safe['google_ai_key']
+        safe['google_ai_key_masked'] = key[:8] + '...' + key[-4:] if len(key) > 12 else '***'
+        safe['google_ai_key_set'] = True
+    else:
+        safe['google_ai_key_masked'] = ''
+        safe['google_ai_key_set'] = False
+    del safe['google_ai_key']
+
+    # Drive service account status
+    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
+    safe['gdrive_sa_configured'] = os.path.exists(sa_path)
+    if safe['gdrive_sa_configured']:
+        try:
+            with open(sa_path, 'r') as f:
+                sa_data = json.load(f)
+            safe['gdrive_service_account_email'] = sa_data.get('client_email', '')
+        except:
+            safe['gdrive_service_account_email'] = ''
+
     return jsonify({'success': True, 'settings': safe})
 
 @app.route('/api/settings', methods=['POST'])
@@ -509,6 +594,10 @@ def save_settings():
         settings['prompt_templates'].update(data['prompt_templates'])
     if 'gdrive_root_folder_id' in data:
         settings['gdrive_root_folder_id'] = data['gdrive_root_folder_id']
+    if 'google_ai_key' in data and data['google_ai_key']:
+        settings['google_ai_key'] = data['google_ai_key']
+    if 'google_ai_model' in data:
+        settings['google_ai_model'] = data['google_ai_model']
 
     _save_settings(settings)
     return jsonify({'success': True})
@@ -536,6 +625,290 @@ def test_xai_connection():
             return jsonify({'success': False, 'error': f'API returned {resp.status_code}: {resp.text[:200]}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+# ===== Routes: Google AI (Gemini) =====
+@app.route('/api/settings/test-google-ai', methods=['POST'])
+@login_required
+def test_google_ai():
+    """Test Google AI (Gemini) API key."""
+    data = request.json
+    api_key = data.get('apiKey', '')
+    model = data.get('model', 'gemini-2.0-flash')
+
+    if not api_key:
+        return jsonify({'success': False, 'error': 'No API key provided'})
+
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}'
+    payload = {'contents': [{'parts': [{'text': 'Say "connected" in one word.'}]}]}
+
+    try:
+        resp = http_requests.post(url, json=payload, timeout=15)
+        if resp.status_code == 200:
+            # Save key on success
+            settings = _load_settings()
+            settings['google_ai_key'] = api_key
+            settings['google_ai_model'] = model
+            _save_settings(settings)
+            response_text = ''
+            try:
+                response_text = resp.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+            except:
+                pass
+            return jsonify({'success': True, 'response': response_text, 'model': model})
+        elif resp.status_code == 429:
+            # Rate limited but key is valid
+            settings = _load_settings()
+            settings['google_ai_key'] = api_key
+            settings['google_ai_model'] = model
+            _save_settings(settings)
+            return jsonify({'success': True, 'response': 'Rate limited but key is valid', 'model': model, 'rateLimited': True})
+        elif resp.status_code == 403 or resp.status_code == 400:
+            return jsonify({'success': False, 'error': f'Invalid API key or permission denied ({resp.status_code})'})
+        else:
+            return jsonify({'success': False, 'error': f'API returned {resp.status_code}: {resp.text[:300]}'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# ===== Routes: Google Drive =====
+@app.route('/api/drive/test', methods=['POST'])
+@login_required
+def test_drive_connection():
+    """Test Google Drive connection with service account."""
+    data = request.json
+    sa_json_str = data.get('serviceAccountJson', '')
+    folder_id = data.get('folderId', '')
+
+    if not sa_json_str:
+        return jsonify({'success': False, 'error': 'No service account JSON provided'})
+
+    # Validate JSON
+    try:
+        sa_data = json.loads(sa_json_str)
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'error': f'Invalid JSON: {str(e)}'})
+
+    if 'client_email' not in sa_data:
+        return jsonify({'success': False, 'error': 'Missing client_email in service account JSON'})
+
+    # Save service account JSON to file
+    sa_path = os.path.join(DATA_DIR, 'drive_service_account.json')
+    with open(sa_path, 'w') as f:
+        json.dump(sa_data, f, indent=2)
+
+    # Save folder ID in settings
+    settings = _load_settings()
+    settings['gdrive_root_folder_id'] = folder_id
+    settings['gdrive_service_account_email'] = sa_data.get('client_email', '')
+
+    # Try to connect
+    try:
+        from google.oauth2 import service_account as sa_module
+        from googleapiclient.discovery import build as build_service
+    except ImportError:
+        settings['gdrive_status'] = 'error'
+        _save_settings(settings)
+        return jsonify({'success': False, 'error': 'google-auth / google-api-python-client not installed. Install with: pip install google-auth google-api-python-client'})
+
+    try:
+        creds = sa_module.Credentials.from_service_account_file(
+            sa_path,
+            scopes=['https://www.googleapis.com/auth/drive']
+        )
+        service = build_service('drive', 'v3', credentials=creds, cache_discovery=False)
+
+        # Test by listing the root folder
+        if folder_id:
+            result = service.files().get(fileId=folder_id, fields='id,name,mimeType').execute()
+            folder_name = result.get('name', 'Unknown')
+            settings['gdrive_status'] = 'connected'
+            _save_settings(settings)
+            return jsonify({'success': True, 'email': sa_data.get('client_email', ''), 'folderName': folder_name})
+        else:
+            # Just test auth works
+            result = service.about().get(fields='user').execute()
+            settings['gdrive_status'] = 'connected'
+            _save_settings(settings)
+            return jsonify({'success': True, 'email': sa_data.get('client_email', ''), 'folderName': '(no root folder set)'})
+
+    except Exception as e:
+        settings['gdrive_status'] = 'error'
+        _save_settings(settings)
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/drive/folders', methods=['GET'])
+@login_required
+def drive_folders():
+    """List contents of the root Drive folder."""
+    settings = _load_settings()
+    folder_id = settings.get('gdrive_root_folder_id', '')
+    if not folder_id:
+        return jsonify({'success': False, 'error': 'No root folder ID configured. Set it in Settings > Google Drive.'})
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err})
+
+    try:
+        # Get root folder info
+        root = service.files().get(fileId=folder_id, fields='id,name,mimeType').execute()
+
+        # List children
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields='files(id,name,mimeType,size,createdTime,webViewLink,thumbnailLink)',
+            orderBy='name',
+            pageSize=200
+        ).execute()
+
+        items = results.get('files', [])
+        folders = []
+        files = []
+        for item in items:
+            entry = {
+                'id': item['id'],
+                'name': item['name'],
+                'mimeType': item.get('mimeType', ''),
+                'size': item.get('size'),
+                'createdTime': item.get('createdTime', ''),
+                'webViewLink': item.get('webViewLink', ''),
+                'thumbnailLink': item.get('thumbnailLink', ''),
+            }
+            if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                folders.append(entry)
+            else:
+                files.append(entry)
+
+        return jsonify({
+            'success': True,
+            'folder': {'id': root['id'], 'name': root['name']},
+            'folders': folders,
+            'files': files
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/drive/folders/<folder_id>', methods=['GET'])
+@login_required
+def drive_folder_contents(folder_id):
+    """List contents of a specific Drive folder."""
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err})
+
+    try:
+        # Get folder info
+        folder = service.files().get(fileId=folder_id, fields='id,name,mimeType').execute()
+
+        # List children
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false",
+            fields='files(id,name,mimeType,size,createdTime,webViewLink,thumbnailLink)',
+            orderBy='name',
+            pageSize=200
+        ).execute()
+
+        items = results.get('files', [])
+        folders = []
+        files = []
+        for item in items:
+            entry = {
+                'id': item['id'],
+                'name': item['name'],
+                'mimeType': item.get('mimeType', ''),
+                'size': item.get('size'),
+                'createdTime': item.get('createdTime', ''),
+                'webViewLink': item.get('webViewLink', ''),
+                'thumbnailLink': item.get('thumbnailLink', ''),
+            }
+            if item.get('mimeType') == 'application/vnd.google-apps.folder':
+                folders.append(entry)
+            else:
+                files.append(entry)
+
+        return jsonify({
+            'success': True,
+            'folder': {'id': folder['id'], 'name': folder['name']},
+            'folders': folders,
+            'files': files
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/drive/upload/<job_id>', methods=['POST'])
+@login_required
+def upload_to_drive(job_id):
+    """Upload a completed video to Google Drive."""
+    jobs = _load_jobs()
+    job = next((j for j in jobs if j['id'] == job_id), None)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    if not job.get('localPath'):
+        return jsonify({'success': False, 'error': 'No video file available'}), 400
+
+    full_path = os.path.join(VIDEOS_DIR, job['localPath'])
+    if not os.path.exists(full_path):
+        return jsonify({'success': False, 'error': 'Video file not found on disk'}), 404
+
+    settings = _load_settings()
+    root_folder_id = settings.get('gdrive_root_folder_id', '')
+    if not root_folder_id:
+        return jsonify({'success': False, 'error': 'No root folder configured in Settings > Google Drive'}), 400
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    try:
+        from googleapiclient.http import MediaFileUpload
+
+        # Create store subfolder if needed
+        store_name = job.get('storeName', 'Unknown Store')
+        safe_store = re.sub(r'[^\w\- ]', '', store_name).strip() or 'Unknown'
+
+        # Check if store folder exists
+        q = f"name='{safe_store}' and '{root_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        existing = service.files().list(q=q, fields='files(id,name)', pageSize=1).execute()
+
+        if existing.get('files'):
+            store_folder_id = existing['files'][0]['id']
+        else:
+            folder_metadata = {
+                'name': safe_store,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [root_folder_id]
+            }
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
+            store_folder_id = folder['id']
+
+        # Upload file
+        file_name = os.path.basename(full_path)
+        file_metadata = {
+            'name': f"{job.get('productHandle', 'video')}_{file_name}",
+            'parents': [store_folder_id]
+        }
+        media = MediaFileUpload(full_path, mimetype='video/mp4', resumable=True)
+        uploaded = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id,webViewLink'
+        ).execute()
+
+        # Update job with drive URL
+        drive_url = uploaded.get('webViewLink', '')
+        with _jobs_lock:
+            jobs = _load_jobs()
+            for j in jobs:
+                if j['id'] == job_id:
+                    j['driveUrl'] = drive_url
+                    break
+            _save_jobs(jobs)
+
+        return jsonify({'success': True, 'driveUrl': drive_url, 'fileId': uploaded['id']})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ===== Routes: Shopify Winners =====
@@ -815,6 +1188,12 @@ def get_gallery():
                 'videos': []
             }
 
+        # Get file size
+        local_full_path = os.path.join(VIDEOS_DIR, j['localPath'])
+        file_size = None
+        if os.path.exists(local_full_path):
+            file_size = os.path.getsize(local_full_path)
+
         gallery[store_name]['products'][handle]['videos'].append({
             'jobId': j['id'],
             'localPath': j['localPath'],
@@ -823,7 +1202,8 @@ def get_gallery():
             'completedAt': j.get('completedAt', ''),
             'prompt': j.get('prompt', ''),
             'driveUrl': j.get('driveUrl'),
-            'imageUrl': j.get('imageUrl', '')
+            'imageUrl': j.get('imageUrl', ''),
+            'fileSize': file_size
         })
 
     # Convert to list format
@@ -841,18 +1221,6 @@ def get_gallery():
 
     total = sum(s['totalVideos'] for s in result)
     return jsonify({'success': True, 'stores': result, 'totalVideos': total})
-
-
-# ===== Routes: Google Drive (placeholder for MVP) =====
-@app.route('/api/drive/upload/<job_id>', methods=['POST'])
-@login_required
-def upload_to_drive(job_id):
-    return jsonify({'success': False, 'error': 'Google Drive integration not yet configured. Videos are stored locally.'}), 501
-
-@app.route('/api/drive/folders', methods=['GET'])
-@login_required
-def drive_folders():
-    return jsonify({'success': False, 'error': 'Google Drive integration not yet configured.'}), 501
 
 
 # ===== Main =====

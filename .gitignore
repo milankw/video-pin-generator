@@ -3,6 +3,7 @@ data/videos/
 data/settings.json
 data/video_jobs.json
 data/stores.json
+data/drive_service_account.json
 
 # Auth files
 .flask_secret
