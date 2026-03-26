@@ -439,6 +439,16 @@ def _process_job(job):
                 job['videoUrl'] = video_url
                 job['status'] = 'done'
                 job['completedAt'] = datetime.datetime.utcnow().isoformat() + 'Z'
+
+                # Record actual duration and cost from xAI response
+                actual_duration = poll_data.get('video', {}).get('duration')
+                if actual_duration:
+                    job['videoDuration'] = actual_duration
+                    job['actualCost'] = round(actual_duration * 0.05, 2)
+                else:
+                    # Fall back to estimated cost as actual
+                    job['actualCost'] = job.get('estimatedCost', round(duration * 0.05, 2))
+
                 return job
 
             elif status == 'failed':
@@ -1111,6 +1121,102 @@ def upload_to_drive(job_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ===== Routes: Drive Management (rename, delete, create folder, move) =====
+@app.route('/api/drive/files/<file_id>/rename', methods=['PATCH'])
+@login_required
+def drive_rename(file_id):
+    data = request.json
+    new_name = data.get('name', '').strip()
+    if not new_name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    try:
+        updated = service.files().update(
+            fileId=file_id,
+            body={'name': new_name},
+            fields='id,name'
+        ).execute()
+        return jsonify({'success': True, 'file': updated})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/drive/files/<file_id>', methods=['DELETE'])
+@login_required
+def drive_delete(file_id):
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    try:
+        service.files().update(
+            fileId=file_id,
+            body={'trashed': True}
+        ).execute()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/drive/folders', methods=['POST'])
+@login_required
+def drive_create_folder():
+    data = request.json
+    name = data.get('name', '').strip()
+    parent_id = data.get('parentId', '')
+
+    if not name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    try:
+        metadata = {
+            'name': name,
+            'mimeType': 'application/vnd.google-apps.folder',
+        }
+        if parent_id:
+            metadata['parents'] = [parent_id]
+
+        folder = service.files().create(body=metadata, fields='id,name').execute()
+        return jsonify({'success': True, 'folder': folder})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/drive/files/<file_id>/move', methods=['PATCH'])
+@login_required
+def drive_move(file_id):
+    data = request.json
+    new_parent_id = data.get('parentId', '')
+    if not new_parent_id:
+        return jsonify({'success': False, 'error': 'parentId is required'}), 400
+
+    service, err = _get_drive_service()
+    if not service:
+        return jsonify({'success': False, 'error': err}), 500
+
+    try:
+        file_info = service.files().get(fileId=file_id, fields='parents').execute()
+        previous_parents = ','.join(file_info.get('parents', []))
+
+        updated = service.files().update(
+            fileId=file_id,
+            addParents=new_parent_id,
+            removeParents=previous_parents,
+            fields='id,name,parents'
+        ).execute()
+        return jsonify({'success': True, 'file': updated})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # ===== Routes: Shopify Winners =====
 @app.route('/api/shopify/winners/<store_id>', methods=['GET'])
 @login_required
@@ -1279,6 +1385,8 @@ def generate_videos():
     # Optional per-request video model override
     video_model = data.get('video_model', '').strip() or None
 
+    duration = settings.get('video_duration', 8)
+
     new_jobs = []
     with _jobs_lock:
         jobs = _load_jobs()
@@ -1303,7 +1411,10 @@ def generate_videos():
                 'createdAt': datetime.datetime.utcnow().isoformat() + 'Z',
                 'completedAt': None,
                 'prompt': prompt,
-                'videoModel': video_model
+                'videoModel': video_model,
+                'videoDuration': duration,
+                'estimatedCost': round(duration * 0.05, 2),
+                'actualCost': None
             }
             jobs.append(job)
             new_jobs.append(job)

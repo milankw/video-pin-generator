@@ -750,6 +750,92 @@ textarea { resize: vertical; min-height: 80px; }
   border-top: 1px solid var(--gray-200);
   margin: 20px 0;
 }
+
+/* ===== Drive Action Buttons ===== */
+.drive-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.drive-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--gray-400);
+  transition: all var(--transition);
+  padding: 0;
+  line-height: 1;
+}
+.drive-action-btn:hover {
+  background: var(--gray-200);
+  color: var(--gray-700);
+}
+.drive-action-btn.danger:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+.drive-rename-input {
+  flex: 1;
+  padding: 3px 6px;
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--gray-800);
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(14,165,233,0.15);
+}
+.drive-new-folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* ===== Queue Cost Display ===== */
+.cost-summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.cost-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cost-summary-label {
+  color: var(--gray-500);
+  font-weight: 500;
+}
+.cost-summary-value {
+  font-weight: 700;
+  font-size: 15px;
+}
+.cost-spent { color: var(--green); }
+.cost-pending { color: var(--gray-500); }
+.cost-cell {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cost-done { color: var(--green); }
+.cost-estimate { color: var(--gray-400); }
+.cost-none { color: var(--gray-300); }
 </style>
 </head>
 <body>
@@ -956,6 +1042,7 @@ textarea { resize: vertical; min-height: 80px; }
       <span style="font-size:12px;color:var(--gray-400);" id="queue-refresh-info">Auto-refreshes every 10s</span>
       <button class="btn btn-secondary btn-sm" onclick="refreshQueue()">Refresh</button>
     </div>
+    <div id="queue-cost-summary" class="cost-summary" style="display:none;"></div>
     <div class="loading-overlay" id="queue-loading"><div class="spinner"></div> Loading queue...</div>
     <div class="empty-state" id="queue-empty">
       <div class="empty-state-icon">&#128247;</div>
@@ -969,6 +1056,7 @@ textarea { resize: vertical; min-height: 80px; }
             <th>Product</th>
             <th>Store</th>
             <th>Status</th>
+            <th>Cost</th>
             <th>Created</th>
             <th>Completed</th>
             <th>Actions</th>
@@ -996,6 +1084,8 @@ textarea { resize: vertical; min-height: 80px; }
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
           <span id="drive-root-name" style="font-weight:600;color:var(--gray-800);"></span>
           <button class="btn btn-secondary btn-xs" onclick="loadDriveFolders()">Refresh</button>
+          <div class="toolbar-spacer"></div>
+          <button class="btn btn-secondary btn-sm" onclick="promptNewFolder()" title="Create new folder">+ New Folder</button>
         </div>
         <div id="drive-tree" class="drive-tree"></div>
       </div>
@@ -1591,6 +1681,34 @@ async function refreshQueue() {
     badge.style.display = 'none';
   }
 
+  // Cost summary
+  const costSummary = document.getElementById('queue-cost-summary');
+  let totalSpent = 0;
+  let totalPending = 0;
+  jobs.forEach(j => {
+    if (j.status === 'done') {
+      totalSpent += (j.actualCost != null ? j.actualCost : (j.estimatedCost || 0));
+    } else if (['queued', 'generating', 'polling'].includes(j.status)) {
+      totalPending += (j.estimatedCost || 0);
+    }
+  });
+
+  if (jobs.length > 0) {
+    costSummary.style.display = 'flex';
+    costSummary.innerHTML = `
+      <div class="cost-summary-item">
+        <span class="cost-summary-label">Total Spent:</span>
+        <span class="cost-summary-value cost-spent">$${totalSpent.toFixed(2)}</span>
+      </div>
+      <div class="cost-summary-item">
+        <span class="cost-summary-label">Pending:</span>
+        <span class="cost-summary-value cost-pending">~$${totalPending.toFixed(2)}</span>
+      </div>
+    `;
+  } else {
+    costSummary.style.display = 'none';
+  }
+
   if (jobs.length === 0) {
     document.getElementById('queue-empty').style.display = 'block';
     document.getElementById('queue-card').style.display = 'none';
@@ -1615,6 +1733,16 @@ async function refreshQueue() {
       queued: 'Queued', generating: 'Generating', polling: 'Polling',
       done: 'Done', failed: 'Failed', cancelled: 'Cancelled'
     }[j.status] || j.status;
+
+    // Cost display
+    let costHtml = '<span class="cost-cell cost-none">&mdash;</span>';
+    if (j.status === 'done') {
+      const cost = j.actualCost != null ? j.actualCost : (j.estimatedCost || 0);
+      costHtml = `<span class="cost-cell cost-done">$${cost.toFixed(2)}</span>`;
+    } else if (['queued', 'generating', 'polling'].includes(j.status)) {
+      const est = j.estimatedCost || 0;
+      costHtml = `<span class="cost-cell cost-estimate">~$${est.toFixed(2)}</span>`;
+    }
 
     let actions = '';
     if (j.status === 'failed') {
@@ -1645,6 +1773,7 @@ async function refreshQueue() {
       </td>
       <td><span class="job-store">${escHtml(j.storeName || '')}</span></td>
       <td><span class="badge-status ${statusClass}"${errorTip}>${statusLabel}</span></td>
+      <td>${costHtml}</td>
       <td style="font-size:12px;color:var(--gray-500);">${created}</td>
       <td style="font-size:12px;color:var(--gray-500);">${completed}</td>
       <td><div class="job-actions">${actions}</div></td>
@@ -1696,6 +1825,8 @@ function startQueueRefresh() {
 }
 
 // ===== Google Drive Browser =====
+let _driveRootFolderId = null; // stored after loading root
+
 async function loadDriveFolders() {
   const emptyEl = document.getElementById('drive-browser-empty');
   const loadingEl = document.getElementById('drive-browser-loading');
@@ -1728,13 +1859,14 @@ async function loadDriveFolders() {
 
   contentEl.style.display = 'block';
   document.getElementById('drive-root-name').textContent = data.folder.name;
+  _driveRootFolderId = data.folder.id;
 
   const tree = document.getElementById('drive-tree');
   tree.innerHTML = '';
 
   // Render folders
   data.folders.forEach(folder => {
-    tree.appendChild(createDriveFolderNode(folder));
+    tree.appendChild(createDriveFolderNode(folder, data.folder.id));
   });
 
   // Render files
@@ -1747,14 +1879,22 @@ async function loadDriveFolders() {
   }
 }
 
-function createDriveFolderNode(folder) {
+function createDriveFolderNode(folder, parentId) {
   const div = document.createElement('div');
   div.className = 'drive-folder-item';
+  div.dataset.fileId = folder.id;
+  div.dataset.fileName = folder.name;
+  div.dataset.parentId = parentId || '';
   div.innerHTML = `
-    <div class="drive-folder-header" onclick="toggleDriveFolder(this, '${folder.id}')">
-      <span class="drive-folder-arrow">&#9654;</span>
-      <span class="drive-folder-icon">&#128193;</span>
-      <span class="drive-folder-name">${escHtml(folder.name)}</span>
+    <div class="drive-folder-header">
+      <span class="drive-folder-arrow" onclick="toggleDriveFolder(this.parentElement, '${folder.id}')">&#9654;</span>
+      <span class="drive-folder-icon" onclick="toggleDriveFolder(this.parentElement, '${folder.id}')">&#128193;</span>
+      <span class="drive-folder-name" data-name="${escAttr(folder.name)}" onclick="toggleDriveFolder(this.parentElement, '${folder.id}')">${escHtml(folder.name)}</span>
+      <span class="drive-actions">
+        <button class="drive-action-btn" onclick="event.stopPropagation();driveStartRename(this,'${folder.id}','folder')" title="Rename">&#9998;</button>
+        <button class="drive-action-btn danger" onclick="event.stopPropagation();driveDelete('${folder.id}','${escAttr(folder.name)}')" title="Delete">&#128465;</button>
+        <button class="drive-action-btn" onclick="event.stopPropagation();promptNewFolder('${folder.id}')" title="New subfolder">&#128193;+</button>
+      </span>
     </div>
     <div class="drive-folder-children" data-folder-id="${folder.id}" data-loaded="false"></div>
   `;
@@ -1764,6 +1904,8 @@ function createDriveFolderNode(folder) {
 function createDriveFileNode(file) {
   const div = document.createElement('div');
   div.className = 'drive-file-item';
+  div.dataset.fileId = file.id;
+  div.dataset.fileName = file.name;
 
   const isVideo = file.mimeType && (file.mimeType.includes('video') || file.name.match(/\.(mp4|mov|avi|mkv|webm)$/i));
   const icon = isVideo ? '&#127916;' : '&#128196;';
@@ -1774,9 +1916,13 @@ function createDriveFileNode(file) {
 
   div.innerHTML = `
     <span class="drive-file-icon">${icon}</span>
-    <span class="drive-file-name">${link}</span>
+    <span class="drive-file-name" data-name="${escAttr(file.name)}">${link}</span>
     <span class="drive-file-size">${size}</span>
     <span class="drive-file-date">${date}</span>
+    <span class="drive-actions">
+      <button class="drive-action-btn" onclick="event.stopPropagation();driveStartRename(this,'${file.id}','file')" title="Rename">&#9998;</button>
+      <button class="drive-action-btn danger" onclick="event.stopPropagation();driveDelete('${file.id}','${escAttr(file.name)}')" title="Delete">&#128465;</button>
+    </span>
   `;
   return div;
 }
@@ -1809,7 +1955,7 @@ async function toggleDriveFolder(header, folderId) {
     children.dataset.loaded = 'true';
 
     data.folders.forEach(folder => {
-      children.appendChild(createDriveFolderNode(folder));
+      children.appendChild(createDriveFolderNode(folder, folderId));
     });
 
     data.files.forEach(file => {
@@ -1826,8 +1972,122 @@ async function toggleDriveFolder(header, folderId) {
       const span = document.createElement('span');
       span.className = 'drive-folder-count';
       span.textContent = `${data.folders.length + data.files.length} items`;
-      header.querySelector('.drive-folder-name').after(span);
+      const nameEl = header.querySelector('.drive-folder-name');
+      if (nameEl) nameEl.after(span);
     }
+  }
+}
+
+// ===== Drive Management: Rename =====
+function driveStartRename(btn, fileId, type) {
+  // Find the row container
+  const row = btn.closest('.drive-folder-item, .drive-file-item');
+  if (!row) return;
+
+  const nameEl = row.querySelector('.drive-folder-name, .drive-file-name');
+  if (!nameEl) return;
+
+  const currentName = nameEl.dataset.name || nameEl.textContent.trim();
+
+  // Replace name with input
+  const origHtml = nameEl.innerHTML;
+  nameEl.innerHTML = '';
+  nameEl.style.flex = '1';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'drive-rename-input';
+  input.value = currentName;
+  nameEl.appendChild(input);
+
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const newName = input.value.trim();
+    if (!newName || newName === currentName) {
+      // revert
+      nameEl.innerHTML = origHtml;
+      return;
+    }
+    const data = await api(`/api/drive/files/${fileId}/rename`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: newName })
+    });
+    if (data?.success) {
+      toast('Renamed successfully', 'success');
+      // Reload the entire tree to reflect changes
+      loadDriveFolders();
+    } else {
+      toast(data?.error || 'Rename failed', 'error');
+      nameEl.innerHTML = origHtml;
+    }
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { nameEl.innerHTML = origHtml; }
+  });
+  input.addEventListener('blur', () => {
+    // Small delay so blur doesn't fire before click
+    setTimeout(() => {
+      if (document.activeElement !== input) commit();
+    }, 100);
+  });
+}
+
+// ===== Drive Management: Delete =====
+async function driveDelete(fileId, fileName) {
+  if (!confirm(`Delete "${fileName}"? This will move it to Google Drive trash.`)) return;
+
+  const data = await api(`/api/drive/files/${fileId}`, { method: 'DELETE' });
+  if (data?.success) {
+    toast(`"${fileName}" moved to trash`, 'success');
+    // Remove the element from the tree
+    const el = document.querySelector(`[data-file-id="${fileId}"]`);
+    if (el) el.remove();
+  } else {
+    toast(data?.error || 'Delete failed', 'error');
+  }
+}
+
+// ===== Drive Management: New Folder =====
+async function promptNewFolder(parentId) {
+  const targetId = parentId || _driveRootFolderId;
+  if (!targetId) {
+    toast('Drive root folder not loaded yet', 'error');
+    return;
+  }
+
+  const name = prompt('New folder name:');
+  if (!name || !name.trim()) return;
+
+  const data = await api('/api/drive/folders', {
+    method: 'POST',
+    body: JSON.stringify({ name: name.trim(), parentId: targetId })
+  });
+
+  if (data?.success) {
+    toast(`Folder "${name.trim()}" created`, 'success');
+    // If we created inside a subfolder that's already open, force reload its children
+    if (parentId) {
+      const childrenEl = document.querySelector(`[data-folder-id="${parentId}"]`);
+      if (childrenEl) {
+        childrenEl.dataset.loaded = 'false';
+        // Find parent item and re-toggle to reload
+        const parentItem = childrenEl.closest('.drive-folder-item');
+        if (parentItem && parentItem.classList.contains('open')) {
+          parentItem.classList.remove('open');
+          const header = parentItem.querySelector('.drive-folder-header');
+          if (header) toggleDriveFolder(header, parentId);
+        }
+      }
+    } else {
+      // Reload root
+      loadDriveFolders();
+    }
+  } else {
+    toast(data?.error || 'Failed to create folder', 'error');
   }
 }
 
