@@ -2096,6 +2096,8 @@ function _getSlotActions(j) {
     html = `<button class="btn btn-secondary btn-xs" onclick="openRetryModal('${escAttr(j.id)}','${escAttr(j.storeId || '')}')">Retry</button>`;
   } else if (j.status === 'queued') {
     html = `<button class="btn btn-danger btn-xs" onclick="cancelJob('${escAttr(j.id)}')">Cancel</button>`;
+  } else if (j.status === 'generating' || j.status === 'polling') {
+    html = `<button class="btn btn-danger btn-xs" onclick="skipJob('${escAttr(j.id)}')">Skip</button>`;
   } else if (j.status === 'done' && j.localPath) {
     html = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${escAttr(j.id)}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>`;
     html += ` <a class="btn btn-secondary btn-xs" href="/api/videos/${encodeURIComponent(j.id)}/download" download>Download</a>`;
@@ -2300,6 +2302,12 @@ async function uploadGroupToDrive(groupId, btn) {
 async function cancelJob(id) {
   await api(`/api/videos/${id}/cancel`, {method:'POST'});
   toast('Job cancelled', 'info');
+  refreshQueue();
+}
+
+async function skipJob(id) {
+  await api(`/api/videos/${id}/skip`, {method:'POST'});
+  toast('Job skipped', 'info');
   refreshQueue();
 }
 

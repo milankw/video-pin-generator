@@ -361,8 +361,12 @@ def _find_or_create_numbered_product_folder(service, product_handle, store_folde
 
 
 # ===== Job queue + background worker =====
+from concurrent.futures import ThreadPoolExecutor
 _jobs_lock = threading.Lock()
 _worker_running = False
+_executor = ThreadPoolExecutor(max_workers=2)
+_in_flight = set()  # job IDs currently being processed
+_in_flight_lock = threading.Lock()
 
 def _get_prompt(product_name, store_category, settings):
     templates = settings.get('prompt_templates', {})
@@ -469,14 +473,28 @@ def _process_job(job):
         _save_jobs_safe(job)
 
         # Step 2: Poll for completion
-        max_polls = 120  # 10 minutes max (5s * 120)
-        for _ in range(max_polls):
+        max_polls = 36  # 3 minutes max (5s * 36)
+        for poll_i in range(max_polls):
             time.sleep(5)
-            poll_resp = http_requests.get(
-                f'https://api.x.ai/v1/videos/{request_id}',
-                headers={'Authorization': f'Bearer {api_key}'},
-                timeout=30
-            )
+
+            # Check if job was skipped/cancelled externally
+            with _jobs_lock:
+                current_jobs = _load_jobs()
+                current = next((jj for jj in current_jobs if jj['id'] == job['id']), None)
+                if current and current['status'] == 'failed':
+                    job['status'] = 'failed'
+                    job['error'] = current.get('error', 'Skipped')
+                    return job
+
+            try:
+                poll_resp = http_requests.get(
+                    f'https://api.x.ai/v1/videos/{request_id}',
+                    headers={'Authorization': f'Bearer {api_key}'},
+                    timeout=(10, 30)
+                )
+            except http_requests.exceptions.Timeout:
+                log.warning(f"Poll timeout for {job['id']}, attempt {poll_i+1}/{max_polls}")
+                continue
 
             if poll_resp.status_code != 200:
                 continue
@@ -537,7 +555,7 @@ def _process_job(job):
 
         # Timed out
         job['status'] = 'failed'
-        job['error'] = 'Polling timed out after 10 minutes'
+        job['error'] = 'Generation timed out after 3 minutes — retry later'
         return job
 
     except Exception as e:
@@ -614,17 +632,37 @@ def _auto_upload_to_drive(job):
         log.warning(f"Drive auto-upload error: {e}")
 
 
-def _worker_loop():
-    """Background worker that processes queued video jobs."""
+def _process_and_save(job):
+    """Wrapper that processes a job and saves result. Runs in thread pool."""
+    job_id = job['id']
+    try:
+        result = _process_job(job)
+        _save_jobs_safe(result)
+        if result['status'] == 'done':
+            log.info(f"Job {job_id} completed: {result.get('localPath', 'N/A')}")
+        else:
+            log.warning(f"Job {job_id} failed: {result.get('error', 'unknown')}")
+    except Exception as e:
+        job['status'] = 'failed'
+        job['error'] = str(e)
+        _save_jobs_safe(job)
+        log.error(f"Job {job_id} error: {e}")
+    finally:
+        with _in_flight_lock:
+            _in_flight.discard(job_id)
+
+
+def _dispatcher_loop():
+    """Picks up queued jobs and submits to thread pool (2 parallel workers)."""
     global _worker_running
     _worker_running = True
-    log.info("Video worker started")
+    log.info("Video dispatcher started (2 parallel workers)")
 
     _archive_counter = 0
 
     while True:
         try:
-            # Periodically archive old completed jobs (every 10 iterations ~ 30s idle)
+            # Periodically archive old completed jobs
             _archive_counter += 1
             if _archive_counter >= 10:
                 _archive_counter = 0
@@ -633,7 +671,7 @@ def _worker_loop():
                 except Exception as ae:
                     log.warning(f"Archive error: {ae}")
 
-            # Find next queued job
+            # Find queued jobs
             with _jobs_lock:
                 jobs = _load_jobs()
                 queued = [j for j in jobs if j['status'] == 'queued']
@@ -642,28 +680,31 @@ def _worker_loop():
                 time.sleep(3)
                 continue
 
-            job = queued[0]
-            log.info(f"Processing job {job['id']}: {job['productName']}")
+            # Submit up to available slots
+            with _in_flight_lock:
+                available_slots = 2 - len(_in_flight)
+                to_submit = []
+                for j in queued:
+                    if j['id'] not in _in_flight and available_slots > 0:
+                        to_submit.append(j)
+                        _in_flight.add(j['id'])
+                        available_slots -= 1
 
-            job = _process_job(job)
-            _save_jobs_safe(job)
+            for j in to_submit:
+                log.info(f"Submitting job {j['id']}: {j['productName']}")
+                _executor.submit(_process_and_save, j)
 
-            if job['status'] == 'done':
-                log.info(f"Job {job['id']} completed: {job.get('localPath', 'N/A')}")
-            else:
-                log.warning(f"Job {job['id']} failed: {job.get('error', 'unknown')}")
-
-            # Rate limit protection between jobs
-            time.sleep(2)
+            time.sleep(3)
 
         except Exception as e:
-            log.error(f"Worker error: {e}")
+            log.error(f"Dispatcher error: {e}")
             time.sleep(5)
+
 
 def _ensure_worker():
     global _worker_running
     if not _worker_running:
-        t = threading.Thread(target=_worker_loop, daemon=True)
+        t = threading.Thread(target=_dispatcher_loop, daemon=True)
         t.start()
 
 
@@ -1869,6 +1910,20 @@ def cancel_job(job_id):
         for j in jobs:
             if j['id'] == job_id and j['status'] == 'queued':
                 j['status'] = 'cancelled'
+                break
+        _save_jobs(jobs)
+    return jsonify({'success': True})
+
+@app.route('/api/videos/<job_id>/skip', methods=['POST'])
+@login_required
+def skip_job(job_id):
+    """Skip a generating/polling job — marks it failed so the worker moves on."""
+    with _jobs_lock:
+        jobs = _load_jobs()
+        for j in jobs:
+            if j['id'] == job_id and j['status'] in ('generating', 'polling', 'queued'):
+                j['status'] = 'failed'
+                j['error'] = 'Skipped by user'
                 break
         _save_jobs(jobs)
     return jsonify({'success': True})
