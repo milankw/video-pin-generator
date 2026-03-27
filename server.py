@@ -1793,13 +1793,23 @@ def retry_job(job_id):
     with _jobs_lock:
         jobs = _load_jobs()
         for j in jobs:
-            if j['id'] == job_id and j['status'] == 'failed':
+            if j['id'] == job_id and j['status'] in ('failed', 'done'):
+                # Clean up old video file if redoing a done job
+                if j['status'] == 'done' and j.get('localPath'):
+                    try:
+                        old_path = j['localPath']
+                        if os.path.exists(old_path):
+                            os.remove(old_path)
+                    except Exception:
+                        pass
                 j['status'] = 'queued'
                 j['error'] = None
                 j['xaiRequestId'] = None
                 j['videoUrl'] = None
                 j['localPath'] = None
                 j['completedAt'] = None
+                j['driveUrl'] = None
+                j['driveFileId'] = None
                 if new_prompt:
                     j['prompt'] = new_prompt
                     j['promptLabel'] = j.get('promptLabel', '') or 'Retried'
@@ -1812,13 +1822,23 @@ def retry_job(job_id):
             archive = _load_archive()
             new_archive = []
             for j in archive:
-                if j['id'] == job_id and j['status'] == 'failed':
+                if j['id'] == job_id and j['status'] in ('failed', 'done'):
+                    # Clean up old video file if redoing a done job
+                    if j['status'] == 'done' and j.get('localPath'):
+                        try:
+                            old_path = j['localPath']
+                            if os.path.exists(old_path):
+                                os.remove(old_path)
+                        except Exception:
+                            pass
                     j['status'] = 'queued'
                     j['error'] = None
                     j['xaiRequestId'] = None
                     j['videoUrl'] = None
                     j['localPath'] = None
                     j['completedAt'] = None
+                    j['driveUrl'] = None
+                    j['driveFileId'] = None
                     j.pop('archivedAt', None)
                     if new_prompt:
                         j['prompt'] = new_prompt

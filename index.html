@@ -2101,6 +2101,7 @@ function _getSlotActions(j) {
   } else if (j.status === 'done' && j.localPath) {
     html = `<button class="btn btn-secondary btn-xs" onclick="previewVideo('${escAttr(j.id)}','${escAttr(j.productName)}','${escAttr(j.localPath)}')">Preview</button>`;
     html += ` <a class="btn btn-secondary btn-xs" href="/api/videos/${encodeURIComponent(j.id)}/download" download>Download</a>`;
+    html += ` <button class="btn btn-secondary btn-xs" onclick="openRetryModal('${escAttr(j.id)}','${escAttr(j.storeId || '')}')">Redo</button>`;
     if (j.driveUrl) {
       html += ` <span style="font-size:11px;color:var(--green);">Uploaded \u2713</span>`;
     }
