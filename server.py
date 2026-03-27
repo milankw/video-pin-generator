@@ -1493,7 +1493,7 @@ def shopify_winners(store_id):
             batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
             try:
                 pr = http_requests.get(
-                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,product_type',
+                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,product_type,status',
                     headers=headers, timeout=30
                 )
                 if pr.status_code == 200:
@@ -1504,7 +1504,8 @@ def shopify_winners(store_id):
                             product_details[pid] = {
                                 'handle': prod.get('handle', ''),
                                 'image': imgs[0].get('src', '') if imgs else '',
-                                'product_type': prod.get('product_type', '')
+                                'product_type': prod.get('product_type', ''),
+                                'status': prod.get('status', 'unknown')
                             }
                 time.sleep(0.3)
             except:
@@ -1536,6 +1537,7 @@ def shopify_winners(store_id):
             handle = detail.get('handle', '')
             image_url = detail.get('image', '')
             product_type = detail.get('product_type', '')
+            shopify_status = detail.get('status', 'unknown')
             video_status = product_video_status.get(str(pid), 'none')  # none = no video at all
 
             results.append({
@@ -1548,6 +1550,7 @@ def shopify_winners(store_id):
                 'image': image_url,
                 'handle': handle,
                 'productType': product_type,
+                'shopifyStatus': shopify_status,
                 'hasVideo': video_status == 'done',
                 'videoStatus': video_status,
             })

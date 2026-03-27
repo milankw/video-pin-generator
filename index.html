@@ -393,6 +393,14 @@ textarea { resize: vertical; min-height: 80px; }
   top: 10px;
   right: 10px;
 }
+.product-card-shopify-status {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+}
+.badge-active { background: #d1fae5; color: #059669; }
+.badge-draft { background: #fef3c7; color: #d97706; }
+.badge-archived { background: var(--gray-100); color: var(--gray-500); }
 
 /* ===== Queue Table ===== */
 .queue-table {
@@ -1705,8 +1713,17 @@ function renderProducts() {
       badgeHtml = `<div class="product-card-badge"><span class="badge-status badge-new">New</span></div>`;
     }
 
+    // Shopify product status badge (active/draft/archived)
+    const shopStatus = (p.shopifyStatus || '').toLowerCase();
+    let shopBadgeClass = 'badge-active';
+    let shopBadgeLabel = 'Active';
+    if (shopStatus === 'draft') { shopBadgeClass = 'badge-draft'; shopBadgeLabel = 'Draft'; }
+    else if (shopStatus === 'archived') { shopBadgeClass = 'badge-archived'; shopBadgeLabel = 'Archived'; }
+    const shopBadgeHtml = `<div class="product-card-shopify-status"><span class="badge-status ${shopBadgeClass}">${shopBadgeLabel}</span></div>`;
+
     card.innerHTML = `
       <div class="product-card-check"></div>
+      ${shopBadgeHtml}
       ${badgeHtml}
       ${imgHtml}
       <div class="product-card-body">
