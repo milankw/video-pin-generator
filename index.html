@@ -1954,7 +1954,7 @@ async function loadMoreQueue() {
 }
 
 async function _loadQueuePage(page, replace) {
-  const data = await api(`/api/videos/queue?page=${page}&per_page=${_queuePerPage}`);
+  const data = await api(`/api/videos/queue?page=${page}&per_page=${_queuePerPage}&include_archive=true`);
   if (!data?.success) return;
 
   const jobs = data.jobs;

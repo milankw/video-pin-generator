@@ -607,12 +607,14 @@ def _auto_upload_to_drive(job):
         ).execute()
 
         drive_url = uploaded.get('webViewLink', '')
+        drive_file_id = uploaded.get('id', '')
         with _jobs_lock:
             found_in_active = False
             jobs = _load_jobs()
             for j in jobs:
                 if j['id'] == job['id']:
                     j['driveUrl'] = drive_url
+                    j['driveFileId'] = drive_file_id
                     found_in_active = True
                     break
             if found_in_active:
@@ -622,6 +624,7 @@ def _auto_upload_to_drive(job):
                 for j in archive:
                     if j['id'] == job['id']:
                         j['driveUrl'] = drive_url
+                        j['driveFileId'] = drive_file_id
                         break
                 _save_archive(archive)
 
@@ -640,6 +643,11 @@ def _process_and_save(job):
         _save_jobs_safe(result)
         if result['status'] == 'done':
             log.info(f"Job {job_id} completed: {result.get('localPath', 'N/A')}")
+            # Auto-upload to Google Drive
+            try:
+                _auto_upload_to_drive(result)
+            except Exception as ue:
+                log.warning(f"Auto-upload failed for {job_id}: {ue}")
         else:
             log.warning(f"Job {job_id} failed: {result.get('error', 'unknown')}")
     except Exception as e:
