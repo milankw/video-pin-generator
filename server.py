@@ -1522,6 +1522,51 @@ def orders_summary():
     return jsonify({'success': True, 'stores': results, 'days': day_labels})
 
 
+# ===== Routes: Installed Apps Per Store =====
+@app.route('/api/stores/apps', methods=['GET'])
+@login_required
+def get_store_apps():
+    """Fetch installed Shopify apps for each store using GraphQL."""
+    stores = _load_stores()
+    results = []
+    for s in stores:
+        domain = s.get('domain', '')
+        token = s.get('shopifyAccessToken', '')
+        if not domain or not token:
+            continue
+        graphql_url = f'https://{domain}/admin/api/2024-01/graphql.json'
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        query = '{"query": "{ appInstallations(first: 100) { nodes { id app { title } } } }"}'
+        try:
+            resp = http_requests.post(graphql_url, headers=headers, data=query, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                nodes = data.get('data', {}).get('appInstallations', {}).get('nodes', [])
+                apps = [n.get('app', {}).get('title', 'Unknown') for n in nodes if n.get('app')]
+            else:
+                apps = []
+                log.warning(f"Apps query failed for {s.get('name','')}: HTTP {resp.status_code}")
+            results.append({
+                'id': s.get('id', ''),
+                'name': s.get('name', ''),
+                'domain': domain,
+                'apps': sorted(apps),
+                'appCount': len(apps)
+            })
+        except Exception as e:
+            log.warning(f"Apps query error for {s.get('name','')}: {e}")
+            results.append({
+                'id': s.get('id', ''),
+                'name': s.get('name', ''),
+                'domain': domain,
+                'apps': [],
+                'appCount': 0,
+                'error': str(e)
+            })
+        time.sleep(0.3)
+    return jsonify({'success': True, 'stores': results})
+
+
 # ===== Routes: Shopify Winners =====
 @app.route('/api/shopify/winners/<store_id>', methods=['GET'])
 @login_required
