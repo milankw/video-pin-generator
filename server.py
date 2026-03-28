@@ -1460,7 +1460,8 @@ _orders_day_labels = []  # computed once per request
 _orders_today = None
 
 def _fetch_orders_for_store(s):
-    """Fetch order fulfillment counts for a single store (used in parallel)."""
+    """Fetch order fulfillment counts for a single store (used in parallel).
+    Only 4 API calls per store: 3 counts + 1 order list for daily breakdown."""
     domain = s.get('domain', '')
     token = s.get('shopifyAccessToken', '')
     if not domain or not token:
@@ -1476,20 +1477,38 @@ def _fetch_orders_for_store(s):
         r3 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=partial', headers=headers, timeout=15)
         partial = r3.json().get('count', 0) if r3.status_code == 200 else 0
 
-        # Daily unfulfilled for last 5 days
-        daily_unfulfilled = {}
-        for i in range(5):
-            d = today - datetime.timedelta(days=i)
-            d_start = f'{d.isoformat()}T00:00:00Z'
-            d_end = f'{d.isoformat()}T23:59:59Z'
-            try:
-                rd = http_requests.get(
-                    f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled&created_at_min={d_start}&created_at_max={d_end}',
-                    headers=headers, timeout=15
-                )
-                daily_unfulfilled[d.isoformat()] = rd.json().get('count', 0) if rd.status_code == 200 else 0
-            except:
-                daily_unfulfilled[d.isoformat()] = 0
+        # Daily unfulfilled: single API call fetching orders from last 5 days, then bucket by date
+        five_days_ago = today - datetime.timedelta(days=4)
+        daily_unfulfilled = {(today - datetime.timedelta(days=i)).isoformat(): 0 for i in range(5)}
+        recent_total = 0
+        try:
+            page_url = f'{base_url}/orders.json?status=open&fulfillment_status=unfulfilled&created_at_min={five_days_ago.isoformat()}T00:00:00Z&limit=250&fields=id,created_at'
+            pages = 0
+            while page_url and pages < 20:
+                ro = http_requests.get(page_url, headers=headers, timeout=15)
+                if ro.status_code != 200:
+                    break
+                orders = ro.json().get('orders', [])
+                if not orders:
+                    break
+                for o in orders:
+                    recent_total += 1
+                    ca = o.get('created_at', '')
+                    if ca:
+                        order_date = ca[:10]  # YYYY-MM-DD
+                        if order_date in daily_unfulfilled:
+                            daily_unfulfilled[order_date] += 1
+                # Pagination
+                page_url = None
+                link_header = ro.headers.get('Link', '')
+                if 'rel="next"' in link_header:
+                    for part in link_header.split(','):
+                        if 'rel="next"' in part:
+                            page_url = part.split('<')[1].split('>')[0]
+                            break
+                pages += 1
+        except Exception:
+            pass
 
         return {
             'id': s.get('id', ''),
@@ -1498,7 +1517,8 @@ def _fetch_orders_for_store(s):
             'unfulfilled': unfulfilled,
             'fulfilled': fulfilled,
             'partial': partial,
-            'dailyUnfulfilled': daily_unfulfilled
+            'dailyUnfulfilled': daily_unfulfilled,
+            'recentUnfulfilled': recent_total
         }
     except Exception as e:
         log.warning(f"Order summary failed for {s.get('name','')}: {e}")

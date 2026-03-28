@@ -2808,12 +2808,15 @@ async function loadOrdersSummary(force) {
       <th>Fulfilled</th>
       <th>Total</th>
       <th class="orders-daily-divider"></th>
+      <th style="text-align:center;font-weight:700;">Last 5 Days</th>
+      <th class="orders-daily-divider"></th>
       ${dayHeaders}
     </tr></thead><tbody>`;
 
   stores.forEach(s => {
     const total = s.unfulfilled + s.fulfilled + s.partial;
     const du = s.dailyUnfulfilled || {};
+    const recent5 = s.recentUnfulfilled || 0;
     const dayCells = days.map(d => {
       const count = du[d] || 0;
       const cls = count > 0 ? 'orders-count-unfulfilled' : '';
@@ -2825,6 +2828,8 @@ async function loadOrdersSummary(force) {
       <td><span class="orders-count-partial">${s.partial}</span></td>
       <td><span class="orders-count-fulfilled">${s.fulfilled}</span></td>
       <td>${total}</td>
+      <td class="orders-daily-divider"></td>
+      <td style="text-align:center;font-weight:700;"><span class="${recent5 > 0 ? 'orders-count-unfulfilled' : ''}">${recent5}</span></td>
       <td class="orders-daily-divider"></td>
       ${dayCells}
     </tr>`;
@@ -2839,12 +2844,18 @@ async function loadOrdersSummary(force) {
     return `<td style="text-align:center;"><span class="${cls}">${sum}</span></td>`;
   }).join('');
 
+  // Total recent unfulfilled across all stores
+  let totRecent5 = 0;
+  stores.forEach(s => { totRecent5 += s.recentUnfulfilled || 0; });
+
   html += `<tr class="summary-row">
     <td>All Stores</td>
     <td><span class="orders-count-unfulfilled">${totUnfulfilled}</span></td>
     <td><span class="orders-count-partial">${totPartial}</span></td>
     <td><span class="orders-count-fulfilled">${totFulfilled}</span></td>
     <td>${grandTotal}</td>
+    <td class="orders-daily-divider"></td>
+    <td style="text-align:center;font-weight:700;"><span class="${totRecent5 > 0 ? 'orders-count-unfulfilled' : ''}">${totRecent5}</span></td>
     <td class="orders-daily-divider"></td>
     ${dayTotals}
   </tr>`;
