@@ -913,6 +913,18 @@ textarea { resize: vertical; min-height: 80px; }
   background: var(--gray-100);
   color: var(--gray-700);
 }
+
+/* ===== Orders Tab ===== */
+.orders-table { width: 100%; border-collapse: collapse; }
+.orders-table th { text-align: left; padding: 10px 14px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gray-500); border-bottom: 1px solid var(--gray-200); }
+.orders-table td { padding: 12px 14px; border-bottom: 1px solid var(--gray-100); }
+.orders-table tbody tr:hover { background: var(--gray-50); }
+.orders-count-unfulfilled { color: var(--amber); font-weight: 700; font-size: 18px; }
+.orders-count-fulfilled { color: var(--green); font-weight: 600; }
+.orders-count-partial { color: var(--primary); font-weight: 600; }
+.orders-table .summary-row td { font-weight: 700; border-top: 2px solid var(--gray-300); background: var(--gray-50); }
+.orders-store-name { font-weight: 600; color: var(--gray-800); }
+.orders-store-domain { font-size: 12px; color: var(--gray-400); }
 </style>
 </head>
 <body>
@@ -935,6 +947,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="winners">Winners</div>
   <div class="tab" data-tab="queue">Queue <span class="badge badge-blue" id="queue-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="gallery">Gallery <span class="badge badge-green" id="gallery-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="orders">Orders</div>
 </div>
 
 <!-- Content -->
@@ -1176,6 +1189,25 @@ textarea { resize: vertical; min-height: 80px; }
 
   </div>
 
+  <div class="tab-panel" id="panel-orders">
+    <div class="card">
+      <div class="card-title">Order Fulfillment</div>
+      <div class="card-desc">Fulfilled and unfulfilled order counts per store.</div>
+      <div id="orders-loading" class="loading-overlay"><div class="spinner"></div> Loading order data...</div>
+      <div id="orders-content" style="display:none;">
+        <div style="margin-bottom:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="loadOrdersSummary()">Refresh</button>
+        </div>
+        <div id="orders-table-wrap"></div>
+      </div>
+      <div id="orders-empty" class="empty-state" style="display:none;padding:24px;">
+        <div class="empty-state-icon">&#128230;</div>
+        <div class="empty-state-text">No connected stores</div>
+        <div class="empty-state-sub">Connect your Shopify stores in the Stores tab first.</div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Toast container -->
@@ -1282,6 +1314,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'gallery') { loadDriveFolders(); }
     if (tab.dataset.tab === 'winners') { loadStoreSelector(); loadVideoModels(); }
     if (tab.dataset.tab === 'stores') loadStoresTable();
+    if (tab.dataset.tab === 'orders') loadOrdersSummary();
   });
 });
 
@@ -2627,6 +2660,61 @@ async function promptNewFolder(parentId) {
 }
 
 
+
+// ===== Orders Tab =====
+async function loadOrdersSummary() {
+  const loading = document.getElementById('orders-loading');
+  const content = document.getElementById('orders-content');
+  const empty = document.getElementById('orders-empty');
+  loading.style.display = 'flex';
+  content.style.display = 'none';
+  empty.style.display = 'none';
+
+  const data = await api('/api/orders/summary');
+  loading.style.display = 'none';
+
+  if (!data?.success || !data.stores || data.stores.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+
+  const stores = data.stores;
+  let totUnfulfilled = 0, totFulfilled = 0, totPartial = 0;
+  stores.forEach(s => { totUnfulfilled += s.unfulfilled; totFulfilled += s.fulfilled; totPartial += s.partial; });
+
+  let html = `<table class="orders-table">
+    <thead><tr>
+      <th>Store</th>
+      <th>Unfulfilled</th>
+      <th>Partial</th>
+      <th>Fulfilled</th>
+      <th>Total</th>
+    </tr></thead><tbody>`;
+
+  stores.forEach(s => {
+    const total = s.unfulfilled + s.fulfilled + s.partial;
+    html += `<tr>
+      <td><div class="orders-store-name">${escHtml(s.name)}</div><div class="orders-store-domain">${escHtml(s.domain)}</div></td>
+      <td><span class="orders-count-unfulfilled">${s.unfulfilled}</span></td>
+      <td><span class="orders-count-partial">${s.partial}</span></td>
+      <td><span class="orders-count-fulfilled">${s.fulfilled}</span></td>
+      <td>${total}</td>
+    </tr>`;
+  });
+
+  const grandTotal = totUnfulfilled + totFulfilled + totPartial;
+  html += `<tr class="summary-row">
+    <td>All Stores</td>
+    <td><span class="orders-count-unfulfilled">${totUnfulfilled}</span></td>
+    <td><span class="orders-count-partial">${totPartial}</span></td>
+    <td><span class="orders-count-fulfilled">${totFulfilled}</span></td>
+    <td>${grandTotal}</td>
+  </tr>`;
+
+  html += '</tbody></table>';
+  document.getElementById('orders-table-wrap').innerHTML = html;
+  content.style.display = '';
+}
 
 // ===== Utility =====
 function escHtml(s) {

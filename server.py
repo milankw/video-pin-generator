@@ -1417,6 +1417,47 @@ def drive_move(file_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ===== Routes: Order Fulfillment Summary =====
+@app.route('/api/orders/summary', methods=['GET'])
+@login_required
+def orders_summary():
+    """Get fulfilled/unfulfilled/partial order counts per store."""
+    stores = _load_stores()
+    results = []
+    for s in stores:
+        domain = s.get('domain', '')
+        token = s.get('shopifyAccessToken', '')
+        if not domain or not token:
+            continue
+        base_url = f'https://{domain}/admin/api/2024-01'
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        try:
+            # Unfulfilled (open orders)
+            r1 = http_requests.get(f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled', headers=headers, timeout=15)
+            unfulfilled = r1.json().get('count', 0) if r1.status_code == 200 else 0
+            time.sleep(0.3)
+            # Fulfilled/shipped
+            r2 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=shipped', headers=headers, timeout=15)
+            fulfilled = r2.json().get('count', 0) if r2.status_code == 200 else 0
+            time.sleep(0.3)
+            # Partial
+            r3 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=partial', headers=headers, timeout=15)
+            partial = r3.json().get('count', 0) if r3.status_code == 200 else 0
+            time.sleep(0.3)
+            results.append({
+                'id': s.get('id', ''),
+                'name': s.get('name', ''),
+                'domain': domain,
+                'unfulfilled': unfulfilled,
+                'fulfilled': fulfilled,
+                'partial': partial
+            })
+        except Exception as e:
+            log.warning(f"Order summary failed for {s.get('name','')}: {e}")
+            continue
+    return jsonify({'success': True, 'stores': results})
+
+
 # ===== Routes: Shopify Winners =====
 @app.route('/api/shopify/winners/<store_id>', methods=['GET'])
 @login_required
