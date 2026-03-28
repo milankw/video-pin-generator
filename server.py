@@ -1456,114 +1456,114 @@ def drive_move(file_id):
 
 
 # ===== Routes: Order Fulfillment Summary =====
+_orders_day_labels = []  # computed once per request
+_orders_today = None
+
+def _fetch_orders_for_store(s):
+    """Fetch order fulfillment counts for a single store (used in parallel)."""
+    domain = s.get('domain', '')
+    token = s.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return None
+    base_url = f'https://{domain}/admin/api/2024-01'
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    today = _orders_today
+    try:
+        r1 = http_requests.get(f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled', headers=headers, timeout=15)
+        unfulfilled = r1.json().get('count', 0) if r1.status_code == 200 else 0
+        r2 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=shipped', headers=headers, timeout=15)
+        fulfilled = r2.json().get('count', 0) if r2.status_code == 200 else 0
+        r3 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=partial', headers=headers, timeout=15)
+        partial = r3.json().get('count', 0) if r3.status_code == 200 else 0
+
+        # Daily unfulfilled for last 5 days
+        daily_unfulfilled = {}
+        for i in range(5):
+            d = today - datetime.timedelta(days=i)
+            d_start = f'{d.isoformat()}T00:00:00Z'
+            d_end = f'{d.isoformat()}T23:59:59Z'
+            try:
+                rd = http_requests.get(
+                    f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled&created_at_min={d_start}&created_at_max={d_end}',
+                    headers=headers, timeout=15
+                )
+                daily_unfulfilled[d.isoformat()] = rd.json().get('count', 0) if rd.status_code == 200 else 0
+            except:
+                daily_unfulfilled[d.isoformat()] = 0
+
+        return {
+            'id': s.get('id', ''),
+            'name': s.get('name', ''),
+            'domain': domain,
+            'unfulfilled': unfulfilled,
+            'fulfilled': fulfilled,
+            'partial': partial,
+            'dailyUnfulfilled': daily_unfulfilled
+        }
+    except Exception as e:
+        log.warning(f"Order summary failed for {s.get('name','')}: {e}")
+        return None
+
 @app.route('/api/orders/summary', methods=['GET'])
 @login_required
 def orders_summary():
-    """Get fulfilled/unfulfilled/partial order counts per store + daily unfulfilled for last 5 days."""
+    """Get fulfilled/unfulfilled/partial order counts per store + daily unfulfilled (parallel)."""
+    global _orders_today, _orders_day_labels
     stores = _load_stores()
-    results = []
-    today = datetime.datetime.now(datetime.timezone.utc).date()
-    # Last 5 days labels (most recent first)
-    day_labels = []
-    for i in range(5):
-        d = today - datetime.timedelta(days=i)
-        day_labels.append(d.isoformat())
+    _orders_today = datetime.datetime.now(datetime.timezone.utc).date()
+    _orders_day_labels = [(_orders_today - datetime.timedelta(days=i)).isoformat() for i in range(5)]
 
-    for s in stores:
-        domain = s.get('domain', '')
-        token = s.get('shopifyAccessToken', '')
-        if not domain or not token:
-            continue
-        base_url = f'https://{domain}/admin/api/2024-01'
-        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
-        try:
-            # Unfulfilled (open orders)
-            r1 = http_requests.get(f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled', headers=headers, timeout=15)
-            unfulfilled = r1.json().get('count', 0) if r1.status_code == 200 else 0
-            time.sleep(0.3)
-            # Fulfilled/shipped
-            r2 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=shipped', headers=headers, timeout=15)
-            fulfilled = r2.json().get('count', 0) if r2.status_code == 200 else 0
-            time.sleep(0.3)
-            # Partial
-            r3 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=partial', headers=headers, timeout=15)
-            partial = r3.json().get('count', 0) if r3.status_code == 200 else 0
-            time.sleep(0.3)
-
-            # Daily unfulfilled orders for last 5 days
-            # Fetch unfulfilled orders created in each day
-            daily_unfulfilled = {}
-            for i in range(5):
-                d = today - datetime.timedelta(days=i)
-                d_start = f'{d.isoformat()}T00:00:00Z'
-                d_end = f'{d.isoformat()}T23:59:59Z'
-                try:
-                    rd = http_requests.get(
-                        f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled&created_at_min={d_start}&created_at_max={d_end}',
-                        headers=headers, timeout=15
-                    )
-                    daily_unfulfilled[d.isoformat()] = rd.json().get('count', 0) if rd.status_code == 200 else 0
-                except:
-                    daily_unfulfilled[d.isoformat()] = 0
-                time.sleep(0.2)
-
-            results.append({
-                'id': s.get('id', ''),
-                'name': s.get('name', ''),
-                'domain': domain,
-                'unfulfilled': unfulfilled,
-                'fulfilled': fulfilled,
-                'partial': partial,
-                'dailyUnfulfilled': daily_unfulfilled
-            })
-        except Exception as e:
-            log.warning(f"Order summary failed for {s.get('name','')}: {e}")
-            continue
-    return jsonify({'success': True, 'stores': results, 'days': day_labels})
+    valid_stores = [s for s in stores if s.get('domain') and s.get('shopifyAccessToken')]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_fetch_orders_for_store, valid_stores))
+    results = [r for r in results if r is not None]
+    return jsonify({'success': True, 'stores': results, 'days': _orders_day_labels})
 
 
 # ===== Routes: Installed Apps Per Store =====
+def _fetch_apps_for_store(s):
+    """Fetch installed apps for a single store (used in parallel)."""
+    domain = s.get('domain', '')
+    token = s.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return None
+    graphql_url = f'https://{domain}/admin/api/2024-01/graphql.json'
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    query = '{"query": "{ appInstallations(first: 100) { nodes { id app { title } } } }"}'
+    try:
+        resp = http_requests.post(graphql_url, headers=headers, data=query, timeout=20)
+        if resp.status_code == 200:
+            data = resp.json()
+            nodes = data.get('data', {}).get('appInstallations', {}).get('nodes', [])
+            apps = [n.get('app', {}).get('title', 'Unknown') for n in nodes if n.get('app')]
+        else:
+            apps = []
+        return {
+            'id': s.get('id', ''),
+            'name': s.get('name', ''),
+            'domain': domain,
+            'apps': sorted(apps),
+            'appCount': len(apps)
+        }
+    except Exception as e:
+        return {
+            'id': s.get('id', ''),
+            'name': s.get('name', ''),
+            'domain': domain,
+            'apps': [],
+            'appCount': 0,
+            'error': str(e)
+        }
+
 @app.route('/api/stores/apps', methods=['GET'])
 @login_required
 def get_store_apps():
-    """Fetch installed Shopify apps for each store using GraphQL."""
+    """Fetch installed Shopify apps for each store using GraphQL (parallel)."""
     stores = _load_stores()
-    results = []
-    for s in stores:
-        domain = s.get('domain', '')
-        token = s.get('shopifyAccessToken', '')
-        if not domain or not token:
-            continue
-        graphql_url = f'https://{domain}/admin/api/2024-01/graphql.json'
-        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
-        query = '{"query": "{ appInstallations(first: 100) { nodes { id app { title } } } }"}'
-        try:
-            resp = http_requests.post(graphql_url, headers=headers, data=query, timeout=20)
-            if resp.status_code == 200:
-                data = resp.json()
-                nodes = data.get('data', {}).get('appInstallations', {}).get('nodes', [])
-                apps = [n.get('app', {}).get('title', 'Unknown') for n in nodes if n.get('app')]
-            else:
-                apps = []
-                log.warning(f"Apps query failed for {s.get('name','')}: HTTP {resp.status_code}")
-            results.append({
-                'id': s.get('id', ''),
-                'name': s.get('name', ''),
-                'domain': domain,
-                'apps': sorted(apps),
-                'appCount': len(apps)
-            })
-        except Exception as e:
-            log.warning(f"Apps query error for {s.get('name','')}: {e}")
-            results.append({
-                'id': s.get('id', ''),
-                'name': s.get('name', ''),
-                'domain': domain,
-                'apps': [],
-                'appCount': 0,
-                'error': str(e)
-            })
-        time.sleep(0.3)
+    valid_stores = [s for s in stores if s.get('domain') and s.get('shopifyAccessToken')]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(_fetch_apps_for_store, valid_stores))
+    results = [r for r in results if r is not None]
     return jsonify({'success': True, 'stores': results})
 
 

@@ -1213,7 +1213,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div id="orders-loading" class="loading-overlay"><div class="spinner"></div> Loading order data...</div>
       <div id="orders-content" style="display:none;">
         <div style="margin-bottom:12px;">
-          <button class="btn btn-secondary btn-sm" onclick="loadOrdersSummary()">Refresh</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadOrdersSummary(true)">Refresh</button>
         </div>
         <div id="orders-table-wrap"></div>
       </div>
@@ -1232,7 +1232,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div id="apps-loading" class="loading-overlay"><div class="spinner"></div> Loading apps from all stores...</div>
       <div id="apps-content" style="display:none;">
         <div style="margin-bottom:12px;">
-          <button class="btn btn-secondary btn-sm" onclick="loadStoreApps()">Refresh</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadStoreApps(true)">Refresh</button>
         </div>
         <div id="apps-table-wrap"></div>
       </div>
@@ -1315,6 +1315,11 @@ let allSelectState = false;
 let _currentStorePromptCount = 0;  // prompt count for selected store in Winners tab
 let _editingStoreId = '';  // store ID being edited in prompts modal
 
+// Tab data cache flags — prevents re-fetching on tab switch
+let _ordersLoaded = false;
+let _appsLoaded = false;
+let _galleryLoaded = false;
+
 // ===== Toast =====
 function toast(msg, type='info') {
   const c = document.getElementById('toast-container');
@@ -1350,8 +1355,8 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'gallery') { loadDriveFolders(); }
     if (tab.dataset.tab === 'winners') { loadStoreSelector(); loadVideoModels(); }
     if (tab.dataset.tab === 'stores') loadStoresTable();
-    if (tab.dataset.tab === 'orders') loadOrdersSummary();
-    if (tab.dataset.tab === 'apps') loadStoreApps();
+    if (tab.dataset.tab === 'orders') { if (!_ordersLoaded) loadOrdersSummary(); }
+    if (tab.dataset.tab === 'apps') { if (!_appsLoaded) loadStoreApps(); }
   });
 });
 
@@ -2702,7 +2707,8 @@ async function promptNewFolder(parentId) {
 
 
 // ===== Apps Tab =====
-async function loadStoreApps() {
+async function loadStoreApps(force) {
+  if (!force && _appsLoaded) return;
   const loading = document.getElementById('apps-loading');
   const content = document.getElementById('apps-content');
   const empty = document.getElementById('apps-empty');
@@ -2759,10 +2765,12 @@ async function loadStoreApps() {
 
   document.getElementById('apps-table-wrap').innerHTML = html;
   content.style.display = '';
+  _appsLoaded = true;
 }
 
 // ===== Orders Tab =====
-async function loadOrdersSummary() {
+async function loadOrdersSummary(force) {
+  if (!force && _ordersLoaded) return;
   const loading = document.getElementById('orders-loading');
   const content = document.getElementById('orders-content');
   const empty = document.getElementById('orders-empty');
@@ -2844,6 +2852,7 @@ async function loadOrdersSummary() {
   html += '</tbody></table>';
   document.getElementById('orders-table-wrap').innerHTML = html;
   content.style.display = '';
+  _ordersLoaded = true;
 }
 
 // ===== Utility =====
