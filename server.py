@@ -154,6 +154,9 @@ def _load_settings():
         'gdrive_token_expiry': '',
         'gdrive_root_folder_id': '',
         'gdrive_status': '',
+        'shopify_client_id': '',
+        'shopify_client_secret': '',
+        'shopify_scopes': 'read_products,read_orders,read_apps',
     }
     settings = _load_json('settings.json', defaults)
     # Ensure all default keys exist
@@ -989,6 +992,12 @@ def save_settings():
         settings['google_ai_key'] = data['google_ai_key']
     if 'google_ai_model' in data:
         settings['google_ai_model'] = data['google_ai_model']
+    if 'shopify_client_id' in data:
+        settings['shopify_client_id'] = data['shopify_client_id'].strip()
+    if 'shopify_client_secret' in data:
+        settings['shopify_client_secret'] = data['shopify_client_secret'].strip()
+    if 'shopify_scopes' in data and data['shopify_scopes'].strip():
+        settings['shopify_scopes'] = data['shopify_scopes'].strip()
 
     _save_settings(settings)
     return jsonify({'success': True})
@@ -1074,6 +1083,125 @@ def test_google_ai():
             return jsonify({'success': False, 'error': f'API returned {resp.status_code}: {resp.text[:300]}'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+# ===== Routes: Shopify OAuth =====
+@app.route('/api/shopify/auth-url', methods=['POST'])
+@login_required
+def shopify_auth_url():
+    """Generate Shopify OAuth authorization URL for a specific store."""
+    data = request.json or {}
+    store_id = data.get('storeId', '').strip()
+
+    if not store_id:
+        return jsonify({'success': False, 'error': 'Store ID is required'})
+
+    settings = _load_settings()
+    client_id = settings.get('shopify_client_id', '').strip()
+    scopes = settings.get('shopify_scopes', 'read_products,read_orders,read_apps').strip()
+
+    if not client_id:
+        return jsonify({'success': False, 'error': 'Shopify Client ID not configured. Set it in Settings first.'})
+
+    stores = _load_stores()
+    store = next((s for s in stores if s.get('id') == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'})
+
+    domain = store.get('domain', '')
+    if not domain:
+        return jsonify({'success': False, 'error': 'Store has no domain'})
+
+    # Build redirect URI
+    redirect_uri = f'{request.host_url.rstrip("/")}/api/shopify/callback'
+
+    # Generate a random state with store_id embedded for CSRF + store identification
+    state = f'{store_id}:{secrets.token_urlsafe(32)}'
+    session['shopify_oauth_state'] = state
+
+    # Shopify OAuth URL — use the shop's myshopify domain
+    shop = domain.replace('.myshopify.com', '') if '.myshopify.com' in domain else domain
+    auth_url = (
+        f'https://{domain}/admin/oauth/authorize'
+        f'?client_id={client_id}'
+        f'&scope={scopes}'
+        f'&redirect_uri={redirect_uri}'
+        f'&state={state}'
+    )
+    return jsonify({'success': True, 'authUrl': auth_url, 'store': store.get('name', domain)})
+
+
+@app.route('/api/shopify/callback', methods=['GET'])
+def shopify_oauth_callback():
+    """Shopify OAuth callback — exchanges code for permanent access token."""
+    code = request.args.get('code', '')
+    state = request.args.get('state', '')
+    shop = request.args.get('shop', '')  # Shopify sends this
+
+    if not code or not state:
+        return redirect('/?tab=stores&shopify=error&msg=missing_params')
+
+    # Validate state
+    saved_state = session.get('shopify_oauth_state', '')
+    if not saved_state or state != saved_state:
+        log.warning('Shopify OAuth state mismatch')
+        return redirect('/?tab=stores&shopify=error&msg=state_mismatch')
+
+    # Extract store_id from state
+    store_id = state.split(':')[0] if ':' in state else ''
+    if not store_id:
+        return redirect('/?tab=stores&shopify=error&msg=invalid_state')
+
+    settings = _load_settings()
+    client_id = settings.get('shopify_client_id', '')
+    client_secret = settings.get('shopify_client_secret', '')
+
+    if not client_id or not client_secret:
+        return redirect('/?tab=stores&shopify=error&msg=no_credentials')
+
+    # Find store
+    stores = _load_stores()
+    store = next((s for s in stores if s.get('id') == store_id), None)
+    if not store:
+        return redirect('/?tab=stores&shopify=error&msg=store_not_found')
+
+    domain = store.get('domain', '') or shop
+
+    try:
+        # Exchange code for permanent access token
+        token_url = f'https://{domain}/admin/oauth/access_token'
+        resp = http_requests.post(token_url, json={
+            'client_id': client_id,
+            'client_secret': client_secret,
+            'code': code,
+        }, timeout=15)
+
+        if resp.status_code != 200:
+            log.error(f'Shopify token exchange failed: {resp.status_code} {resp.text[:500]}')
+            return redirect(f'/?tab=stores&shopify=error&msg=token_failed')
+
+        tokens = resp.json()
+        access_token = tokens.get('access_token', '')
+        granted_scopes = tokens.get('scope', '')
+
+        if not access_token:
+            return redirect('/?tab=stores&shopify=error&msg=no_token')
+
+        # Update store with new token
+        store['shopifyAccessToken'] = access_token
+        store['shopifyStatus'] = 'connected'
+        store['shopifyScopes'] = granted_scopes
+        _save_stores(stores)
+
+        # Clear OAuth state
+        session.pop('shopify_oauth_state', None)
+
+        store_name = store.get('name', domain)
+        log.info(f'Shopify re-auth success for {store_name} — scopes: {granted_scopes}')
+        return redirect(f'/?tab=stores&shopify=connected&store={store_name}')
+    except Exception as e:
+        log.error(f'Shopify OAuth callback error: {e}')
+        return redirect('/?tab=stores&shopify=error&msg=exception')
 
 
 # ===== Routes: Google Drive =====

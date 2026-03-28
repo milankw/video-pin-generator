@@ -1020,7 +1020,32 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
-    <!-- 3. Google Drive -->
+    <!-- 3. Shopify App (OAuth) -->
+    <div class="card">
+      <div class="card-title">Shopify App (OAuth)</div>
+      <div class="card-desc">Configure your Shopify app credentials for store re-authentication. Create a custom app in Shopify Partners and enter its credentials here. Use the "Re-auth" button in the Stores tab to connect each store.</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Client ID</label>
+          <input type="text" id="shopify-client-id" placeholder="Your Shopify app Client ID">
+        </div>
+        <div class="form-group">
+          <label>Client Secret</label>
+          <input type="password" id="shopify-client-secret" placeholder="Your Shopify app Client Secret">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Scopes</label>
+        <input type="text" id="shopify-scopes" placeholder="read_products,read_orders,read_apps">
+        <div class="form-hint">Comma-separated list of Shopify access scopes your app needs.</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:8px;">
+        <button class="btn btn-primary" onclick="saveShopifyAppCredentials()">Save Shopify App</button>
+        <span id="shopify-app-status" style="font-size:13px;"></span>
+      </div>
+    </div>
+
+    <!-- 5. Google Drive -->
     <div class="card">
       <div class="card-title">Google Drive</div>
       <div class="card-desc">Connect your Google Drive for automatic video storage. Videos will be saved in a "Video Pin Generator" folder.</div>
@@ -1041,7 +1066,7 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
-    <!-- 4. Video Defaults -->
+    <!-- 6. Video Defaults -->
     <div class="card">
       <div class="card-title">Video Defaults</div>
       <div class="card-desc">Default settings for generated videos.</div>
@@ -1068,7 +1093,7 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
-    <!-- 5. Prompt Templates -->
+    <!-- 7. Prompt Templates -->
     <div class="card">
       <div class="card-title">Prompt Templates</div>
       <div class="card-desc">Customize the video generation prompt per store category. Use {product_name} as placeholder.</div>
@@ -1386,6 +1411,21 @@ async function loadSettings() {
     document.getElementById('google-ai-model').value = s.google_ai_model;
   }
 
+  // Shopify App
+  if (s.shopify_client_id) {
+    document.getElementById('shopify-client-id').value = s.shopify_client_id;
+  }
+  if (s.shopify_client_secret) {
+    document.getElementById('shopify-client-secret').value = s.shopify_client_secret;
+  }
+  if (s.shopify_scopes) {
+    document.getElementById('shopify-scopes').value = s.shopify_scopes;
+  }
+  if (s.shopify_client_id && s.shopify_client_secret) {
+    const el = document.getElementById('shopify-app-status');
+    el.innerHTML = '<span class="status-indicator status-connected">Configured</span>';
+  }
+
   // Google Drive
   if (s.gdrive_client_id) {
     document.getElementById('gdrive-client-id').value = s.gdrive_client_id;
@@ -1510,6 +1550,37 @@ async function testGoogleAi() {
   } else {
     statusEl.innerHTML = `<span class="status-indicator status-error">${escHtml(data?.error || 'Failed')}</span>`;
     toast(data?.error || 'Connection failed', 'error');
+  }
+}
+
+async function saveShopifyAppCredentials() {
+  const clientId = document.getElementById('shopify-client-id').value.trim();
+  const clientSecret = document.getElementById('shopify-client-secret').value.trim();
+  const scopes = document.getElementById('shopify-scopes').value.trim();
+  if (!clientId || !clientSecret) {
+    toast('Enter both Client ID and Client Secret', 'error');
+    return;
+  }
+  const data = await api('/api/settings', 'POST', {
+    shopify_client_id: clientId,
+    shopify_client_secret: clientSecret,
+    shopify_scopes: scopes || 'read_products,read_orders,read_apps'
+  });
+  if (data?.success) {
+    toast('Shopify app credentials saved', 'success');
+    document.getElementById('shopify-app-status').innerHTML = '<span class="status-indicator status-connected">Configured</span>';
+  } else {
+    toast(data?.error || 'Failed to save', 'error');
+  }
+}
+
+async function reAuthShopifyStore(storeId, storeName) {
+  const data = await api('/api/shopify/auth-url', 'POST', { storeId });
+  if (data?.success && data.authUrl) {
+    toast(`Redirecting to Shopify for ${storeName}...`, 'success');
+    window.location.href = data.authUrl;
+  } else {
+    toast(data?.error || 'Failed to generate auth URL', 'error');
   }
 }
 
@@ -1640,7 +1711,10 @@ async function loadStoresTable() {
       <td><span class="category-badge">${escHtml(category)}</span></td>
       <td>${statusBadge}</td>
       <td style="color:var(--gray-500);">${productCount}</td>
-      <td><button class="btn btn-secondary btn-sm" onclick="openStorePrompts('${escAttr(s.id)}','${escAttr(s.name)}')">Prompts <span style="font-weight:400;color:var(--gray-400);">(${promptCountLabel})</span></button></td>
+      <td style="display:flex;gap:6px;align-items:center;">
+        <button class="btn btn-secondary btn-sm" onclick="openStorePrompts('${escAttr(s.id)}','${escAttr(s.name)}')">Prompts <span style="font-weight:400;color:var(--gray-400);">(${promptCountLabel})</span></button>
+        <button class="btn btn-secondary btn-sm" onclick="reAuthShopifyStore('${escAttr(s.id)}','${escAttr(s.name)}')" title="Re-authenticate Shopify OAuth">Re-auth</button>
+      </td>
     `;
     tbody.appendChild(tr);
   });
@@ -2904,6 +2978,25 @@ function formatFileSize(bytes) {
     const settingsTab = document.querySelector('[data-tab="settings"]');
     if (settingsTab) settingsTab.classList.add('active');
     document.getElementById('panel-settings').classList.add('active');
+    window.history.replaceState({}, '', '/');
+  } else if (params.get('shopify') === 'connected') {
+    const storeName = params.get('store') || 'Store';
+    toast(`${storeName} re-authenticated successfully`, 'success');
+    // Switch to stores tab
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const storesTab = document.querySelector('[data-tab="stores"]');
+    if (storesTab) storesTab.classList.add('active');
+    document.getElementById('panel-stores').classList.add('active');
+    window.history.replaceState({}, '', '/');
+  } else if (params.get('shopify') === 'error') {
+    const msg = params.get('msg') || 'unknown';
+    toast(`Shopify re-auth failed: ${msg}`, 'error');
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const storesTab = document.querySelector('[data-tab="stores"]');
+    if (storesTab) storesTab.classList.add('active');
+    document.getElementById('panel-stores').classList.add('active');
     window.history.replaceState({}, '', '/');
   } else if (params.get('tab') === 'settings') {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
