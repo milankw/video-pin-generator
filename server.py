@@ -837,18 +837,33 @@ def get_stores():
 @app.route('/api/stores/sync', methods=['POST'])
 @login_required
 def sync_stores():
-    """Sync stores from dropship-autopilot stores.json and import Gemini config."""
-    # Try multiple locations for stores.json
-    store_candidates = [
-        '/root/dropship-autopilot/stores.json',
-        os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'stores.json'),
-    ]
-    config_candidates = [
-        '/root/dropship-autopilot/config.json',
-        os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'config.json'),
-    ]
+    """Sync stores from Pinterest Autopilot or Google Ads Hub.
+    Body: {source: 'pinterest' | 'gads'}  (default: 'pinterest')
+    Merges into existing stores — does not overwrite stores from other sources.
+    """
+    data = request.get_json(silent=True) or {}
+    source = data.get('source', 'pinterest')
 
-    # --- Sync stores ---
+    # Source-specific paths
+    if source == 'gads':
+        store_candidates = [
+            '/root/gads-hub/data/stores.json',
+            os.path.join(BASE_DIR, '..', 'gads-hub', 'data', 'stores.json'),
+        ]
+        config_candidates = []  # No Gemini config from gads
+        source_label = 'Google Ads Hub'
+    else:
+        store_candidates = [
+            '/root/dropship-autopilot/stores.json',
+            os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'stores.json'),
+        ]
+        config_candidates = [
+            '/root/dropship-autopilot/config.json',
+            os.path.join(BASE_DIR, '..', 'dropship-autopilot', 'config.json'),
+        ]
+        source_label = 'Pinterest Autopilot'
+
+    # --- Load source stores ---
     source_data = None
     source_path = None
     for path in store_candidates:
@@ -863,34 +878,54 @@ def sync_stores():
                 continue
 
     if source_data is None:
-        return jsonify({'success': False, 'error': 'Could not find stores.json. Tried: ' + ', '.join(store_candidates)}), 404
+        return jsonify({'success': False, 'error': f'Could not find stores.json for {source_label}. Tried: ' + ', '.join(store_candidates)}), 404
 
-    # Extract relevant fields for all stores (connected and disconnected)
-    # Preserve existing store-level prompts across syncs
+    # Preserve existing stores and their prompts
     existing_stores = _load_stores()
-    existing_prompts = {s.get('id'): s.get('prompts') for s in existing_stores if s.get('prompts')}
+    existing_by_id = {s.get('id'): s for s in existing_stores}
 
-    synced = []
     raw_stores = source_data if isinstance(source_data, list) else source_data.get('stores', [])
+    new_count = 0
+    updated_count = 0
     for s in raw_stores:
-        store_entry = {
-            'id': s.get('id', ''),
-            'name': s.get('name', ''),
-            'domain': s.get('domain', ''),
-            'shopifyAccessToken': s.get('shopifyAccessToken', ''),
-            'shopifyStatus': s.get('shopifyStatus', ''),
-            'storeCategory': s.get('storeCategory', 'default'),
-            'productCount': s.get('productCount', None),
-        }
-        # Preserve existing prompts
-        if store_entry['id'] in existing_prompts:
-            store_entry['prompts'] = existing_prompts[store_entry['id']]
-        synced.append(store_entry)
+        store_id = s.get('id', '')
+        if not store_id:
+            continue
+        # g-ads uses 'shopifyDomain', pinterest uses 'domain'
+        domain = s.get('domain', '') or s.get('shopifyDomain', '')
+        token = s.get('shopifyAccessToken', '')
+        if not domain or not token:
+            continue  # Skip stores without Shopify connection
 
-    _save_stores(synced)
-    connected_count = sum(1 for s in synced if s.get('shopifyStatus') == 'connected')
+        if store_id in existing_by_id:
+            # Update existing store — refresh token/domain but keep prompts
+            existing = existing_by_id[store_id]
+            existing['name'] = s.get('name', existing.get('name', ''))
+            existing['domain'] = domain
+            existing['shopifyAccessToken'] = token
+            existing['shopifyStatus'] = s.get('shopifyStatus', existing.get('shopifyStatus', ''))
+            existing['storeCategory'] = s.get('storeCategory', existing.get('storeCategory', 'default'))
+            existing['productCount'] = s.get('products', s.get('productCount', existing.get('productCount')))
+            updated_count += 1
+        else:
+            # New store
+            new_entry = {
+                'id': store_id,
+                'name': s.get('name', ''),
+                'domain': domain,
+                'shopifyAccessToken': token,
+                'shopifyStatus': s.get('shopifyStatus', ''),
+                'storeCategory': s.get('storeCategory', 'default'),
+                'productCount': s.get('products', s.get('productCount', None)),
+            }
+            existing_by_id[store_id] = new_entry
+            new_count += 1
 
-    # --- Import Gemini config ---
+    merged = list(existing_by_id.values())
+    _save_stores(merged)
+    connected_count = sum(1 for s in merged if s.get('shopifyStatus') == 'connected')
+
+    # --- Import Gemini config (Pinterest only) ---
     gemini_imported = False
     for path in config_candidates:
         resolved = os.path.abspath(path)
@@ -912,9 +947,12 @@ def sync_stores():
 
     return jsonify({
         'success': True,
-        'count': len(synced),
+        'count': len(merged),
+        'newCount': new_count,
+        'updatedCount': updated_count,
         'connectedCount': connected_count,
-        'source': source_path,
+        'source': source_label,
+        'sourcePath': source_path,
         'geminiImported': gemini_imported
     })
 
@@ -1421,9 +1459,16 @@ def drive_move(file_id):
 @app.route('/api/orders/summary', methods=['GET'])
 @login_required
 def orders_summary():
-    """Get fulfilled/unfulfilled/partial order counts per store."""
+    """Get fulfilled/unfulfilled/partial order counts per store + daily unfulfilled for last 5 days."""
     stores = _load_stores()
     results = []
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    # Last 5 days labels (most recent first)
+    day_labels = []
+    for i in range(5):
+        d = today - datetime.timedelta(days=i)
+        day_labels.append(d.isoformat())
+
     for s in stores:
         domain = s.get('domain', '')
         token = s.get('shopifyAccessToken', '')
@@ -1444,18 +1489,37 @@ def orders_summary():
             r3 = http_requests.get(f'{base_url}/orders/count.json?status=any&fulfillment_status=partial', headers=headers, timeout=15)
             partial = r3.json().get('count', 0) if r3.status_code == 200 else 0
             time.sleep(0.3)
+
+            # Daily unfulfilled orders for last 5 days
+            # Fetch unfulfilled orders created in each day
+            daily_unfulfilled = {}
+            for i in range(5):
+                d = today - datetime.timedelta(days=i)
+                d_start = f'{d.isoformat()}T00:00:00Z'
+                d_end = f'{d.isoformat()}T23:59:59Z'
+                try:
+                    rd = http_requests.get(
+                        f'{base_url}/orders/count.json?status=open&fulfillment_status=unfulfilled&created_at_min={d_start}&created_at_max={d_end}',
+                        headers=headers, timeout=15
+                    )
+                    daily_unfulfilled[d.isoformat()] = rd.json().get('count', 0) if rd.status_code == 200 else 0
+                except:
+                    daily_unfulfilled[d.isoformat()] = 0
+                time.sleep(0.2)
+
             results.append({
                 'id': s.get('id', ''),
                 'name': s.get('name', ''),
                 'domain': domain,
                 'unfulfilled': unfulfilled,
                 'fulfilled': fulfilled,
-                'partial': partial
+                'partial': partial,
+                'dailyUnfulfilled': daily_unfulfilled
             })
         except Exception as e:
             log.warning(f"Order summary failed for {s.get('name','')}: {e}")
             continue
-    return jsonify({'success': True, 'stores': results})
+    return jsonify({'success': True, 'stores': results, 'days': day_labels})
 
 
 # ===== Routes: Shopify Winners =====

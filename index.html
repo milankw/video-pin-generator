@@ -925,6 +925,7 @@ textarea { resize: vertical; min-height: 80px; }
 .orders-table .summary-row td { font-weight: 700; border-top: 2px solid var(--gray-300); background: var(--gray-50); }
 .orders-store-name { font-weight: 600; color: var(--gray-800); }
 .orders-store-domain { font-size: 12px; color: var(--gray-400); }
+.orders-daily-divider { width: 2px; padding: 0 !important; background: var(--gray-200); }
 </style>
 </head>
 <body>
@@ -1065,7 +1066,8 @@ textarea { resize: vertical; min-height: 80px; }
   <!-- ===== STORES TAB ===== -->
   <div class="tab-panel" id="panel-stores">
     <div class="toolbar">
-      <button class="btn btn-primary" onclick="syncStores()">Sync from Pinterest Autopilot</button>
+      <button class="btn btn-primary" onclick="syncStores('pinterest')">Sync from Pinterest</button>
+      <button class="btn btn-secondary" onclick="syncStores('gads')">Sync from Google Ads</button>
       <span id="sync-status" style="font-size:13px;color:var(--gray-500);"></span>
       <div class="toolbar-spacer"></div>
       <span id="stores-count" style="font-size:13px;color:var(--gray-500);"></span>
@@ -1073,7 +1075,7 @@ textarea { resize: vertical; min-height: 80px; }
     <div class="empty-state" id="stores-empty">
       <div class="empty-state-icon">&#128722;</div>
       <div class="empty-state-text">No stores synced yet</div>
-      <div class="empty-state-sub">Click "Sync from Pinterest Autopilot" to import your Shopify stores.</div>
+      <div class="empty-state-sub">Click "Sync from Pinterest" or "Sync from Google Ads" to import your Shopify stores.</div>
     </div>
     <div class="card" id="stores-card" style="display:none;padding:0;overflow:hidden;">
       <table class="stores-table">
@@ -1522,16 +1524,19 @@ document.getElementById('video-duration').addEventListener('change', saveDuratio
 
 
 // ===== Stores Tab =====
-async function syncStores() {
+async function syncStores(source) {
+  source = source || 'pinterest';
+  const label = source === 'gads' ? 'Google Ads Hub' : 'Pinterest Autopilot';
   const status = document.getElementById('sync-status');
-  status.textContent = 'Syncing...';
+  status.textContent = `Syncing from ${label}...`;
   status.style.color = 'var(--gray-500)';
-  const data = await api('/api/stores/sync', {method:'POST'});
+  const data = await api('/api/stores/sync', {method:'POST', body: JSON.stringify({source})});
   if (data?.success) {
     const geminiNote = data.geminiImported ? ' + Gemini key imported' : '';
-    status.textContent = `Synced ${data.count} stores (${data.connectedCount} connected)${geminiNote}`;
+    const detail = data.newCount > 0 ? ` (${data.newCount} new, ${data.updatedCount} updated)` : '';
+    status.textContent = `${data.count} stores total (${data.connectedCount} connected)${detail}${geminiNote}`;
     status.style.color = 'var(--green)';
-    toast(`${data.count} stores synced${geminiNote}`, 'success');
+    toast(`Synced from ${data.source}: ${data.count} stores${detail}${geminiNote}`, 'success');
     loadStoresTable();
     loadStoreSelector();
     if (data.geminiImported) loadSettings();
@@ -2679,8 +2684,18 @@ async function loadOrdersSummary() {
   }
 
   const stores = data.stores;
+  const days = data.days || [];
   let totUnfulfilled = 0, totFulfilled = 0, totPartial = 0;
   stores.forEach(s => { totUnfulfilled += s.unfulfilled; totFulfilled += s.fulfilled; totPartial += s.partial; });
+
+  // Format day labels as short dates (e.g. "Mar 28")
+  function fmtDay(iso) {
+    const d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('en-US', {month:'short', day:'numeric'});
+  }
+
+  // Day column headers
+  const dayHeaders = days.map(d => `<th style="text-align:center;">${fmtDay(d)}</th>`).join('');
 
   let html = `<table class="orders-table">
     <thead><tr>
@@ -2689,26 +2704,46 @@ async function loadOrdersSummary() {
       <th>Partial</th>
       <th>Fulfilled</th>
       <th>Total</th>
+      <th class="orders-daily-divider"></th>
+      ${dayHeaders}
     </tr></thead><tbody>`;
 
   stores.forEach(s => {
     const total = s.unfulfilled + s.fulfilled + s.partial;
+    const du = s.dailyUnfulfilled || {};
+    const dayCells = days.map(d => {
+      const count = du[d] || 0;
+      const cls = count > 0 ? 'orders-count-unfulfilled' : '';
+      return `<td style="text-align:center;"><span class="${cls}">${count}</span></td>`;
+    }).join('');
     html += `<tr>
       <td><div class="orders-store-name">${escHtml(s.name)}</div><div class="orders-store-domain">${escHtml(s.domain)}</div></td>
       <td><span class="orders-count-unfulfilled">${s.unfulfilled}</span></td>
       <td><span class="orders-count-partial">${s.partial}</span></td>
       <td><span class="orders-count-fulfilled">${s.fulfilled}</span></td>
       <td>${total}</td>
+      <td class="orders-daily-divider"></td>
+      ${dayCells}
     </tr>`;
   });
 
   const grandTotal = totUnfulfilled + totFulfilled + totPartial;
+  // Daily totals across all stores
+  const dayTotals = days.map(d => {
+    let sum = 0;
+    stores.forEach(s => { sum += (s.dailyUnfulfilled || {})[d] || 0; });
+    const cls = sum > 0 ? 'orders-count-unfulfilled' : '';
+    return `<td style="text-align:center;"><span class="${cls}">${sum}</span></td>`;
+  }).join('');
+
   html += `<tr class="summary-row">
     <td>All Stores</td>
     <td><span class="orders-count-unfulfilled">${totUnfulfilled}</span></td>
     <td><span class="orders-count-partial">${totPartial}</span></td>
     <td><span class="orders-count-fulfilled">${totFulfilled}</span></td>
     <td>${grandTotal}</td>
+    <td class="orders-daily-divider"></td>
+    ${dayTotals}
   </tr>`;
 
   html += '</tbody></table>';
