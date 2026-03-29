@@ -621,8 +621,10 @@ def _process_job(job):
                 safe_store = re.sub(r'[^\w\-]', '_', job.get('storeName', 'unknown'))
                 safe_handle = re.sub(r'[^\w\-]', '_', job.get('productHandle', 'unknown'))
                 ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                prompt_idx = job.get('promptIndex', 0)
+                job_suffix = job.get('id', '')[-6:]  # unique suffix from job ID
                 local_dir = os.path.join(VIDEOS_DIR, safe_store, safe_handle)
-                local_path = os.path.join(local_dir, f'video_{ts}.mp4')
+                local_path = os.path.join(local_dir, f'video_{ts}_p{prompt_idx}_{job_suffix}.mp4')
 
                 try:
                     _download_video(video_url, local_path)
