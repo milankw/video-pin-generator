@@ -1117,13 +1117,28 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
     </div>
 
-    <!-- 7. Prompt Templates -->
+    <!-- 7. Prompt Batches -->
     <div class="card">
-      <div class="card-title">Prompt Templates</div>
-      <div class="card-desc">Customize the video generation prompt per store category. Use {product_name} as placeholder.</div>
-      <div class="prompts-info-note">These are account-level defaults. Configure store-specific prompts in the Stores tab.</div>
-      <div id="prompt-templates"></div>
-      <button class="btn btn-primary" onclick="savePromptTemplates()" style="margin-top:12px;">Save Templates</button>
+      <div class="card-title">Prompt Batches (Account Level)</div>
+      <div class="card-desc">Each category has 4 prompts. When generating videos, you choose which batch to use. Use <code>{product_name}</code> as placeholder.</div>
+      <div class="prompts-info-note">These are account-level batches. Store-specific prompts can override these in the Stores tab.</div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px;font-weight:600;margin-bottom:6px;display:block;">Category</label>
+        <select id="batch-category-select" onchange="renderBatchEditor()" style="width:260px;"></select>
+      </div>
+      <div id="batch-editor"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn btn-primary" onclick="saveBatchPrompts()">Save Batch</button>
+        <button class="btn btn-secondary" onclick="resetBatchToDefaults()">Reset to Defaults</button>
+      </div>
+    </div>
+
+    <!-- 8. Custom Prompt Batches -->
+    <div class="card">
+      <div class="card-title">Custom Prompt Batches</div>
+      <div class="card-desc">Create your own named batches of 4 prompts. These appear alongside built-in categories when generating videos.</div>
+      <div id="custom-batches-list"></div>
+      <button class="btn btn-secondary" onclick="openAddCustomBatch()" style="margin-top:8px;">+ Add Prompt Batch</button>
     </div>
   </div>
 
@@ -1188,6 +1203,12 @@ textarea { resize: vertical; min-height: 80px; }
           <option value="3:4">3:4</option>
           <option value="3:2">3:2</option>
           <option value="2:3">2:3</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;display:none;" id="prompt-source-group">
+        <label style="margin-bottom:0;white-space:nowrap;">Prompts:</label>
+        <select id="winners-prompt-source" style="width:200px;">
+          <option value="store">Store Prompts</option>
         </select>
       </div>
       <button class="btn btn-success" onclick="generateVideos()" id="generate-btn" style="display:none;">
@@ -1380,7 +1401,13 @@ function toast(msg, type='info') {
 }
 
 // ===== API helper =====
-async function api(url, opts={}) {
+async function api(url, optsOrMethod={}, bodyData=null) {
+  let opts = optsOrMethod;
+  // Support shorthand: api(url, 'POST', {data}) or api(url, 'DELETE')
+  if (typeof optsOrMethod === 'string') {
+    opts = {method: optsOrMethod};
+    if (bodyData) opts.body = JSON.stringify(bodyData);
+  }
   const resp = await fetch(url, {
     headers: {'Content-Type': 'application/json', ...opts.headers},
     ...opts
@@ -1471,37 +1498,12 @@ async function loadSettings() {
   document.getElementById('video-duration').value = s.video_duration || 8;
   document.getElementById('video-resolution').value = s.video_resolution || '720p';
 
-  // Render prompt templates
-  const container = document.getElementById('prompt-templates');
-  container.innerHTML = '';
-  const templates = s.prompt_templates || {};
-  const categories = ['clothing', 'jewelry', 'home', 'beauty', 'default'];
-  const catLabels = {clothing:'Clothing / Fashion', jewelry:'Jewelry / Accessories', home:'Home / Decor', beauty:'Beauty / Cosmetics', default:'Default (Fallback)'};
-
-  categories.forEach(cat => {
-    const div = document.createElement('div');
-    div.className = 'form-group';
-    div.innerHTML = `
-      <label>${catLabels[cat] || cat}</label>
-      <textarea id="prompt-${cat}" rows="3">${templates[cat] || ''}</textarea>
-      <div class="form-hint">Use {product_name} for the product name.</div>
-    `;
-    container.appendChild(div);
-  });
-
-  // Add any extra templates that exist
-  Object.keys(templates).forEach(cat => {
-    if (!categories.includes(cat)) {
-      categories.push(cat);
-      const div = document.createElement('div');
-      div.className = 'form-group';
-      div.innerHTML = `
-        <label>${cat}</label>
-        <textarea id="prompt-${cat}" rows="3">${templates[cat] || ''}</textarea>
-      `;
-      container.appendChild(div);
-    }
-  });
+  // Load prompt batches
+  _allBatches = s.prompt_batches || {};
+  _customBatches = s.custom_prompt_batches || {};
+  populateBatchCategorySelect();
+  renderBatchEditor();
+  renderCustomBatchesList();
 }
 
 async function saveApiKey() {
@@ -1640,16 +1642,212 @@ async function disconnectGoogleDrive() {
   }
 }
 
-async function savePromptTemplates() {
-  const templates = {};
-  document.querySelectorAll('[id^="prompt-"]').forEach(ta => {
-    const cat = ta.id.replace('prompt-', '');
-    templates[cat] = ta.value;
+// ===== Prompt Batches (Account Level) =====
+let _allBatches = {};
+let _customBatches = {};
+
+const _BUILTIN_CATEGORIES = [
+  'sweaters', 'dresses', 'tops', 'shirts', 'bikinis', 'coats',
+  'rings', 'necklaces', 'bracelets', 'earrings',
+  'sandals', 'sneakers', 'heels', 'default'
+];
+
+function populateBatchCategorySelect() {
+  const sel = document.getElementById('batch-category-select');
+  const current = sel.value;
+  sel.innerHTML = '';
+  _BUILTIN_CATEGORIES.forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = cat;
+    opt.textContent = cat === 'default' ? 'Default (Fallback)' : cat.charAt(0).toUpperCase() + cat.slice(1);
+    sel.appendChild(opt);
   });
-  const data = await api('/api/settings', {method:'POST', body:JSON.stringify({prompt_templates: templates})});
-  if (data?.success) toast('Templates saved', 'success');
+  if (current && sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+}
+
+function renderBatchEditor() {
+  const cat = document.getElementById('batch-category-select').value;
+  const batch = _allBatches[cat] || [];
+  const container = document.getElementById('batch-editor');
+  let html = '';
+  for (let i = 0; i < 4; i++) {
+    const p = batch[i] || {label: `Prompt ${i+1}`, template: ''};
+    html += `<div class="prompt-editor" style="margin-bottom:10px;">
+      <div class="prompt-editor-header">
+        <span class="prompt-editor-number">${i+1}</span>
+        <input type="text" class="batch-prompt-label" data-idx="${i}" value="${escAttr(p.label)}" placeholder="Label" style="width:140px;font-size:13px;">
+      </div>
+      <textarea class="batch-prompt-template" data-idx="${i}" rows="2" placeholder="Prompt template with {product_name}...">${escHtml(p.template)}</textarea>
+    </div>`;
+  }
+  container.innerHTML = html;
+}
+
+async function saveBatchPrompts() {
+  const cat = document.getElementById('batch-category-select').value;
+  const prompts = [];
+  for (let i = 0; i < 4; i++) {
+    const label = document.querySelector(`.batch-prompt-label[data-idx="${i}"]`)?.value || `Prompt ${i+1}`;
+    const template = document.querySelector(`.batch-prompt-template[data-idx="${i}"]`)?.value || '';
+    prompts.push({label, template});
+  }
+  _allBatches[cat] = prompts;
+  const update = {};
+  update[cat] = prompts;
+  const data = await api('/api/settings', 'POST', {prompt_batches: update});
+  if (data?.success) toast(`${cat.charAt(0).toUpperCase() + cat.slice(1)} prompts saved`, 'success');
   else toast(data?.error || 'Failed', 'error');
 }
+
+async function resetBatchToDefaults() {
+  const cat = document.getElementById('batch-category-select').value;
+  if (!confirm(`Reset ${cat} prompts to defaults?`)) return;
+  // Delete from saved so defaults take over on reload
+  const data = await api('/api/settings', 'POST', {prompt_batches: {[cat]: null}});
+  if (data?.success) {
+    toast('Reset to defaults — reloading...', 'success');
+    loadSettings();
+  }
+}
+
+// === Custom Batches ===
+function renderCustomBatchesList() {
+  const container = document.getElementById('custom-batches-list');
+  const keys = Object.keys(_customBatches);
+  if (keys.length === 0) {
+    container.innerHTML = '<div style="color:var(--gray-400);font-size:13px;padding:8px 0;">No custom batches yet. Click "+ Add Prompt Batch" to create one.</div>';
+    return;
+  }
+  let html = '';
+  keys.forEach(key => {
+    const b = _customBatches[key];
+    const label = b.label || key;
+    const prompts = b.prompts || [];
+    html += `<div style="border:1px solid var(--gray-200);border-radius:var(--radius);padding:14px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <strong style="font-size:14px;">${escHtml(label)}</strong>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="editCustomBatch('${escAttr(key)}')">Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="deleteCustomBatch('${escAttr(key)}')" style="color:var(--red);">Delete</button>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--gray-500);">${prompts.map((p,i) => `${i+1}. ${escHtml(p.label)}`).join(' &middot; ')}</div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+function openAddCustomBatch() {
+  _editingCustomBatchKey = '';
+  const html = _buildCustomBatchForm('', [{label:'Studio',template:''},{label:'Lifestyle',template:''},{label:'Detail',template:''},{label:'Dynamic',template:''}]);
+  document.getElementById('custom-batches-list').insertAdjacentHTML('beforeend', html);
+}
+
+function editCustomBatch(key) {
+  _editingCustomBatchKey = key;
+  const b = _customBatches[key];
+  if (!b) return;
+  const html = _buildCustomBatchForm(b.label || key, b.prompts || [], key);
+  // Replace the custom batches list with the form
+  document.getElementById('custom-batches-list').innerHTML = html;
+}
+
+let _editingCustomBatchKey = '';
+
+function _buildCustomBatchForm(label, prompts, existingKey) {
+  let promptsHtml = '';
+  for (let i = 0; i < 4; i++) {
+    const p = prompts[i] || {label: `Prompt ${i+1}`, template: ''};
+    promptsHtml += `<div style="margin-bottom:8px;">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+        <span style="font-size:12px;font-weight:600;color:var(--gray-500);">${i+1}.</span>
+        <input type="text" class="custom-batch-label" data-idx="${i}" value="${escAttr(p.label)}" placeholder="Label" style="width:140px;font-size:13px;">
+      </div>
+      <textarea class="custom-batch-template" data-idx="${i}" rows="2" placeholder="Prompt template..." style="width:100%;font-size:13px;">${escHtml(p.template)}</textarea>
+    </div>`;
+  }
+  return `<div id="custom-batch-form" style="border:2px solid var(--primary);border-radius:var(--radius);padding:16px;margin-bottom:10px;background:var(--gray-50);">
+    <div class="form-group" style="margin-bottom:12px;">
+      <label style="font-weight:600;">Batch Name</label>
+      <input type="text" id="custom-batch-name" value="${escAttr(label)}" placeholder="e.g. Winter Accessories" style="width:260px;">
+    </div>
+    ${promptsHtml}
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button class="btn btn-primary btn-sm" onclick="saveCustomBatch('${escAttr(existingKey || '')}')">Save Batch</button>
+      <button class="btn btn-secondary btn-sm" onclick="cancelCustomBatch()">Cancel</button>
+    </div>
+  </div>`;
+}
+
+async function saveCustomBatch(existingKey) {
+  const name = document.getElementById('custom-batch-name')?.value.trim();
+  if (!name) { toast('Enter a batch name', 'error'); return; }
+  const key = existingKey || name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const prompts = [];
+  for (let i = 0; i < 4; i++) {
+    const label = document.querySelector(`.custom-batch-label[data-idx="${i}"]`)?.value || `Prompt ${i+1}`;
+    const template = document.querySelector(`.custom-batch-template[data-idx="${i}"]`)?.value || '';
+    prompts.push({label, template});
+  }
+  const data = await api('/api/settings/prompt-batches/custom', 'POST', {key, label: name, prompts});
+  if (data?.success) {
+    _customBatches[key] = {label: name, prompts};
+    toast(`Custom batch "${name}" saved`, 'success');
+    renderCustomBatchesList();
+  } else {
+    toast(data?.error || 'Failed', 'error');
+  }
+}
+
+function cancelCustomBatch() {
+  renderCustomBatchesList();
+}
+
+async function deleteCustomBatch(key) {
+  const label = _customBatches[key]?.label || key;
+  if (!confirm(`Delete custom batch "${label}"?`)) return;
+  const data = await api(`/api/settings/prompt-batches/custom/${key}`, 'DELETE');
+  if (data?.success) {
+    delete _customBatches[key];
+    toast(`Deleted "${label}"`, 'success');
+    renderCustomBatchesList();
+  }
+}
+
+// === Prompt Source Selector (Winners tab) ===
+async function loadPromptSourceOptions() {
+  const sel = document.getElementById('winners-prompt-source');
+  const current = sel.value;
+  sel.innerHTML = '<option value="store">Store Prompts</option>';
+  // Add separator
+  const sep = document.createElement('option');
+  sep.disabled = true;
+  sep.textContent = '── Account Categories ──';
+  sel.appendChild(sep);
+  // Built-in categories
+  _BUILTIN_CATEGORIES.forEach(cat => {
+    const opt = document.createElement('option');
+    opt.value = `account:${cat}`;
+    opt.textContent = cat === 'default' ? 'Default' : cat.charAt(0).toUpperCase() + cat.slice(1);
+    sel.appendChild(opt);
+  });
+  // Custom batches
+  const customKeys = Object.keys(_customBatches);
+  if (customKeys.length > 0) {
+    const sep2 = document.createElement('option');
+    sep2.disabled = true;
+    sep2.textContent = '── Custom Batches ──';
+    sel.appendChild(sep2);
+    customKeys.forEach(key => {
+      const opt = document.createElement('option');
+      opt.value = `account:${key}`;
+      opt.textContent = _customBatches[key]?.label || key;
+      sel.appendChild(opt);
+    });
+  }
+  if (current && sel.querySelector(`option[value="${current}"]`)) sel.value = current;
+}
+
 
 async function saveDuration() {
   const dur = document.getElementById('video-duration').value;
@@ -1845,6 +2043,7 @@ async function fetchWinners() {
     document.getElementById('generate-btn').style.display = 'none';
     document.getElementById('video-model-group').style.display = 'none';
     document.getElementById('aspect-ratio-group').style.display = 'none';
+    document.getElementById('prompt-source-group').style.display = 'none';
     return;
   }
 
@@ -1860,6 +2059,8 @@ async function fetchWinners() {
   document.getElementById('select-all-btn').style.display = 'inline-flex';
   document.getElementById('video-model-group').style.display = 'flex';
   document.getElementById('aspect-ratio-group').style.display = 'flex';
+  document.getElementById('prompt-source-group').style.display = 'flex';
+  loadPromptSourceOptions();
 
   renderProducts();
 }
@@ -1975,9 +2176,10 @@ async function generateVideos() {
 
   const selectedModel = document.getElementById('winners-video-model')?.value || '';
   const selectedAspectRatio = document.getElementById('winners-aspect-ratio')?.value || '9:16';
+  const promptSource = document.getElementById('winners-prompt-source')?.value || 'store';
   const data = await api('/api/videos/generate', {
     method: 'POST',
-    body: JSON.stringify({products, video_model: selectedModel, aspect_ratio: selectedAspectRatio})
+    body: JSON.stringify({products, video_model: selectedModel, aspect_ratio: selectedAspectRatio, promptSource})
   });
 
   if (data?.success) {

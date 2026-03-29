@@ -131,6 +131,94 @@ def _load_stores():
 def _save_stores(stores):
     _save_json('stores.json', stores)
 
+# Default prompt batches — each category gets 4 prompts
+_DEFAULT_PROMPT_BATCHES = {
+    'sweaters': [
+        {'label': 'Studio', 'template': 'Elegant slow-motion showcase of {product_name} sweater, soft knit texture detail, professional studio lighting, clean background, fashion editorial style'},
+        {'label': 'Lifestyle', 'template': 'Cozy lifestyle shot of {product_name}, model in warm indoor setting, natural lighting, autumn/winter editorial feel'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} knit pattern and fabric texture, soft focus background, premium quality feel, slow camera drift'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name}, smooth camera movement around the sweater, modern styling, commercial quality'},
+    ],
+    'dresses': [
+        {'label': 'Studio', 'template': 'Elegant slow-motion showcase of {product_name} dress, flowing fabric movement, professional studio lighting, fashion editorial style'},
+        {'label': 'Lifestyle', 'template': 'Beautiful lifestyle shot of {product_name}, model in stylish setting, golden hour lighting, dress in motion'},
+        {'label': 'Detail', 'template': 'Close-up detail shot of {product_name} fabric and stitching, soft bokeh background, premium fashion commercial feel'},
+        {'label': 'Dynamic', 'template': 'Dynamic fashion showcase of {product_name}, dress flowing with movement, smooth cinematic camera, editorial quality'},
+    ],
+    'tops': [
+        {'label': 'Studio', 'template': 'Professional studio showcase of {product_name} top, clean lighting, crisp details, fashion commercial style'},
+        {'label': 'Lifestyle', 'template': 'Casual lifestyle shot of {product_name}, styled with modern accessories, natural warm lighting, editorial feel'},
+        {'label': 'Detail', 'template': 'Close-up on {product_name} fabric and collar detail, shallow depth of field, premium quality commercial'},
+        {'label': 'Dynamic', 'template': 'Dynamic presentation of {product_name}, smooth camera pan, fresh modern styling, commercial production quality'},
+    ],
+    'shirts': [
+        {'label': 'Studio', 'template': 'Clean studio showcase of {product_name} shirt, crisp fabric detail, professional lighting, fashion editorial style'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name}, casually styled, warm natural indoor lighting, editorial commercial feel'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} collar and button details, soft background blur, premium shirt commercial'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name} shirt, smooth rotating camera movement, clean modern styling, commercial quality'},
+    ],
+    'bikinis': [
+        {'label': 'Studio', 'template': 'Vibrant studio showcase of {product_name} bikini, bright clean lighting, summer editorial style, professional product photography'},
+        {'label': 'Lifestyle', 'template': 'Sunny lifestyle shot of {product_name}, beach or poolside setting, golden natural lighting, summer editorial feel'},
+        {'label': 'Detail', 'template': 'Close-up detail of {product_name} fabric and design pattern, bright soft lighting, premium swimwear commercial'},
+        {'label': 'Dynamic', 'template': 'Dynamic summer showcase of {product_name}, vibrant colors, smooth camera movement, tropical editorial quality'},
+    ],
+    'coats': [
+        {'label': 'Studio', 'template': 'Elegant slow-motion showcase of {product_name} coat, rich fabric texture, dramatic studio lighting, luxury fashion editorial'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name}, urban outdoor setting, moody natural lighting, winter fashion editorial'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} fabric texture, buttons and lining details, soft focus background, luxury commercial feel'},
+        {'label': 'Dynamic', 'template': 'Dynamic cinematic showcase of {product_name} coat, flowing movement, smooth camera work, premium fashion commercial'},
+    ],
+    'rings': [
+        {'label': 'Studio', 'template': 'Luxurious close-up of {product_name} ring, sparkling reflections, dark elegant background, jewelry commercial lighting'},
+        {'label': 'Lifestyle', 'template': 'Elegant lifestyle shot of {product_name} ring on hand, soft natural lighting, romantic setting, jewelry editorial'},
+        {'label': 'Detail', 'template': 'Extreme close-up macro shot of {product_name}, gemstone detail and metal finish, dramatic reflections, luxury feel'},
+        {'label': 'Dynamic', 'template': 'Slow rotating showcase of {product_name} ring, catching light from every angle, dark velvet background, premium commercial'},
+    ],
+    'necklaces': [
+        {'label': 'Studio', 'template': 'Luxurious showcase of {product_name} necklace, elegant draping, soft studio lighting, jewelry commercial style'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name} necklace worn elegantly, soft natural lighting, fashion editorial feel'},
+        {'label': 'Detail', 'template': 'Close-up detail of {product_name} chain and pendant, sparkling reflections, shallow depth of field, luxury commercial'},
+        {'label': 'Dynamic', 'template': 'Slow-motion showcase of {product_name} necklace, light catching each link, smooth camera drift, premium jewelry commercial'},
+    ],
+    'bracelets': [
+        {'label': 'Studio', 'template': 'Elegant studio shot of {product_name} bracelet, soft reflections, professional jewelry lighting, clean dark background'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name} bracelet on wrist, natural daylight, casual elegant styling, editorial feel'},
+        {'label': 'Detail', 'template': 'Macro detail shot of {product_name} bracelet clasp and links, sparkling finish, premium quality commercial'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name} bracelet, smooth rotating view, light reflections, luxury jewelry commercial'},
+    ],
+    'earrings': [
+        {'label': 'Studio', 'template': 'Luxurious close-up of {product_name} earrings, dramatic lighting, soft bokeh background, jewelry commercial style'},
+        {'label': 'Lifestyle', 'template': 'Elegant lifestyle shot of {product_name} earrings being worn, soft natural lighting, fashion editorial'},
+        {'label': 'Detail', 'template': 'Extreme close-up of {product_name} earring detail and gemstones, sparkling reflections, luxury commercial feel'},
+        {'label': 'Dynamic', 'template': 'Slow-motion showcase of {product_name} earrings catching light, gentle movement, premium jewelry commercial'},
+    ],
+    'sandals': [
+        {'label': 'Studio', 'template': 'Clean studio showcase of {product_name} sandals, bright lighting, crisp product detail, footwear commercial style'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name} sandals, outdoor summer setting, warm natural lighting, casual editorial feel'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} sandal straps and sole detail, soft background, premium footwear commercial'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name} sandals, walking motion, smooth camera tracking, summer commercial quality'},
+    ],
+    'sneakers': [
+        {'label': 'Studio', 'template': 'Bold studio showcase of {product_name} sneakers, dramatic lighting, clean background, modern footwear commercial'},
+        {'label': 'Lifestyle', 'template': 'Street-style lifestyle shot of {product_name} sneakers, urban setting, dynamic natural lighting, sneaker culture editorial'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} sneaker sole, stitching and material detail, modern commercial feel, shallow depth of field'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name} sneakers, smooth 360 rotating view, dramatic lighting, premium footwear commercial'},
+    ],
+    'heels': [
+        {'label': 'Studio', 'template': 'Elegant studio showcase of {product_name} heels, dramatic lighting, glossy reflection, luxury footwear commercial'},
+        {'label': 'Lifestyle', 'template': 'Sophisticated lifestyle shot of {product_name} heels, elegant indoor setting, warm lighting, fashion editorial style'},
+        {'label': 'Detail', 'template': 'Close-up of {product_name} heel and sole craftsmanship, soft bokeh background, luxury commercial feel'},
+        {'label': 'Dynamic', 'template': 'Slow-motion cinematic showcase of {product_name} heels, smooth camera movement, dramatic angles, premium fashion commercial'},
+    ],
+    'default': [
+        {'label': 'Studio', 'template': 'Professional product showcase of {product_name}, clean studio lighting, smooth rotating view, commercial quality, elegant presentation'},
+        {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name}, warm natural lighting, modern setting, editorial style'},
+        {'label': 'Detail', 'template': 'Close-up detail shot of {product_name}, soft bokeh background, premium commercial feel'},
+        {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name}, smooth camera movement, professional product film'},
+    ],
+}
+
 def _load_settings():
     defaults = {
         'xai_api_key': '',
@@ -138,13 +226,8 @@ def _load_settings():
         'video_duration': 8,
         'video_resolution': '720p',
         'aspect_ratio': '9:16',
-        'prompt_templates': {
-            'clothing': 'Elegant slow-motion showcase of {product_name}, professional product photography, soft studio lighting, clean background, fashion editorial style, smooth camera movement',
-            'jewelry': 'Luxurious close-up of {product_name}, sparkling reflections, soft bokeh background, jewelry commercial style, rotating view, elegant lighting',
-            'home': 'Beautiful lifestyle shot of {product_name}, modern interior setting, warm natural lighting, smooth camera pan, home decor editorial',
-            'beauty': 'Glamorous beauty shot of {product_name}, soft diffused lighting, close-up details, premium cosmetics commercial style',
-            'default': 'Professional product showcase of {product_name}, clean studio lighting, smooth rotating view, commercial quality, elegant presentation'
-        },
+        'prompt_batches': {},
+        'custom_prompt_batches': {},
         'google_ai_key': '',
         'google_ai_model': 'gemini-2.0-flash',
         'gdrive_client_id': '',
@@ -163,10 +246,35 @@ def _load_settings():
     for k, v in defaults.items():
         if k not in settings:
             settings[k] = v
-    if isinstance(settings.get('prompt_templates'), dict):
-        for k, v in defaults['prompt_templates'].items():
-            if k not in settings['prompt_templates']:
-                settings['prompt_templates'][k] = v
+
+    # Migrate old prompt_templates to prompt_batches if needed
+    if 'prompt_templates' in settings and settings['prompt_templates'] and not settings.get('prompt_batches'):
+        old = settings['prompt_templates']
+        migrated = {}
+        for cat, tmpl in old.items():
+            if isinstance(tmpl, str):
+                # Convert single template to batch of 4
+                migrated[cat] = [
+                    {'label': 'Studio', 'template': tmpl},
+                    {'label': 'Lifestyle', 'template': 'Lifestyle shot of {product_name}, warm natural lighting, modern setting, editorial style'},
+                    {'label': 'Detail', 'template': 'Close-up detail shot of {product_name}, soft bokeh background, premium commercial feel'},
+                    {'label': 'Dynamic', 'template': 'Dynamic showcase of {product_name}, smooth camera movement, professional product film'},
+                ]
+        settings['prompt_batches'] = migrated
+        settings.pop('prompt_templates', None)
+        _save_json('settings.json', settings)
+
+    # Ensure prompt_batches has all default categories
+    batches = settings.get('prompt_batches', {})
+    for cat, prompts in _DEFAULT_PROMPT_BATCHES.items():
+        if cat not in batches:
+            batches[cat] = prompts
+    settings['prompt_batches'] = batches
+
+    # Ensure custom_prompt_batches exists
+    if 'custom_prompt_batches' not in settings:
+        settings['custom_prompt_batches'] = {}
+
     return settings
 
 def _save_settings(settings):
@@ -372,37 +480,34 @@ _in_flight = set()  # job IDs currently being processed
 _in_flight_lock = threading.Lock()
 
 def _get_prompt(product_name, store_category, settings):
-    templates = settings.get('prompt_templates', {})
+    """Get a single prompt (fallback for old code paths)."""
+    batches = settings.get('prompt_batches', {})
     category = (store_category or 'default').lower()
-    template = templates.get(category, templates.get('default', 'Professional product showcase of {product_name}'))
+    batch = batches.get(category, batches.get('default', _DEFAULT_PROMPT_BATCHES.get('default', [])))
+    if batch and isinstance(batch, list) and len(batch) > 0:
+        template = batch[0].get('template', 'Professional product showcase of {product_name}')
+    else:
+        template = 'Professional product showcase of {product_name}'
     return template.replace('{product_name}', product_name).replace('{store_category}', category)
+
+def _get_prompt_batch(category_key, settings):
+    """Get a batch of 4 prompts for a given category key (built-in or custom)."""
+    # Check built-in batches first
+    batches = settings.get('prompt_batches', {})
+    if category_key in batches:
+        return batches[category_key]
+    # Check custom batches
+    custom = settings.get('custom_prompt_batches', {})
+    if category_key in custom:
+        return custom[category_key].get('prompts', [])
+    # Fallback to default
+    return batches.get('default', _DEFAULT_PROMPT_BATCHES.get('default', []))
 
 def _get_default_store_prompts(store):
     """Return 4 default prompts for a store, based on its category."""
     settings = _load_settings()
-    templates = settings.get('prompt_templates', {})
     category = (store.get('storeCategory', '') or 'default').lower()
-    base_template = templates.get(category, templates.get('default',
-        'Professional product showcase of {product_name}, clean studio lighting, smooth rotating view, commercial quality'))
-
-    return [
-        {
-            'label': 'Prompt 1',
-            'template': base_template
-        },
-        {
-            'label': 'Prompt 2',
-            'template': 'Lifestyle shot of {product_name}, warm natural lighting, modern setting, editorial style'
-        },
-        {
-            'label': 'Prompt 3',
-            'template': 'Close-up detail shot of {product_name}, soft bokeh background, premium commercial feel'
-        },
-        {
-            'label': 'Prompt 4',
-            'template': 'Dynamic showcase of {product_name}, smooth camera movement, professional product film'
-        }
-    ]
+    return _get_prompt_batch(category, settings)
 
 def _download_video(url, local_path):
     """Download a video file from URL to local path."""
@@ -986,8 +1091,6 @@ def save_settings():
         settings['video_duration'] = int(data['video_duration'])
     if 'video_resolution' in data:
         settings['video_resolution'] = data['video_resolution']
-    if 'prompt_templates' in data and isinstance(data['prompt_templates'], dict):
-        settings['prompt_templates'].update(data['prompt_templates'])
     if 'google_ai_key' in data and data['google_ai_key']:
         settings['google_ai_key'] = data['google_ai_key']
     if 'google_ai_model' in data:
@@ -998,8 +1101,76 @@ def save_settings():
         settings['shopify_client_secret'] = data['shopify_client_secret'].strip()
     if 'shopify_scopes' in data and data['shopify_scopes'].strip():
         settings['shopify_scopes'] = data['shopify_scopes'].strip()
+    if 'prompt_batches' in data and isinstance(data['prompt_batches'], dict):
+        for k, v in data['prompt_batches'].items():
+            if v is None:
+                # Reset to default: remove so _load_settings fills from defaults
+                settings['prompt_batches'].pop(k, None)
+            else:
+                settings['prompt_batches'][k] = v
+    if 'custom_prompt_batches' in data and isinstance(data['custom_prompt_batches'], dict):
+        settings['custom_prompt_batches'] = data['custom_prompt_batches']
 
     _save_settings(settings)
+    return jsonify({'success': True})
+
+@app.route('/api/settings/prompt-batches', methods=['GET'])
+@login_required
+def get_prompt_batches():
+    """Get all prompt batch options for the category selector."""
+    settings = _load_settings()
+    batches = settings.get('prompt_batches', {})
+    custom = settings.get('custom_prompt_batches', {})
+
+    # Build ordered list: built-in categories first, then custom
+    built_in_order = ['sweaters', 'dresses', 'tops', 'shirts', 'bikinis', 'coats',
+                      'rings', 'necklaces', 'bracelets', 'earrings',
+                      'sandals', 'sneakers', 'heels', 'default']
+    options = []
+    for key in built_in_order:
+        if key in batches:
+            options.append({'key': key, 'label': key.title(), 'type': 'builtin', 'prompts': batches[key]})
+    # Add any built-in that somehow isn't in the ordered list
+    for key in batches:
+        if key not in built_in_order:
+            options.append({'key': key, 'label': key.title(), 'type': 'builtin', 'prompts': batches[key]})
+    # Add custom batches
+    for key, val in custom.items():
+        options.append({'key': key, 'label': val.get('label', key), 'type': 'custom', 'prompts': val.get('prompts', [])})
+
+    return jsonify({'success': True, 'batches': options})
+
+@app.route('/api/settings/prompt-batches/custom', methods=['POST'])
+@login_required
+def save_custom_prompt_batch():
+    """Create or update a custom prompt batch."""
+    data = request.json or {}
+    key = data.get('key', '').strip().lower().replace(' ', '_')
+    label = data.get('label', '').strip()
+    prompts = data.get('prompts', [])
+
+    if not key or not label:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+    if not prompts or len(prompts) != 4:
+        return jsonify({'success': False, 'error': 'Exactly 4 prompts are required'}), 400
+
+    settings = _load_settings()
+    custom = settings.get('custom_prompt_batches', {})
+    custom[key] = {'label': label, 'prompts': prompts}
+    settings['custom_prompt_batches'] = custom
+    _save_settings(settings)
+    return jsonify({'success': True})
+
+@app.route('/api/settings/prompt-batches/custom/<key>', methods=['DELETE'])
+@login_required
+def delete_custom_prompt_batch(key):
+    """Delete a custom prompt batch."""
+    settings = _load_settings()
+    custom = settings.get('custom_prompt_batches', {})
+    if key in custom:
+        del custom[key]
+        settings['custom_prompt_batches'] = custom
+        _save_settings(settings)
     return jsonify({'success': True})
 
 @app.route('/api/settings/test-xai', methods=['POST'])
@@ -1894,15 +2065,24 @@ def generate_videos():
 
     duration = settings.get('video_duration', 8)
 
-    # Load store prompts from the first product's storeId
-    store_prompts = []
-    if products:
-        first_store_id = products[0].get('storeId', '')
-        if first_store_id:
-            stores = _load_stores()
-            store = next((s for s in stores if s['id'] == first_store_id), None)
-            if store:
-                store_prompts = store.get('prompts', [])
+    # Determine prompt source: 'store' (default) or 'account:<category_key>'
+    prompt_source = data.get('promptSource', 'store').strip()
+
+    # Resolve the 4 prompts to use
+    use_prompts = []
+    if prompt_source.startswith('account:'):
+        # Account-level category batch
+        category_key = prompt_source.split(':', 1)[1]
+        use_prompts = _get_prompt_batch(category_key, settings)
+    else:
+        # Store-level prompts (original behavior)
+        if products:
+            first_store_id = products[0].get('storeId', '')
+            if first_store_id:
+                all_stores = _load_stores()
+                store = next((s for s in all_stores if s['id'] == first_store_id), None)
+                if store:
+                    use_prompts = store.get('prompts', [])
 
     new_jobs = []
     with _jobs_lock:
@@ -1912,9 +2092,9 @@ def generate_videos():
             store_category = p.get('storeCategory', '')
             group_id = uuid.uuid4().hex  # shared across all jobs for this product
 
-            if store_prompts:
-                # Create one job per store prompt
-                for idx, sp in enumerate(store_prompts):
+            if use_prompts:
+                # Create one job per prompt in the batch
+                for idx, sp in enumerate(use_prompts):
                     job_id = f'job_{uuid.uuid4().hex[:12]}'
                     prompt_template = sp.get('template', '')
                     prompt = prompt_template.replace('{product_name}', product_name).replace('{store_category}', store_category)
