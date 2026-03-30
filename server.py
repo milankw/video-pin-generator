@@ -2511,20 +2511,18 @@ def _analytics_via_shopifyql(domain, token, start, end):
     if rev_result[1]:
         return None, rev_result[1]
 
-    # Parse revenue data
+    # Parse revenue data — rows are dicts with column names as keys
     td = rev_result[0]
-    cols = [c['name'] for c in td.get('columns', [])]
     rows = td.get('rows', [])
     labels = []
     rev_values = []
     ord_values = []
     for row in rows:
-        row_dict = dict(zip(cols, row))
-        day_str = row_dict.get('day', '')
+        day_str = row.get('day', '')
         if day_str:
             labels.append(day_str[:10])  # YYYY-MM-DD
-        ts = float(row_dict.get('total_sales', 0) or 0)
-        oc = int(float(row_dict.get('orders', 0) or 0))
+        ts = float(row.get('total_sales', '0') or '0')
+        oc = int(float(row.get('orders', '0') or '0'))
         rev_values.append(round(ts, 2))
         ord_values.append(oc)
 
@@ -2532,11 +2530,10 @@ def _analytics_via_shopifyql(domain, token, start, end):
     total_ord = sum(ord_values)
     aov = round(total_rev / total_ord, 2) if total_ord > 0 else 0
 
-    # Parse funnel data
+    # Parse funnel data — rows are dicts
     funnel = None
     if fun_result[0] and not fun_result[1]:
         ftd = fun_result[0]
-        fcols = [c['name'] for c in ftd.get('columns', [])]
         frows = ftd.get('rows', [])
         # Sum across all rows
         s_sessions = 0
@@ -2544,11 +2541,10 @@ def _analytics_via_shopifyql(domain, token, start, end):
         s_checkout = 0
         s_converted = 0
         for row in frows:
-            rd = dict(zip(fcols, row))
-            s_sessions += int(float(rd.get('sessions', 0) or 0))
-            s_cart += int(float(rd.get('sessions_with_cart_addition', 0) or 0))
-            s_checkout += int(float(rd.get('sessions_that_reached_checkout', 0) or 0))
-            s_converted += int(float(rd.get('sessions_converted', 0) or 0))
+            s_sessions += int(float(row.get('sessions', '0') or '0'))
+            s_cart += int(float(row.get('sessions_with_cart_addition', '0') or '0'))
+            s_checkout += int(float(row.get('sessions_that_reached_checkout', '0') or '0'))
+            s_converted += int(float(row.get('sessions_converted', '0') or '0'))
         funnel = {
             'sessions': s_sessions,
             'addedToCart': s_cart,
@@ -2645,24 +2641,28 @@ def store_analytics(store_id):
     start = request.args.get('start', (today - datetime.timedelta(days=6)).isoformat())
     end = request.args.get('end', today.isoformat())
 
-    # Try ShopifyQL first, fall back to Orders API
-    result, err = _analytics_via_shopifyql(domain, token, start, end)
-    if err:
-        log.info(f'ShopifyQL failed for {store.get("name","")}: {err} — falling back to Orders API')
-        result, err2 = _analytics_via_orders(domain, token, start, end)
-        if err2:
-            return jsonify({'success': False, 'error': f'Analytics failed: {err2}'}), 500
+    try:
+        # Try ShopifyQL first, fall back to Orders API
+        result, err = _analytics_via_shopifyql(domain, token, start, end)
+        if err:
+            log.info(f'ShopifyQL failed for {store.get("name","")}: {err} — falling back to Orders API')
+            result, err2 = _analytics_via_orders(domain, token, start, end)
+            if err2:
+                return jsonify({'success': False, 'error': f'Analytics failed: {err2}'}), 500
 
-    # Detect currency from store or default
-    currency = store.get('currency', 'USD')
+        # Detect currency from store or default
+        currency = store.get('currency', 'USD')
 
-    return jsonify({
-        'success': True,
-        'store': store.get('name', ''),
-        'currency': currency,
-        'period': {'start': start, 'end': end},
-        **result
-    })
+        return jsonify({
+            'success': True,
+            'store': store.get('name', ''),
+            'currency': currency,
+            'period': {'start': start, 'end': end},
+            **result
+        })
+    except Exception as e:
+        log.error(f'Analytics error for {store.get("name","")}: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ===== Main =====
