@@ -239,7 +239,7 @@ def _load_settings():
         'gdrive_status': '',
         'shopify_client_id': '',
         'shopify_client_secret': '',
-        'shopify_scopes': 'read_products,read_orders,read_apps',
+        'shopify_scopes': 'read_products,read_orders,read_apps,read_reports',
     }
     settings = _load_json('settings.json', defaults)
     # Ensure all default keys exist
@@ -2465,6 +2465,204 @@ def serve_video(filepath):
         return jsonify({'success': False, 'error': 'Not found'}), 404
     return send_file(full_path, mimetype='video/mp4')
 
+
+
+# ===== Routes: Analytics =====
+def _shopifyql_query(domain, token, query_str):
+    """Execute a ShopifyQL query via Shopify GraphQL Admin API (2026-01)."""
+    graphql_url = f'https://{domain}/admin/api/2026-01/graphql.json'
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    gql = json.dumps({
+        'query': '{ shopifyqlQuery(query: "' + query_str.replace('"', '\\"') + '") { tableData { columns { name dataType displayName } rows } parseErrors } }'
+    })
+    resp = http_requests.post(graphql_url, data=gql, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        return None, f'HTTP {resp.status_code}'
+    body = resp.json()
+    data = body.get('data', {}).get('shopifyqlQuery', {})
+    errors = data.get('parseErrors') or []
+    if errors:
+        return None, str(errors)
+    # Check for GraphQL-level errors
+    if body.get('errors'):
+        return None, str(body['errors'])
+    td = data.get('tableData')
+    if not td:
+        return None, 'No tableData'
+    return td, None
+
+def _analytics_via_shopifyql(domain, token, start, end):
+    """Fetch analytics using ShopifyQL queries (revenue + funnel)."""
+    revenue_q = f'FROM sales SHOW total_sales, orders GROUP BY day SINCE {start} UNTIL {end} ORDER BY day'
+    funnel_q = f'FROM sessions SHOW sessions, sessions_with_cart_addition, sessions_that_reached_checkout, sessions_converted SINCE {start} UNTIL {end}'
+
+    rev_result = [None, None]
+    fun_result = [None, None]
+    def run_rev():
+        rev_result[0], rev_result[1] = _shopifyql_query(domain, token, revenue_q)
+    def run_fun():
+        fun_result[0], fun_result[1] = _shopifyql_query(domain, token, funnel_q)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pool.submit(run_rev)
+        pool.submit(run_fun)
+        pool.shutdown(wait=True)
+
+    if rev_result[1]:
+        return None, rev_result[1]
+
+    # Parse revenue data
+    td = rev_result[0]
+    cols = [c['name'] for c in td.get('columns', [])]
+    rows = td.get('rows', [])
+    labels = []
+    rev_values = []
+    ord_values = []
+    for row in rows:
+        row_dict = dict(zip(cols, row))
+        day_str = row_dict.get('day', '')
+        if day_str:
+            labels.append(day_str[:10])  # YYYY-MM-DD
+        ts = float(row_dict.get('total_sales', 0) or 0)
+        oc = int(float(row_dict.get('orders', 0) or 0))
+        rev_values.append(round(ts, 2))
+        ord_values.append(oc)
+
+    total_rev = round(sum(rev_values), 2)
+    total_ord = sum(ord_values)
+    aov = round(total_rev / total_ord, 2) if total_ord > 0 else 0
+
+    # Parse funnel data
+    funnel = None
+    if fun_result[0] and not fun_result[1]:
+        ftd = fun_result[0]
+        fcols = [c['name'] for c in ftd.get('columns', [])]
+        frows = ftd.get('rows', [])
+        # Sum across all rows
+        s_sessions = 0
+        s_cart = 0
+        s_checkout = 0
+        s_converted = 0
+        for row in frows:
+            rd = dict(zip(fcols, row))
+            s_sessions += int(float(rd.get('sessions', 0) or 0))
+            s_cart += int(float(rd.get('sessions_with_cart_addition', 0) or 0))
+            s_checkout += int(float(rd.get('sessions_that_reached_checkout', 0) or 0))
+            s_converted += int(float(rd.get('sessions_converted', 0) or 0))
+        funnel = {
+            'sessions': s_sessions,
+            'addedToCart': s_cart,
+            'reachedCheckout': s_checkout,
+            'completedCheckout': s_converted
+        }
+
+    return {
+        'revenue': {'labels': labels, 'values': rev_values, 'total': total_rev},
+        'orders': {'values': ord_values, 'total': total_ord},
+        'aov': aov,
+        'funnel': funnel,
+        'source': 'shopifyql'
+    }, None
+
+def _analytics_via_orders(domain, token, start, end):
+    """Fallback: compute revenue from REST Orders API."""
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    base_url = f'https://{domain}/admin/api/2024-01'
+    start_dt = f'{start}T00:00:00Z'
+    end_dt = f'{end}T23:59:59Z'
+
+    daily = {}  # date -> {rev, orders}
+    page_url = (f'{base_url}/orders.json?status=any&financial_status=paid'
+                f'&created_at_min={start_dt}&created_at_max={end_dt}'
+                f'&limit=250&fields=id,created_at,current_total_price')
+    pages = 0
+    while page_url and pages < 50:
+        resp = http_requests.get(page_url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            break
+        orders = resp.json().get('orders', [])
+        if not orders:
+            break
+        for o in orders:
+            ca = o.get('created_at', '')[:10]
+            price = float(o.get('current_total_price', '0') or '0')
+            if ca not in daily:
+                daily[ca] = {'rev': 0.0, 'orders': 0}
+            daily[ca]['rev'] += price
+            daily[ca]['orders'] += 1
+        page_url = None
+        link = resp.headers.get('Link', '')
+        if 'rel="next"' in link:
+            for part in link.split(','):
+                if 'rel="next"' in part:
+                    page_url = part.split('<')[1].split('>')[0]
+                    break
+        pages += 1
+        time.sleep(0.3)
+
+    # Build daily arrays filling gaps
+    d_start = datetime.date.fromisoformat(start)
+    d_end = datetime.date.fromisoformat(end)
+    labels = []
+    rev_values = []
+    ord_values = []
+    d = d_start
+    while d <= d_end:
+        ds = d.isoformat()
+        labels.append(ds)
+        entry = daily.get(ds, {'rev': 0.0, 'orders': 0})
+        rev_values.append(round(entry['rev'], 2))
+        ord_values.append(entry['orders'])
+        d += datetime.timedelta(days=1)
+
+    total_rev = round(sum(rev_values), 2)
+    total_ord = sum(ord_values)
+    aov = round(total_rev / total_ord, 2) if total_ord > 0 else 0
+
+    return {
+        'revenue': {'labels': labels, 'values': rev_values, 'total': total_rev},
+        'orders': {'values': ord_values, 'total': total_ord},
+        'aov': aov,
+        'funnel': None,
+        'source': 'orders_api'
+    }, None
+
+@app.route('/api/analytics/<store_id>', methods=['GET'])
+@login_required
+def store_analytics(store_id):
+    """Fetch analytics data for a store (revenue, AOV, conversion funnel)."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    start = request.args.get('start', (today - datetime.timedelta(days=6)).isoformat())
+    end = request.args.get('end', today.isoformat())
+
+    # Try ShopifyQL first, fall back to Orders API
+    result, err = _analytics_via_shopifyql(domain, token, start, end)
+    if err:
+        log.info(f'ShopifyQL failed for {store.get("name","")}: {err} — falling back to Orders API')
+        result, err2 = _analytics_via_orders(domain, token, start, end)
+        if err2:
+            return jsonify({'success': False, 'error': f'Analytics failed: {err2}'}), 500
+
+    # Detect currency from store or default
+    currency = store.get('currency', 'USD')
+
+    return jsonify({
+        'success': True,
+        'store': store.get('name', ''),
+        'currency': currency,
+        'period': {'start': start, 'end': end},
+        **result
+    })
 
 
 # ===== Main =====

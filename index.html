@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Video Pin Generator</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -964,6 +966,61 @@ textarea { resize: vertical; min-height: 80px; }
 .apps-summary-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .apps-summary-chip { display: inline-flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--gray-200); border-radius: 6px; padding: 5px 10px; font-size: 12px; color: var(--gray-600); }
 .apps-summary-chip .apps-chip-count { font-weight: 700; color: var(--gray-800); background: var(--gray-100); padding: 1px 6px; border-radius: 8px; font-size: 11px; }
+
+/* ===== Analytics Tab ===== */
+.analytics-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.analytics-controls select { padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--gray-300); background: #fff; font-size: 13px; color: var(--gray-800); font-family: inherit; cursor: pointer; min-width: 200px; }
+.analytics-controls select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.tf-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.tf-btn { padding: 6px 14px; border-radius: 20px; border: 1px solid var(--gray-200); background: #fff; font-size: 12px; font-weight: 500; color: var(--gray-600); cursor: pointer; transition: all var(--transition); font-family: inherit; white-space: nowrap; }
+.tf-btn:hover { background: var(--gray-50); border-color: var(--gray-300); color: var(--gray-800); }
+.tf-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.tf-btn.active:hover { background: var(--primary-hover); }
+.analytics-custom-range { display: none; align-items: center; gap: 8px; }
+.analytics-custom-range.show { display: flex; }
+.analytics-custom-range input[type="date"] { padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--gray-300); font-size: 12px; font-family: inherit; color: var(--gray-700); }
+.analytics-custom-range input[type="date"]:focus { outline: none; border-color: var(--primary); }
+
+.analytics-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+.a-stat { background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius-lg); padding: 20px 24px; position: relative; overflow: hidden; transition: all var(--transition); }
+.a-stat:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.a-stat::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+.a-stat.stat-revenue::before { background: linear-gradient(90deg, #0ea5e9, #06b6d4); }
+.a-stat.stat-aov::before { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+.a-stat.stat-orders::before { background: linear-gradient(90deg, #16a34a, #4ade80); }
+.a-stat-label { font-size: 12px; font-weight: 500; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.a-stat-value { font-size: 28px; font-weight: 700; color: var(--gray-900); }
+.a-stat-sub { font-size: 12px; color: var(--gray-400); margin-top: 4px; }
+
+.analytics-chart-wrap { background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
+.analytics-chart-wrap h3 { font-size: 15px; font-weight: 600; color: var(--gray-800); margin-bottom: 16px; }
+.analytics-chart-wrap canvas { width: 100% !important; max-height: 340px; }
+
+.analytics-funnel { background: #fff; border: 1px solid var(--gray-200); border-radius: var(--radius-lg); padding: 24px; }
+.analytics-funnel h3 { font-size: 15px; font-weight: 600; color: var(--gray-800); margin-bottom: 20px; }
+.funnel-steps { display: flex; flex-direction: column; gap: 14px; }
+.funnel-step { display: flex; align-items: center; gap: 16px; }
+.funnel-label { min-width: 180px; font-size: 13px; font-weight: 500; color: var(--gray-700); }
+.funnel-bar-wrap { flex: 1; position: relative; height: 36px; background: var(--gray-100); border-radius: 8px; overflow: hidden; }
+.funnel-bar { height: 100%; border-radius: 8px; transition: width 0.6s ease; display: flex; align-items: center; padding: 0 12px; min-width: 40px; }
+.funnel-bar span { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+.funnel-step:nth-child(1) .funnel-bar { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
+.funnel-step:nth-child(2) .funnel-bar { background: linear-gradient(90deg, #8b5cf6, #a78bfa); }
+.funnel-step:nth-child(3) .funnel-bar { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.funnel-step:nth-child(4) .funnel-bar { background: linear-gradient(90deg, #16a34a, #4ade80); }
+.funnel-pct { min-width: 50px; font-size: 13px; font-weight: 700; color: var(--gray-800); text-align: right; }
+.funnel-unavailable { padding: 20px; text-align: center; color: var(--gray-500); font-size: 13px; background: var(--gray-50); border-radius: var(--radius); }
+.funnel-unavailable a { color: var(--primary); text-decoration: none; font-weight: 500; }
+
+.analytics-source-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 500; }
+.analytics-source-badge.src-shopifyql { background: #dbeafe; color: #1d4ed8; }
+.analytics-source-badge.src-orders { background: #fef3c7; color: #92400e; }
+
+@media (max-width: 768px) {
+  .analytics-summary { grid-template-columns: 1fr; }
+  .funnel-label { min-width: 120px; font-size: 12px; }
+  .a-stat-value { font-size: 22px; }
+}
 </style>
 </head>
 <body>
@@ -988,6 +1045,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="gallery">Gallery <span class="badge badge-green" id="gallery-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="orders">Orders</div>
   <div class="tab" data-tab="apps">Apps</div>
+  <div class="tab" data-tab="analytics">Analytics</div>
 </div>
 
 <!-- Content -->
@@ -1314,6 +1372,60 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
   </div>
 
+  <div class="tab-panel" id="panel-analytics">
+    <div id="analytics-loading" class="loading-overlay"><div class="spinner"></div> Loading analytics data...</div>
+    <div id="analytics-content" style="display:none;">
+      <div class="analytics-controls">
+        <select id="analytics-store-select" onchange="loadAnalytics(true)"></select>
+        <div class="tf-btns">
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('0d')">Today</button>
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('1d')">Yesterday</button>
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('3d')">Last 3 days</button>
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('5d')">Last 5 days</button>
+          <button class="tf-btn active" onclick="setAnalyticsTimeframe('7d')">Last 7 days</button>
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('14d')">Last 14 days</button>
+          <button class="tf-btn" onclick="setAnalyticsTimeframe('custom')">Custom</button>
+        </div>
+        <div class="analytics-custom-range" id="analytics-custom-range">
+          <input type="date" id="analytics-date-start">
+          <span style="color:var(--gray-400)">to</span>
+          <input type="date" id="analytics-date-end">
+          <button class="btn btn-primary btn-sm" onclick="loadAnalytics(true)">Apply</button>
+        </div>
+      </div>
+      <div class="analytics-summary">
+        <div class="a-stat stat-revenue">
+          <div class="a-stat-label">Total Revenue</div>
+          <div class="a-stat-value" id="a-revenue">--</div>
+          <div class="a-stat-sub" id="a-revenue-sub"></div>
+        </div>
+        <div class="a-stat stat-aov">
+          <div class="a-stat-label">Average Order Value</div>
+          <div class="a-stat-value" id="a-aov">--</div>
+          <div class="a-stat-sub" id="a-aov-sub"></div>
+        </div>
+        <div class="a-stat stat-orders">
+          <div class="a-stat-label">Total Orders</div>
+          <div class="a-stat-value" id="a-orders">--</div>
+          <div class="a-stat-sub" id="a-orders-sub"></div>
+        </div>
+      </div>
+      <div class="analytics-chart-wrap">
+        <h3>Revenue Over Time <span id="a-source-badge" class="analytics-source-badge"></span></h3>
+        <div style="position:relative;height:340px;"><canvas id="analytics-chart"></canvas></div>
+      </div>
+      <div class="analytics-funnel">
+        <h3>Conversion Funnel</h3>
+        <div id="analytics-funnel-content"></div>
+      </div>
+    </div>
+    <div id="analytics-empty" class="empty-state" style="display:none;padding:24px;">
+      <div class="empty-state-icon">&#128200;</div>
+      <div class="empty-state-text">No connected stores</div>
+      <div class="empty-state-sub">Sync your Shopify stores in the Stores tab first.</div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Toast container -->
@@ -1389,6 +1501,10 @@ let _editingStoreId = '';  // store ID being edited in prompts modal
 let _ordersLoaded = false;
 let _appsLoaded = false;
 let _galleryLoaded = false;
+let _analyticsLoaded = false;
+let _analyticsStoreId = null;
+let _analyticsTimeframe = '7d';
+let _analyticsChart = null;
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -1433,6 +1549,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'stores') loadStoresTable();
     if (tab.dataset.tab === 'orders') { if (!_ordersLoaded) loadOrdersSummary(); }
     if (tab.dataset.tab === 'apps') { if (!_appsLoaded) loadStoreApps(); }
+    if (tab.dataset.tab === 'analytics') { loadAnalytics(); }
   });
 });
 
@@ -3240,6 +3357,271 @@ function formatFileSize(bytes) {
     window.history.replaceState({}, '', '/');
   }
 })();
+
+// ===== Analytics Tab =====
+function _analyticsDateRange() {
+  const tf = _analyticsTimeframe;
+  const today = new Date();
+  const fmt = d => d.toISOString().slice(0, 10);
+  if (tf === 'custom') {
+    return {
+      start: document.getElementById('analytics-date-start').value,
+      end: document.getElementById('analytics-date-end').value
+    };
+  }
+  if (tf === '0d') return { start: fmt(today), end: fmt(today) };
+  if (tf === '1d') {
+    const y = new Date(today); y.setDate(y.getDate() - 1);
+    return { start: fmt(y), end: fmt(y) };
+  }
+  const days = parseInt(tf);
+  const s = new Date(today); s.setDate(s.getDate() - (days - 1));
+  return { start: fmt(s), end: fmt(today) };
+}
+
+function setAnalyticsTimeframe(tf) {
+  _analyticsTimeframe = tf;
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  const cr = document.getElementById('analytics-custom-range');
+  if (tf === 'custom') {
+    cr.classList.add('show');
+    // Set defaults if empty
+    if (!document.getElementById('analytics-date-start').value) {
+      const today = new Date();
+      const s = new Date(today); s.setDate(s.getDate() - 6);
+      document.getElementById('analytics-date-start').value = s.toISOString().slice(0, 10);
+      document.getElementById('analytics-date-end').value = today.toISOString().slice(0, 10);
+    }
+    return; // Wait for Apply click
+  }
+  cr.classList.remove('show');
+  loadAnalytics(true);
+}
+
+async function loadAnalytics(force) {
+  if (!force && _analyticsLoaded) return;
+  const loading = document.getElementById('analytics-loading');
+  const content = document.getElementById('analytics-content');
+  const empty = document.getElementById('analytics-empty');
+  const sel = document.getElementById('analytics-store-select');
+
+  // Populate store selector on first load only
+  if (!sel.options.length) {
+    const storeData = await api('/api/stores');
+    if (!storeData?.success || !storeData.stores?.length) {
+      loading.style.display = 'none';
+      content.style.display = 'none';
+      empty.style.display = '';
+      return;
+    }
+    const connected = storeData.stores.filter(s => s.hasToken);
+    if (!connected.length) {
+      loading.style.display = 'none';
+      content.style.display = 'none';
+      empty.style.display = '';
+      return;
+    }
+    connected.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name || s.domain;
+      sel.appendChild(opt);
+    });
+  }
+
+  const storeId = sel.value;
+  if (!storeId) return;
+
+  loading.style.display = 'flex';
+  content.style.display = 'none';
+  empty.style.display = 'none';
+
+  const { start, end } = _analyticsDateRange();
+  if (!start || !end) {
+    toast('Select a valid date range', 'error');
+    loading.style.display = 'none';
+    content.style.display = '';
+    return;
+  }
+
+  const data = await api(`/api/analytics/${storeId}?start=${start}&end=${end}`);
+  loading.style.display = 'none';
+
+  if (!data?.success) {
+    content.style.display = '';
+    toast(data?.error || 'Failed to load analytics', 'error');
+    return;
+  }
+
+  content.style.display = '';
+  _analyticsLoaded = true;
+
+  // Currency formatter
+  const cur = data.currency || 'USD';
+  const fmtMoney = v => {
+    try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v); }
+    catch { return '$' + v.toLocaleString(); }
+  };
+  const fmtMoney2 = v => {
+    try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 2 }).format(v); }
+    catch { return '$' + v.toFixed(2); }
+  };
+
+  // Summary cards
+  document.getElementById('a-revenue').textContent = fmtMoney(data.revenue.total);
+  document.getElementById('a-revenue-sub').textContent = `${data.period.start} — ${data.period.end}`;
+  document.getElementById('a-aov').textContent = fmtMoney2(data.aov);
+  document.getElementById('a-aov-sub').textContent = `Based on ${data.orders.total} orders`;
+  document.getElementById('a-orders').textContent = data.orders.total.toLocaleString();
+  document.getElementById('a-orders-sub').textContent = `${data.period.start} — ${data.period.end}`;
+
+  // Source badge
+  const badge = document.getElementById('a-source-badge');
+  if (data.source === 'shopifyql') {
+    badge.textContent = 'ShopifyQL';
+    badge.className = 'analytics-source-badge src-shopifyql';
+  } else {
+    badge.textContent = 'Orders API';
+    badge.className = 'analytics-source-badge src-orders';
+  }
+
+  // Chart
+  _renderAnalyticsChart(data.revenue.labels, data.revenue.values, cur);
+
+  // Funnel
+  _renderAnalyticsFunnel(data.funnel);
+}
+
+function _renderAnalyticsChart(labels, values, currency) {
+  const ctx = document.getElementById('analytics-chart').getContext('2d');
+
+  if (_analyticsChart) {
+    _analyticsChart.destroy();
+    _analyticsChart = null;
+  }
+
+  // Format labels as short dates
+  const shortLabels = labels.map(l => {
+    const d = new Date(l + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  });
+
+  const gradient = ctx.createLinearGradient(0, 0, 0, 340);
+  gradient.addColorStop(0, 'rgba(14, 165, 233, 0.25)');
+  gradient.addColorStop(1, 'rgba(14, 165, 233, 0.01)');
+
+  const fmtShort = v => {
+    if (v >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+    return v.toFixed(0);
+  };
+
+  _analyticsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: shortLabels,
+      datasets: [{
+        label: 'Revenue',
+        data: values,
+        borderColor: '#0ea5e9',
+        backgroundColor: gradient,
+        borderWidth: 2.5,
+        pointBackgroundColor: '#0ea5e9',
+        pointBorderColor: '#fff',
+        pointBorderWidth: 2,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        fill: true,
+        tension: 0.3
+      }]
+    },
+    plugins: [ChartDataLabels],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { display: false },
+        datalabels: {
+          anchor: 'end',
+          align: 'top',
+          offset: 4,
+          color: '#374151',
+          font: { size: 11, weight: '600', family: 'Inter' },
+          formatter: v => fmtShort(v)
+        },
+        tooltip: {
+          backgroundColor: '#1f2937',
+          titleFont: { family: 'Inter', size: 12 },
+          bodyFont: { family: 'Inter', size: 13, weight: '600' },
+          padding: 10,
+          cornerRadius: 8,
+          callbacks: {
+            label: ctx => {
+              try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency }).format(ctx.raw); }
+              catch { return '$' + ctx.raw.toFixed(2); }
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 11, family: 'Inter' }, color: '#9ca3af' }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.04)' },
+          ticks: {
+            font: { size: 11, family: 'Inter' },
+            color: '#9ca3af',
+            callback: v => fmtShort(v)
+          }
+        }
+      },
+      layout: { padding: { top: 24 } }
+    }
+  });
+}
+
+function _renderAnalyticsFunnel(funnel) {
+  const wrap = document.getElementById('analytics-funnel-content');
+  if (!funnel) {
+    wrap.innerHTML = '<div class="funnel-unavailable">Conversion funnel data requires the <strong>read_reports</strong> Shopify scope.<br>Re-auth your store in the <a href="#" onclick="document.querySelector(\'[data-tab=stores]\').click(); return false;">Stores tab</a> to enable it.</div>';
+    return;
+  }
+
+  const steps = [
+    { label: 'Sessions', value: funnel.sessions },
+    { label: 'Added to Cart', value: funnel.addedToCart },
+    { label: 'Reached Checkout', value: funnel.reachedCheckout },
+    { label: 'Completed Checkout', value: funnel.completedCheckout }
+  ];
+  const max = steps[0].value || 1;
+
+  let html = '<div class="funnel-steps">';
+  steps.forEach(step => {
+    const pct = max > 0 ? ((step.value / max) * 100) : 0;
+    const pctStr = pct.toFixed(1) + '%';
+    const barWidth = Math.max(pct, 3); // minimum visible width
+    html += `<div class="funnel-step">
+      <div class="funnel-label">${step.label}</div>
+      <div class="funnel-bar-wrap">
+        <div class="funnel-bar" style="width:${barWidth}%"><span>${step.value.toLocaleString()}</span></div>
+      </div>
+      <div class="funnel-pct">${pctStr}</div>
+    </div>`;
+  });
+  html += '</div>';
+  wrap.innerHTML = html;
+
+  // Animate bars in
+  setTimeout(() => {
+    wrap.querySelectorAll('.funnel-bar').forEach(bar => {
+      bar.style.width = bar.style.width; // trigger reflow
+    });
+  }, 50);
+}
 
 loadSettings();
 loadStoreSelector();
