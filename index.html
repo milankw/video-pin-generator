@@ -1415,7 +1415,7 @@ textarea { resize: vertical; min-height: 80px; }
         <div style="position:relative;height:340px;"><canvas id="analytics-chart"></canvas></div>
       </div>
       <div class="analytics-funnel">
-        <h3>Conversion Funnel</h3>
+        <h3>Conversion Breakdown</h3>
         <div id="analytics-funnel-content"></div>
       </div>
     </div>
@@ -3587,23 +3587,22 @@ function _renderAnalyticsChart(labels, values, currency) {
 function _renderAnalyticsFunnel(funnel) {
   const wrap = document.getElementById('analytics-funnel-content');
   if (!funnel) {
-    wrap.innerHTML = '<div class="funnel-unavailable">Conversion funnel data requires the <strong>read_reports</strong> Shopify scope.<br>Re-auth your store in the <a href="#" onclick="document.querySelector(\'[data-tab=stores]\').click(); return false;">Stores tab</a> to enable it.</div>';
+    wrap.innerHTML = '<div class="funnel-unavailable">Session analytics require the <strong>read_reports</strong> Shopify scope.<br>Re-auth your store in the <a href="#" onclick="document.querySelector(\'[data-tab=stores]\').click(); return false;">Stores tab</a> to enable it.</div>';
     return;
   }
 
   const steps = [
-    { label: 'Sessions', value: funnel.sessions },
-    { label: 'Added to Cart', value: funnel.addedToCart },
-    { label: 'Reached Checkout', value: funnel.reachedCheckout },
-    { label: 'Completed Checkout', value: funnel.completedCheckout }
+    { label: 'Total Sessions', value: funnel.sessions },
+    { label: 'Page Views', value: funnel.pageviews },
+    { label: 'Completed Orders', value: funnel.orders }
   ];
   const max = steps[0].value || 1;
 
   let html = '<div class="funnel-steps">';
   steps.forEach(step => {
     const pct = max > 0 ? ((step.value / max) * 100) : 0;
-    const pctStr = pct.toFixed(1) + '%';
-    const barWidth = Math.max(pct, 3); // minimum visible width
+    const pctStr = step === steps[0] ? '100%' : pct.toFixed(1) + '%';
+    const barWidth = Math.max(pct, 3);
     html += `<div class="funnel-step">
       <div class="funnel-label">${step.label}</div>
       <div class="funnel-bar-wrap">
@@ -3613,14 +3612,25 @@ function _renderAnalyticsFunnel(funnel) {
     </div>`;
   });
   html += '</div>';
-  wrap.innerHTML = html;
 
-  // Animate bars in
-  setTimeout(() => {
-    wrap.querySelectorAll('.funnel-bar').forEach(bar => {
-      bar.style.width = bar.style.width; // trigger reflow
-    });
-  }, 50);
+  // Metrics row below funnel
+  html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px;">`;
+  html += `<div style="text-align:center;padding:14px;background:var(--gray-50);border-radius:var(--radius);border:1px solid var(--gray-200);">
+    <div style="font-size:22px;font-weight:700;color:var(--primary);">${funnel.conversionRate}%</div>
+    <div style="font-size:12px;color:var(--gray-500);margin-top:2px;">Conversion Rate</div>
+  </div>`;
+  html += `<div style="text-align:center;padding:14px;background:var(--gray-50);border-radius:var(--radius);border:1px solid var(--gray-200);">
+    <div style="font-size:22px;font-weight:700;color:var(--amber);">${funnel.bounceRate}%</div>
+    <div style="font-size:12px;color:var(--gray-500);margin-top:2px;">Bounce Rate</div>
+  </div>`;
+  const pagesPerSession = funnel.sessions > 0 ? (funnel.pageviews / funnel.sessions).toFixed(1) : '0';
+  html += `<div style="text-align:center;padding:14px;background:var(--gray-50);border-radius:var(--radius);border:1px solid var(--gray-200);">
+    <div style="font-size:22px;font-weight:700;color:var(--green);">${pagesPerSession}</div>
+    <div style="font-size:12px;color:var(--gray-500);margin-top:2px;">Pages / Session</div>
+  </div>`;
+  html += '</div>';
+
+  wrap.innerHTML = html;
 }
 
 loadSettings();

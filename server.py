@@ -2494,7 +2494,7 @@ def _shopifyql_query(domain, token, query_str):
 def _analytics_via_shopifyql(domain, token, start, end):
     """Fetch analytics using ShopifyQL queries (revenue + funnel)."""
     revenue_q = f'FROM sales SHOW total_sales, orders GROUP BY day SINCE {start} UNTIL {end} ORDER BY day'
-    funnel_q = f'FROM sessions SHOW sessions, sessions_with_cart_addition, sessions_that_reached_checkout, sessions_converted SINCE {start} UNTIL {end}'
+    funnel_q = f'FROM sessions SHOW sessions, conversion_rate, pageviews, bounce_rate SINCE {start} UNTIL {end}'
 
     rev_result = [None, None]
     fun_result = [None, None]
@@ -2530,26 +2530,29 @@ def _analytics_via_shopifyql(domain, token, start, end):
     total_ord = sum(ord_values)
     aov = round(total_rev / total_ord, 2) if total_ord > 0 else 0
 
-    # Parse funnel data — rows are dicts
+    # Parse funnel / session metrics data — rows are dicts
     funnel = None
     if fun_result[0] and not fun_result[1]:
         ftd = fun_result[0]
         frows = ftd.get('rows', [])
-        # Sum across all rows
         s_sessions = 0
-        s_cart = 0
-        s_checkout = 0
-        s_converted = 0
+        s_conversion_rate = 0.0
+        s_pageviews = 0
+        s_bounce_rate = 0.0
         for row in frows:
             s_sessions += int(float(row.get('sessions', '0') or '0'))
-            s_cart += int(float(row.get('sessions_with_cart_addition', '0') or '0'))
-            s_checkout += int(float(row.get('sessions_that_reached_checkout', '0') or '0'))
-            s_converted += int(float(row.get('sessions_converted', '0') or '0'))
+            s_conversion_rate = float(row.get('conversion_rate', '0') or '0')
+            s_pageviews += int(float(row.get('pageviews', '0') or '0'))
+            s_bounce_rate = float(row.get('bounce_rate', '0') or '0')
+        # Compute completed checkouts from conversion rate
+        s_converted = int(round(s_sessions * s_conversion_rate))
         funnel = {
             'sessions': s_sessions,
-            'addedToCart': s_cart,
-            'reachedCheckout': s_checkout,
-            'completedCheckout': s_converted
+            'pageviews': s_pageviews,
+            'conversionRate': round(s_conversion_rate * 100, 2),
+            'bounceRate': round(s_bounce_rate * 100, 2),
+            'completedCheckout': s_converted,
+            'orders': total_ord  # from revenue data above
         }
 
     return {
