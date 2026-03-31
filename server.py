@@ -2994,7 +2994,8 @@ def store_analytics(store_id):
 
         return jsonify(resp_data)
     except Exception as e:
-        log.error(f'Analytics error for {store.get("name","")}: {e}')
+        import traceback
+        log.error(f'Analytics error for {store.get("name","")}: {e}\n{traceback.format_exc()}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
