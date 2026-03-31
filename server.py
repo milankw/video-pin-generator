@@ -155,6 +155,53 @@ def _load_stores():
 def _save_stores(stores):
     _save_json('stores.json', stores)
 
+# ===== Exchange rate helpers =====
+def _get_eur_usd_rate():
+    """Fetch EUR/USD rate, cached daily in data/exchange_rates.json."""
+    cache = _load_json('exchange_rates.json', {})
+    today = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+    if cache.get('date') == today and cache.get('EUR_USD'):
+        return cache['EUR_USD']
+    try:
+        resp = http_requests.get('https://api.frankfurter.dev/v1/latest?from=EUR&to=USD', timeout=10)
+        if resp.status_code == 200:
+            rate = resp.json().get('rates', {}).get('USD', 1.08)
+            _save_json('exchange_rates.json', {'EUR_USD': rate, 'date': today})
+            log.info(f'Fetched EUR/USD rate: {rate}')
+            return rate
+    except Exception as e:
+        log.warning(f'Failed to fetch EUR/USD rate: {e}')
+    return cache.get('EUR_USD', 1.08)  # fallback to cached or hardcoded
+
+def _ensure_store_currency(store):
+    """Fetch and cache store currency from Shopify if not set."""
+    if store.get('currency'):
+        return store['currency']
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return 'USD'
+    try:
+        resp = http_requests.get(
+            f'https://{domain}/admin/api/2024-01/shop.json?fields=currency',
+            headers={'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            currency = resp.json().get('shop', {}).get('currency', 'USD')
+            store['currency'] = currency
+            stores = _load_stores()
+            for s in stores:
+                if s['id'] == store['id']:
+                    s['currency'] = currency
+                    break
+            _save_stores(stores)
+            log.info(f'Detected currency for {store.get("name", "")}: {currency}')
+            return currency
+    except Exception as e:
+        log.warning(f'Failed to fetch currency for {store.get("name", "")}: {e}')
+    return 'USD'
+
 # Default prompt batches — each category gets 4 prompts
 _DEFAULT_PROMPT_BATCHES = {
     'sweaters': [
@@ -2812,26 +2859,35 @@ def analytics_utm_breakdown(store_id):
             labels.append(d.isoformat())
             d += datetime.timedelta(days=1)
 
+        # EUR → USD conversion if needed
+        currency = _ensure_store_currency(store)
+        rate = _get_eur_usd_rate() if currency == 'EUR' else 1.0
+
         # Format response
         source_list = []
         for src, data in sorted(sources.items(), key=lambda x: -x[1]['revenue']):
-            daily_rev = [round(data['daily'].get(lbl, {}).get('rev', 0.0), 2) for lbl in labels]
+            daily_rev = [round(data['daily'].get(lbl, {}).get('rev', 0.0) * rate, 2) for lbl in labels]
             daily_ord = [data['daily'].get(lbl, {}).get('ord', 0) for lbl in labels]
+            rev = round(data['revenue'] * rate, 2)
             source_list.append({
                 'source': src,
-                'revenue': round(data['revenue'], 2),
+                'revenue': rev,
                 'orders': data['orders'],
-                'aov': round(data['revenue'] / data['orders'], 2) if data['orders'] > 0 else 0,
+                'aov': round(rev / data['orders'], 2) if data['orders'] > 0 else 0,
                 'daily_revenue': daily_rev,
                 'daily_orders': daily_ord
             })
 
-        return jsonify({
+        resp = {
             'success': True,
             'labels': labels,
             'sources': source_list,
             'total_orders': len(orders)
-        })
+        }
+        if currency == 'EUR':
+            resp['original_currency'] = 'EUR'
+            resp['conversion_rate'] = rate
+        return jsonify(resp)
     except Exception as e:
         log.error(f'UTM breakdown error for {store.get("name","")}: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2898,16 +2954,29 @@ def store_analytics(store_id):
             if err2:
                 return jsonify({'success': False, 'error': f'Analytics failed: {err2}'}), 500
 
-        # Detect currency from store or default
-        currency = store.get('currency', 'USD')
+        # Detect currency and convert EUR → USD if needed
+        currency = _ensure_store_currency(store)
+        conversion_rate = None
+        if currency == 'EUR':
+            rate = _get_eur_usd_rate()
+            conversion_rate = rate
+            # Convert revenue values
+            if 'revenue' in result:
+                result['revenue']['values'] = [round(v * rate, 2) for v in result['revenue']['values']]
+                result['revenue']['total'] = round(result['revenue']['total'] * rate, 2)
+            if 'aov' in result:
+                result['aov'] = round(result['aov'] * rate, 2)
 
         resp_data = {
             'success': True,
             'store': store.get('name', ''),
-            'currency': currency,
+            'currency': 'USD',
             'period': {'start': start, 'end': end},
             **result
         }
+        if conversion_rate:
+            resp_data['original_currency'] = 'EUR'
+            resp_data['conversion_rate'] = conversion_rate
         if tz:
             resp_data['tz'] = tz
 

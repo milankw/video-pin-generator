@@ -682,6 +682,7 @@ textarea { resize: vertical; min-height: 80px; }
 .analytics-plat-badge.plat-google { background: #4285f4; }
 .analytics-plat-badge.plat-pinterest { background: #e60023; }
 .analytics-plat-badge.plat-native { background: #f59e0b; }
+.analytics-conversion-badge { font-size: 11px; padding: 3px 9px; border-radius: 8px; font-weight: 600; background: #7c3aed; color: #fff; margin-left: 4px; }
 
 /* ===== Drive Browser ===== */
 .drive-tree {
@@ -1427,6 +1428,7 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="analytics-tz-row" id="analytics-tz-row" style="display:none;">
         <span class="analytics-tz-label">Store timezone: <span class="tz-badge" id="analytics-tz-badge">--</span></span>
         <span class="analytics-platform-badges" id="analytics-platform-badges"></span>
+        <span class="analytics-conversion-badge" id="analytics-conversion-badge" style="display:none;"></span>
         <span class="analytics-tz-override">View as: <select id="analytics-tz-override" onchange="loadAnalytics(true)"><option value="">Store default</option></select></span>
       </div>
       <div class="analytics-utm-row" id="analytics-utm-row">
@@ -3635,6 +3637,15 @@ async function loadAnalytics(force) {
   content.style.display = '';
   _analyticsLoaded = true;
   _analyticsBaseData = data;
+
+  // Show conversion badge for EUR stores
+  const convBadge = document.getElementById('analytics-conversion-badge');
+  if (data.original_currency && data.conversion_rate) {
+    convBadge.textContent = `${data.original_currency} → USD @ ${data.conversion_rate.toFixed(4)}`;
+    convBadge.style.display = '';
+  } else {
+    convBadge.style.display = 'none';
+  }
 
   // Reset UTM filter — clear old options immediately
   const utmSel = document.getElementById('analytics-utm-select');
