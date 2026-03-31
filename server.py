@@ -2473,7 +2473,8 @@ def _shopifyql_query(domain, token, query_str):
     graphql_url = f'https://{domain}/admin/api/2026-01/graphql.json'
     headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
     gql = json.dumps({
-        'query': '{ shopifyqlQuery(query: "' + query_str.replace('"', '\\"') + '") { tableData { columns { name dataType displayName } rows } parseErrors } }'
+        'query': 'query($q: String!) { shopifyqlQuery(query: $q) { tableData { columns { name dataType displayName } rows } parseErrors } }',
+        'variables': {'q': query_str}
     })
     resp = http_requests.post(graphql_url, data=gql, headers=headers, timeout=30)
     if resp.status_code != 200:
@@ -2491,10 +2492,11 @@ def _shopifyql_query(domain, token, query_str):
         return None, 'No tableData'
     return td, None
 
-def _analytics_via_shopifyql(domain, token, start, end):
+def _analytics_via_shopifyql(domain, token, start, end, tz=None):
     """Fetch analytics using ShopifyQL queries (revenue + funnel)."""
-    revenue_q = f'FROM sales SHOW total_sales, orders GROUP BY day SINCE {start} UNTIL {end} ORDER BY day'
-    funnel_q = f'FROM sessions SHOW sessions, conversion_rate, pageviews, bounce_rate SINCE {start} UNTIL {end}'
+    tz_clause = f" WITH TIMEZONE '{tz}'" if tz else ''
+    revenue_q = f'FROM sales SHOW total_sales, orders GROUP BY day SINCE {start} UNTIL {end} ORDER BY day{tz_clause}'
+    funnel_q = f'FROM sessions SHOW sessions, conversion_rate, pageviews, bounce_rate SINCE {start} UNTIL {end}{tz_clause}'
 
     rev_result = [None, None]
     fun_result = [None, None]
@@ -2626,6 +2628,36 @@ def _analytics_via_orders(domain, token, start, end):
         'source': 'orders_api'
     }, None
 
+@app.route('/api/store-timezone/<store_id>', methods=['GET'])
+@login_required
+def store_timezone(store_id):
+    """Fetch store timezone info from Shopify."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+    try:
+        graphql_url = f'https://{domain}/admin/api/2026-01/graphql.json'
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        gql = json.dumps({'query': '{ shop { ianaTimezone timezoneAbbreviation timezoneOffset } }'})
+        resp = http_requests.post(graphql_url, data=gql, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return jsonify({'success': False, 'error': f'HTTP {resp.status_code}'}), 500
+        shop = resp.json().get('data', {}).get('shop', {})
+        return jsonify({
+            'success': True,
+            'ianaTimezone': shop.get('ianaTimezone', ''),
+            'abbreviation': shop.get('timezoneAbbreviation', ''),
+            'offset': shop.get('timezoneOffset', '')
+        })
+    except Exception as e:
+        log.error(f'Timezone fetch error for {store.get("name","")}: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/analytics/<store_id>', methods=['GET'])
 @login_required
 def store_analytics(store_id):
@@ -2644,9 +2676,14 @@ def store_analytics(store_id):
     start = request.args.get('start', (today - datetime.timedelta(days=6)).isoformat())
     end = request.args.get('end', today.isoformat())
 
+    # Timezone override — validate IANA format (contains '/' or is 'UTC')
+    tz = request.args.get('tz', None)
+    if tz and tz != 'UTC' and '/' not in tz:
+        tz = None  # Invalid, ignore
+
     try:
         # Try ShopifyQL first, fall back to Orders API
-        result, err = _analytics_via_shopifyql(domain, token, start, end)
+        result, err = _analytics_via_shopifyql(domain, token, start, end, tz=tz)
         if err:
             log.info(f'ShopifyQL failed for {store.get("name","")}: {err} — falling back to Orders API')
             result, err2 = _analytics_via_orders(domain, token, start, end)
@@ -2656,13 +2693,17 @@ def store_analytics(store_id):
         # Detect currency from store or default
         currency = store.get('currency', 'USD')
 
-        return jsonify({
+        resp_data = {
             'success': True,
             'store': store.get('name', ''),
             'currency': currency,
             'period': {'start': start, 'end': end},
             **result
-        })
+        }
+        if tz:
+            resp_data['tz'] = tz
+
+        return jsonify(resp_data)
     except Exception as e:
         log.error(f'Analytics error for {store.get("name","")}: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500

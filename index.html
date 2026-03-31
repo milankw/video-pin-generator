@@ -1016,6 +1016,13 @@ textarea { resize: vertical; min-height: 80px; }
 .analytics-source-badge.src-shopifyql { background: #dbeafe; color: #1d4ed8; }
 .analytics-source-badge.src-orders { background: #fef3c7; color: #92400e; }
 
+.analytics-tz-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.analytics-tz-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--gray-600); }
+.analytics-tz-label .tz-badge { background: var(--gray-100); padding: 3px 10px; border-radius: var(--radius-sm); font-weight: 600; color: var(--gray-700); font-size: 12px; }
+.analytics-tz-override { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gray-500); }
+.analytics-tz-override select { padding: 5px 10px; border-radius: var(--radius); border: 1px solid var(--gray-300); background: #fff; font-size: 12px; color: var(--gray-700); font-family: inherit; cursor: pointer; }
+.analytics-tz-override select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+
 @media (max-width: 768px) {
   .analytics-summary { grid-template-columns: 1fr; }
   .funnel-label { min-width: 120px; font-size: 12px; }
@@ -1393,6 +1400,10 @@ textarea { resize: vertical; min-height: 80px; }
           <button class="btn btn-primary btn-sm" onclick="loadAnalytics(true)">Apply</button>
         </div>
       </div>
+      <div class="analytics-tz-row" id="analytics-tz-row" style="display:none;">
+        <span class="analytics-tz-label">Store timezone: <span class="tz-badge" id="analytics-tz-badge">--</span></span>
+        <span class="analytics-tz-override">View as: <select id="analytics-tz-override" onchange="loadAnalytics(true)"><option value="">Store default</option></select></span>
+      </div>
       <div class="analytics-summary">
         <div class="a-stat stat-revenue">
           <div class="a-stat-label">Total Revenue</div>
@@ -1505,6 +1516,8 @@ let _analyticsLoaded = false;
 let _analyticsStoreId = null;
 let _analyticsTimeframe = '7d';
 let _analyticsChart = null;
+let _analyticsTzCache = {};  // storeId -> {iana, abbr, offset}
+let _analyticsTzPopulated = false;
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -3433,9 +3446,54 @@ async function loadAnalytics(force) {
   const storeId = sel.value;
   if (!storeId) return;
 
+  // Reset timezone override when store changes
+  if (_analyticsStoreId && _analyticsStoreId !== storeId) {
+    document.getElementById('analytics-tz-override').value = '';
+  }
+  _analyticsStoreId = storeId;
+
   loading.style.display = 'flex';
   content.style.display = 'none';
   empty.style.display = 'none';
+
+  // Fetch & cache store timezone
+  const tzRow = document.getElementById('analytics-tz-row');
+  const tzBadge = document.getElementById('analytics-tz-badge');
+  if (!_analyticsTzCache[storeId]) {
+    try {
+      const tzData = await api(`/api/store-timezone/${storeId}`);
+      if (tzData?.success) {
+        _analyticsTzCache[storeId] = { iana: tzData.ianaTimezone, abbr: tzData.abbreviation, offset: tzData.offset };
+      }
+    } catch(e) { /* ignore */ }
+  }
+  const tzInfo = _analyticsTzCache[storeId];
+  if (tzInfo && tzInfo.iana) {
+    tzBadge.textContent = `${tzInfo.abbr} (${tzInfo.iana})`;
+    tzRow.style.display = 'flex';
+  } else {
+    tzRow.style.display = 'none';
+  }
+
+  // Populate timezone override dropdown once
+  if (!_analyticsTzPopulated) {
+    const tzSel = document.getElementById('analytics-tz-override');
+    const zones = [
+      ['Pacific/Honolulu', 'HST'], ['America/Los_Angeles', 'PT'], ['America/Denver', 'MT'],
+      ['America/Chicago', 'CT'], ['America/New_York', 'ET'], ['America/Sao_Paulo', 'BRT'],
+      ['UTC', 'UTC'], ['Europe/London', 'GMT/BST'], ['Europe/Paris', 'CET/CEST'],
+      ['Europe/Istanbul', 'TRT'], ['Asia/Dubai', 'GST'], ['Asia/Kolkata', 'IST'],
+      ['Asia/Shanghai', 'CST'], ['Asia/Tokyo', 'JST'], ['Australia/Sydney', 'AEST/AEDT'],
+      ['Pacific/Auckland', 'NZST/NZDT']
+    ];
+    zones.forEach(([iana, abbr]) => {
+      const opt = document.createElement('option');
+      opt.value = iana;
+      opt.textContent = `${abbr} — ${iana}`;
+      tzSel.appendChild(opt);
+    });
+    _analyticsTzPopulated = true;
+  }
 
   const { start, end } = _analyticsDateRange();
   if (!start || !end) {
@@ -3445,7 +3503,12 @@ async function loadAnalytics(force) {
     return;
   }
 
-  const data = await api(`/api/analytics/${storeId}?start=${start}&end=${end}`);
+  // Build URL with optional timezone override
+  const tzOverride = document.getElementById('analytics-tz-override').value;
+  let analyticsUrl = `/api/analytics/${storeId}?start=${start}&end=${end}`;
+  if (tzOverride) analyticsUrl += `&tz=${encodeURIComponent(tzOverride)}`;
+
+  const data = await api(analyticsUrl);
   loading.style.display = 'none';
 
   if (!data?.success) {
