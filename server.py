@@ -126,7 +126,7 @@ def admin_required(f):
             if request.path.startswith('/api/'):
                 return jsonify({'success': False, 'error': 'Not authenticated'}), 401
             return redirect('/login')
-        if session.get('role') != 'admin':
+        if session.get('role', 'admin') != 'admin':
             return jsonify({'success': False, 'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated
