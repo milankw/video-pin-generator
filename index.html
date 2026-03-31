@@ -1553,6 +1553,36 @@ let _analyticsTzPopulated = false;
 let _analyticsUtmData = null;  // cached UTM breakdown response
 let _analyticsBaseData = null; // cached base analytics response (for restoring after UTM filter)
 let _analyticsStoresMap = {};  // storeId -> store object (for platform badges)
+let _userRole = 'admin';  // default, updated by applyRoleGating()
+
+// ===== Role Gating =====
+async function applyRoleGating() {
+  try {
+    const data = await api('/api/session-role');
+    if (!data?.success) return;
+    _userRole = data.role || 'admin';
+    if (_userRole === 'viewer') {
+      // Hide all tabs except Analytics
+      const hideTabs = ['settings', 'stores', 'winners', 'queue', 'gallery', 'orders', 'apps'];
+      hideTabs.forEach(t => {
+        const tab = document.querySelector(`.tab[data-tab="${t}"]`);
+        if (tab) tab.style.display = 'none';
+        const panel = document.getElementById(`panel-${t}`);
+        if (panel) panel.classList.remove('active');
+      });
+      // Activate analytics tab
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      const analyticsTab = document.querySelector('.tab[data-tab="analytics"]');
+      const analyticsPanel = document.getElementById('panel-analytics');
+      if (analyticsTab) analyticsTab.classList.add('active');
+      if (analyticsPanel) analyticsPanel.classList.add('active');
+      loadAnalytics();
+    }
+  } catch (e) {
+    console.error('Role gating error:', e);
+  }
+}
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -3855,11 +3885,15 @@ function _renderAnalyticsFunnel(funnel) {
   wrap.innerHTML = html;
 }
 
-loadSettings();
-loadStoreSelector();
-loadStoresTable();
-startQueueRefresh();
-refreshQueue();
+applyRoleGating().then(() => {
+  if (_userRole === 'admin') {
+    loadSettings();
+    loadStoreSelector();
+    loadStoresTable();
+    startQueueRefresh();
+    refreshQueue();
+  }
+});
 </script>
 </body>
 </html>

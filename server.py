@@ -48,7 +48,9 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 
 # ===== Auth =====
 PASSWORD_HASH_FILE = os.path.join(BASE_DIR, '.password_hash')
+VIEWER_HASH_FILE = os.path.join(BASE_DIR, '.viewer_password_hash')
 DEFAULT_PASSWORD = os.environ.get('VPG_PASSWORD', 'videopins2026!')
+DEFAULT_VIEWER_PASSWORD = os.environ.get('VPG_VIEWER_PASSWORD', 'analytics2026!')
 
 def _get_password_hash():
     if os.path.exists(PASSWORD_HASH_FILE):
@@ -59,7 +61,17 @@ def _get_password_hash():
         f.write(hashed.decode('utf-8'))
     return hashed
 
+def _get_viewer_hash():
+    if os.path.exists(VIEWER_HASH_FILE):
+        with open(VIEWER_HASH_FILE, 'r') as f:
+            return f.read().strip().encode('utf-8')
+    hashed = bcrypt.hashpw(DEFAULT_VIEWER_PASSWORD.encode('utf-8'), bcrypt.gensalt(rounds=12))
+    with open(VIEWER_HASH_FILE, 'w') as f:
+        f.write(hashed.decode('utf-8'))
+    return hashed
+
 PASSWORD_HASH = _get_password_hash()
+VIEWER_PASSWORD_HASH = _get_viewer_hash()
 
 def verify_password(password):
     return bcrypt.checkpw(password.encode('utf-8'), PASSWORD_HASH)
@@ -104,6 +116,18 @@ def login_required(f):
             if request.path.startswith('/api/'):
                 return jsonify({'success': False, 'error': 'Not authenticated'}), 401
             return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('authenticated'):
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+            return redirect('/login')
+        if session.get('role') != 'admin':
+            return jsonify({'success': False, 'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -844,9 +868,17 @@ def login_submit():
     import random
     time.sleep(random.uniform(0.2, 0.5))
 
+    # Check admin password first, then viewer password
+    role = None
     if verify_password(password):
+        role = 'admin'
+    elif bcrypt.checkpw(password.encode('utf-8'), VIEWER_PASSWORD_HASH):
+        role = 'viewer'
+
+    if role:
         _clear_attempts(ip)
         session['authenticated'] = True
+        session['role'] = role
         session.permanent = True
         app.permanent_session_lifetime = datetime.timedelta(days=30)
         session.modified = True
@@ -865,6 +897,11 @@ def logout():
 
 
 # ===== Routes: Pages =====
+@app.route('/api/session-role')
+@login_required
+def session_role():
+    return jsonify({'success': True, 'role': session.get('role', 'admin')})
+
 @app.route('/')
 @login_required
 def index():
@@ -881,7 +918,7 @@ def health():
 
 # ===== Routes: Store Prompts =====
 @app.route('/api/stores/<store_id>/platforms', methods=['PUT'])
-@login_required
+@admin_required
 def update_store_platforms(store_id):
     """Update which ad platforms a store is live on."""
     stores = _load_stores()
@@ -898,7 +935,7 @@ def update_store_platforms(store_id):
     return jsonify({'success': True, 'platforms': platforms})
 
 @app.route('/api/stores/<store_id>/prompts', methods=['GET'])
-@login_required
+@admin_required
 def get_store_prompts(store_id):
     """Get prompts for a store. If none exist, return defaults."""
     stores = _load_stores()
@@ -913,7 +950,7 @@ def get_store_prompts(store_id):
 
 
 @app.route('/api/stores/<store_id>/prompts', methods=['PUT'])
-@login_required
+@admin_required
 def save_store_prompts(store_id):
     """Save prompts for a store."""
     data = request.json
@@ -963,7 +1000,7 @@ def get_stores():
     return jsonify({'success': True, 'stores': safe})
 
 @app.route('/api/stores/sync', methods=['POST'])
-@login_required
+@admin_required
 def sync_stores():
     """Sync stores from Pinterest Autopilot or Google Ads Hub.
     Body: {source: 'pinterest' | 'gads'}  (default: 'pinterest')
@@ -1087,7 +1124,7 @@ def sync_stores():
 
 # ===== Routes: Settings =====
 @app.route('/api/settings', methods=['GET'])
-@login_required
+@admin_required
 def get_settings():
     settings = _load_settings()
     safe = dict(settings)
@@ -1098,7 +1135,7 @@ def get_settings():
     return jsonify({'success': True, 'settings': safe})
 
 @app.route('/api/settings', methods=['POST'])
-@login_required
+@admin_required
 def save_settings():
     data = request.json
     settings = _load_settings()
@@ -1135,7 +1172,7 @@ def save_settings():
     return jsonify({'success': True})
 
 @app.route('/api/settings/prompt-batches', methods=['GET'])
-@login_required
+@admin_required
 def get_prompt_batches():
     """Get all prompt batch options for the category selector."""
     settings = _load_settings()
@@ -1161,7 +1198,7 @@ def get_prompt_batches():
     return jsonify({'success': True, 'batches': options})
 
 @app.route('/api/settings/prompt-batches/custom', methods=['POST'])
-@login_required
+@admin_required
 def save_custom_prompt_batch():
     """Create or update a custom prompt batch."""
     data = request.json or {}
@@ -1182,7 +1219,7 @@ def save_custom_prompt_batch():
     return jsonify({'success': True})
 
 @app.route('/api/settings/prompt-batches/custom/<key>', methods=['DELETE'])
-@login_required
+@admin_required
 def delete_custom_prompt_batch(key):
     """Delete a custom prompt batch."""
     settings = _load_settings()
@@ -1194,7 +1231,7 @@ def delete_custom_prompt_batch(key):
     return jsonify({'success': True})
 
 @app.route('/api/settings/test-xai', methods=['POST'])
-@login_required
+@admin_required
 def test_xai_connection():
     """Test xAI API key by listing models and video generation models."""
     settings = _load_settings()
@@ -1234,7 +1271,7 @@ def test_xai_connection():
 
 # ===== Routes: Google AI (Gemini) =====
 @app.route('/api/settings/test-google-ai', methods=['POST'])
-@login_required
+@admin_required
 def test_google_ai():
     """Test Google AI (Gemini) API key."""
     data = request.json
@@ -1278,7 +1315,7 @@ def test_google_ai():
 
 # ===== Routes: Shopify OAuth =====
 @app.route('/api/shopify/auth-url', methods=['POST'])
-@login_required
+@admin_required
 def shopify_auth_url():
     """Generate Shopify OAuth authorization URL for a specific store."""
     data = request.json or {}
@@ -1397,7 +1434,7 @@ def shopify_oauth_callback():
 
 # ===== Routes: Google Drive =====
 @app.route('/api/drive/auth-url', methods=['POST'])
-@login_required
+@admin_required
 def drive_auth_url():
     """Generate OAuth authorization URL for Google Drive."""
     data = request.json or {}
@@ -1498,7 +1535,7 @@ def drive_oauth_callback():
 
 
 @app.route('/api/drive/disconnect', methods=['POST'])
-@login_required
+@admin_required
 def drive_disconnect():
     """Disconnect Google Drive by clearing OAuth tokens."""
     settings = _load_settings()
@@ -1511,7 +1548,7 @@ def drive_disconnect():
     return jsonify({'success': True})
 
 @app.route('/api/drive/folders', methods=['GET'])
-@login_required
+@admin_required
 def drive_folders():
     """List contents of the root Drive folder."""
     service, err = _get_drive_service()
@@ -1559,7 +1596,7 @@ def drive_folders():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/drive/folders/<folder_id>', methods=['GET'])
-@login_required
+@admin_required
 def drive_folder_contents(folder_id):
     """List contents of a specific Drive folder."""
     service, err = _get_drive_service()
@@ -1606,7 +1643,7 @@ def drive_folder_contents(folder_id):
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/drive/upload/<job_id>', methods=['POST'])
-@login_required
+@admin_required
 def upload_to_drive(job_id):
     """Upload a completed video to Google Drive."""
     all_jobs = _load_all_jobs()
@@ -1680,7 +1717,7 @@ def upload_to_drive(job_id):
 
 # ===== Routes: Drive Management (rename, delete, create folder, move) =====
 @app.route('/api/drive/files/<file_id>/rename', methods=['PATCH'])
-@login_required
+@admin_required
 def drive_rename(file_id):
     data = request.json
     new_name = data.get('name', '').strip()
@@ -1703,7 +1740,7 @@ def drive_rename(file_id):
 
 
 @app.route('/api/drive/files/<file_id>', methods=['DELETE'])
-@login_required
+@admin_required
 def drive_delete(file_id):
     service, err = _get_drive_service()
     if not service:
@@ -1720,7 +1757,7 @@ def drive_delete(file_id):
 
 
 @app.route('/api/drive/folders', methods=['POST'])
-@login_required
+@admin_required
 def drive_create_folder():
     data = request.json
     name = data.get('name', '').strip()
@@ -1748,7 +1785,7 @@ def drive_create_folder():
 
 
 @app.route('/api/drive/files/<file_id>/move', methods=['PATCH'])
-@login_required
+@admin_required
 def drive_move(file_id):
     data = request.json
     new_parent_id = data.get('parentId', '')
@@ -1844,7 +1881,7 @@ def _fetch_orders_for_store(s):
         return None
 
 @app.route('/api/orders/summary', methods=['GET'])
-@login_required
+@admin_required
 def orders_summary():
     """Get fulfilled/unfulfilled/partial order counts per store + daily unfulfilled (parallel)."""
     global _orders_today, _orders_day_labels
@@ -1895,7 +1932,7 @@ def _fetch_apps_for_store(s):
         }
 
 @app.route('/api/stores/apps', methods=['GET'])
-@login_required
+@admin_required
 def get_store_apps():
     """Fetch installed Shopify apps for each store using GraphQL (parallel)."""
     stores = _load_stores()
@@ -1908,7 +1945,7 @@ def get_store_apps():
 
 # ===== Routes: Shopify Winners =====
 @app.route('/api/shopify/winners/<store_id>', methods=['GET'])
-@login_required
+@admin_required
 def shopify_winners(store_id):
     """Fetch top-selling products from Shopify orders."""
     stores = _load_stores()
@@ -2063,7 +2100,7 @@ def shopify_winners(store_id):
 
 # ===== Routes: Video Generation =====
 @app.route('/api/videos/generate', methods=['POST'])
-@login_required
+@admin_required
 def generate_videos():
     """Queue video generation for selected products.
     Creates N jobs per product (one per store prompt) if store has prompts configured.
@@ -2188,7 +2225,7 @@ def generate_videos():
     return jsonify({'success': True, 'queued': len(new_jobs), 'jobs': new_jobs})
 
 @app.route('/api/videos/queue', methods=['GET'])
-@login_required
+@admin_required
 def get_queue():
     """Get video jobs with pagination.
     Query params:
@@ -2231,7 +2268,7 @@ def get_queue():
 
 
 @app.route('/api/videos/queue/stats', methods=['GET'])
-@login_required
+@admin_required
 def get_queue_stats():
     """Get queue summary stats from both active and archive without returning all jobs."""
     with _jobs_lock:
@@ -2269,7 +2306,7 @@ def get_queue_stats():
 
 
 @app.route('/api/videos/queue/clear-completed', methods=['POST'])
-@login_required
+@admin_required
 def clear_completed():
     """Move all done/failed/cancelled jobs from active to archive immediately."""
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -2293,7 +2330,7 @@ def clear_completed():
     return jsonify({'success': True, 'cleared': len(to_archive)})
 
 @app.route('/api/videos/<job_id>/retry', methods=['POST'])
-@login_required
+@admin_required
 def retry_job(job_id):
     data = request.get_json(silent=True) or {}
     new_prompt = data.get('prompt', '').strip() if data.get('prompt') else ''
@@ -2363,7 +2400,7 @@ def retry_job(job_id):
     return jsonify({'success': True})
 
 @app.route('/api/drive/upload-group', methods=['POST'])
-@login_required
+@admin_required
 def upload_group_to_drive():
     data = request.json
     group_id = data.get('groupId', '') if data else ''
@@ -2432,7 +2469,7 @@ def upload_group_to_drive():
 
 
 @app.route('/api/videos/<job_id>/cancel', methods=['POST'])
-@login_required
+@admin_required
 def cancel_job(job_id):
     with _jobs_lock:
         jobs = _load_jobs()
@@ -2444,7 +2481,7 @@ def cancel_job(job_id):
     return jsonify({'success': True})
 
 @app.route('/api/videos/<job_id>/skip', methods=['POST'])
-@login_required
+@admin_required
 def skip_job(job_id):
     """Skip a generating/polling job — marks it failed so the worker moves on."""
     with _jobs_lock:
@@ -2458,7 +2495,7 @@ def skip_job(job_id):
     return jsonify({'success': True})
 
 @app.route('/api/videos/<job_id>/download', methods=['GET'])
-@login_required
+@admin_required
 def download_video(job_id):
     all_jobs = _load_all_jobs()
     job = next((j for j in all_jobs if j['id'] == job_id), None)
