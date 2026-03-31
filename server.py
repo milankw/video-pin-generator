@@ -2565,6 +2565,85 @@ def _analytics_via_shopifyql(domain, token, start, end, tz=None):
         'source': 'shopifyql'
     }, None
 
+def _extract_utm_source(landing_site, referring_site):
+    """Extract UTM source from order's landing_site URL params + referring_site."""
+    landing = landing_site or ''
+    referring = (referring_site or '').lower()
+    # Explicit utm_source in URL
+    if 'utm_source=' in landing:
+        try:
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(landing).query)
+            src = qs.get('utm_source', [''])[0]
+            if src:
+                return src.lower()
+        except Exception:
+            pass
+    # Infer from referring_site or landing page markers
+    if 'pinterest' in referring or 'pins_campaign_id' in landing:
+        return 'pinterest'
+    if 'google' in referring or 'gclid' in landing:
+        return 'google'
+    if 'facebook' in referring or 'fbclid' in landing or 'fb_' in landing:
+        return 'facebook'
+    if 'instagram' in referring:
+        return 'instagram'
+    if 'tiktok' in referring or 'ttclid' in landing:
+        return 'tiktok'
+    if 'taboola' in referring or 'taboola' in landing.lower():
+        return 'taboola'
+    if 'outbrain' in referring or 'outbrain' in landing.lower():
+        return 'outbrain'
+    if 'teads' in referring or 'teads' in landing.lower():
+        return 'teads'
+    if 'bing' in referring or 'msclkid' in landing:
+        return 'bing'
+    if 'yahoo' in referring:
+        return 'yahoo'
+    if 'snapchat' in referring or 'sclid' in landing:
+        return 'snapchat'
+    if referring and referring != 'null':
+        # Try to extract domain as source
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(referring).hostname or ''
+            host = host.replace('www.', '').replace('android-app://', '').replace('com.', '')
+            if host:
+                return host.split('.')[0]  # e.g. "bing" from "bing.com"
+        except Exception:
+            pass
+    return 'direct'
+
+def _fetch_orders_with_utm(domain, token, start, end):
+    """Fetch all orders in date range with landing_site and referring_site for UTM parsing."""
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    base_url = f'https://{domain}/admin/api/2024-01'
+    start_dt = f'{start}T00:00:00Z'
+    end_dt = f'{end}T23:59:59Z'
+    all_orders = []
+    page_url = (f'{base_url}/orders.json?status=any'
+                f'&created_at_min={start_dt}&created_at_max={end_dt}'
+                f'&limit=250&fields=id,created_at,current_total_price,landing_site,referring_site,financial_status')
+    pages = 0
+    while page_url and pages < 50:
+        resp = http_requests.get(page_url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            break
+        orders = resp.json().get('orders', [])
+        if not orders:
+            break
+        all_orders.extend(orders)
+        page_url = None
+        link = resp.headers.get('Link', '')
+        if 'rel="next"' in link:
+            for part in link.split(','):
+                if 'rel="next"' in part:
+                    page_url = part.split('<')[1].split('>')[0]
+                    break
+        pages += 1
+        time.sleep(0.3)
+    return all_orders
+
 def _analytics_via_orders(domain, token, start, end):
     """Fallback: compute revenue from REST Orders API."""
     headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
@@ -2627,6 +2706,73 @@ def _analytics_via_orders(domain, token, start, end):
         'funnel': None,
         'source': 'orders_api'
     }, None
+
+@app.route('/api/analytics/utm-breakdown/<store_id>', methods=['GET'])
+@login_required
+def analytics_utm_breakdown(store_id):
+    """Fetch UTM source breakdown for a store over a date range."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    start = request.args.get('start', (today - datetime.timedelta(days=6)).isoformat())
+    end = request.args.get('end', today.isoformat())
+
+    try:
+        orders = _fetch_orders_with_utm(domain, token, start, end)
+        # Group by utm_source
+        sources = {}  # source -> {revenue, orders, daily: {date -> {rev, ord}}}
+        for o in orders:
+            src = _extract_utm_source(o.get('landing_site'), o.get('referring_site'))
+            price = float(o.get('current_total_price', '0') or '0')
+            day = o.get('created_at', '')[:10]
+            if src not in sources:
+                sources[src] = {'revenue': 0.0, 'orders': 0, 'daily': {}}
+            sources[src]['revenue'] += price
+            sources[src]['orders'] += 1
+            if day not in sources[src]['daily']:
+                sources[src]['daily'][day] = {'rev': 0.0, 'ord': 0}
+            sources[src]['daily'][day]['rev'] += price
+            sources[src]['daily'][day]['ord'] += 1
+
+        # Build date labels for the period
+        d_start = datetime.date.fromisoformat(start)
+        d_end = datetime.date.fromisoformat(end)
+        labels = []
+        d = d_start
+        while d <= d_end:
+            labels.append(d.isoformat())
+            d += datetime.timedelta(days=1)
+
+        # Format response
+        source_list = []
+        for src, data in sorted(sources.items(), key=lambda x: -x[1]['revenue']):
+            daily_rev = [round(data['daily'].get(lbl, {}).get('rev', 0.0), 2) for lbl in labels]
+            daily_ord = [data['daily'].get(lbl, {}).get('ord', 0) for lbl in labels]
+            source_list.append({
+                'source': src,
+                'revenue': round(data['revenue'], 2),
+                'orders': data['orders'],
+                'aov': round(data['revenue'] / data['orders'], 2) if data['orders'] > 0 else 0,
+                'daily_revenue': daily_rev,
+                'daily_orders': daily_ord
+            })
+
+        return jsonify({
+            'success': True,
+            'labels': labels,
+            'sources': source_list,
+            'total_orders': len(orders)
+        })
+    except Exception as e:
+        log.error(f'UTM breakdown error for {store.get("name","")}: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/store-timezone/<store_id>', methods=['GET'])
 @login_required

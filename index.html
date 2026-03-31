@@ -1023,6 +1023,12 @@ textarea { resize: vertical; min-height: 80px; }
 .analytics-tz-override select { padding: 5px 10px; border-radius: var(--radius); border: 1px solid var(--gray-300); background: #fff; font-size: 12px; color: var(--gray-700); font-family: inherit; cursor: pointer; }
 .analytics-tz-override select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
 
+.analytics-utm-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.analytics-utm-label { font-size: 13px; font-weight: 500; color: var(--gray-600); }
+.analytics-utm-row select { padding: 7px 12px; border-radius: var(--radius); border: 1px solid var(--gray-300); background: #fff; font-size: 13px; color: var(--gray-800); font-family: inherit; cursor: pointer; min-width: 180px; }
+.analytics-utm-row select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+.spinner-sm { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--gray-200); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; }
+
 @media (max-width: 768px) {
   .analytics-summary { grid-template-columns: 1fr; }
   .funnel-label { min-width: 120px; font-size: 12px; }
@@ -1404,6 +1410,13 @@ textarea { resize: vertical; min-height: 80px; }
         <span class="analytics-tz-label">Store timezone: <span class="tz-badge" id="analytics-tz-badge">--</span></span>
         <span class="analytics-tz-override">View as: <select id="analytics-tz-override" onchange="loadAnalytics(true)"><option value="">Store default</option></select></span>
       </div>
+      <div class="analytics-utm-row" id="analytics-utm-row">
+        <span class="analytics-utm-label">UTM Source:</span>
+        <select id="analytics-utm-select" onchange="applyUtmFilter()">
+          <option value="">All Sources</option>
+        </select>
+        <span class="analytics-utm-loading" id="analytics-utm-loading" style="display:none;"><span class="spinner-sm"></span></span>
+      </div>
       <div class="analytics-summary">
         <div class="a-stat stat-revenue">
           <div class="a-stat-label">Total Revenue</div>
@@ -1518,6 +1531,8 @@ let _analyticsTimeframe = '7d';
 let _analyticsChart = null;
 let _analyticsTzCache = {};  // storeId -> {iana, abbr, offset}
 let _analyticsTzPopulated = false;
+let _analyticsUtmData = null;  // cached UTM breakdown response
+let _analyticsBaseData = null; // cached base analytics response (for restoring after UTM filter)
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -3519,8 +3534,37 @@ async function loadAnalytics(force) {
 
   content.style.display = '';
   _analyticsLoaded = true;
+  _analyticsBaseData = data;
 
-  // Currency formatter
+  // Reset UTM filter to All Sources
+  const utmSel = document.getElementById('analytics-utm-select');
+  utmSel.value = '';
+
+  // Render base data
+  _renderAnalyticsData(data);
+
+  // Fetch UTM breakdown in background
+  _analyticsUtmData = null;
+  const utmLoading = document.getElementById('analytics-utm-loading');
+  utmLoading.style.display = 'inline';
+  api(`/api/analytics/utm-breakdown/${storeId}?start=${start}&end=${end}`).then(utmResp => {
+    utmLoading.style.display = 'none';
+    if (utmResp?.success) {
+      _analyticsUtmData = utmResp;
+      // Populate UTM dropdown
+      while (utmSel.options.length > 1) utmSel.remove(1);
+      utmResp.sources.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.source;
+        const pct = _analyticsBaseData?.revenue?.total > 0 ? ` (${Math.round(s.revenue / _analyticsBaseData.revenue.total * 100)}%)` : '';
+        opt.textContent = `${s.source} — ${s.orders} orders — $${s.revenue.toLocaleString()}${pct}`;
+        utmSel.appendChild(opt);
+      });
+    }
+  }).catch(() => { utmLoading.style.display = 'none'; });
+}
+
+function _renderAnalyticsData(data) {
   const cur = data.currency || 'USD';
   const fmtMoney = v => {
     try { return new Intl.NumberFormat('en-US', { style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v); }
@@ -3544,6 +3588,9 @@ async function loadAnalytics(force) {
   if (data.source === 'shopifyql') {
     badge.textContent = 'ShopifyQL';
     badge.className = 'analytics-source-badge src-shopifyql';
+  } else if (data.source === 'utm_filter') {
+    badge.textContent = 'UTM Filter';
+    badge.className = 'analytics-source-badge src-orders';
   } else {
     badge.textContent = 'Orders API';
     badge.className = 'analytics-source-badge src-orders';
@@ -3554,6 +3601,44 @@ async function loadAnalytics(force) {
 
   // Funnel
   _renderAnalyticsFunnel(data.funnel);
+}
+
+function applyUtmFilter() {
+  const utmSel = document.getElementById('analytics-utm-select');
+  const selectedSrc = utmSel.value;
+
+  if (!selectedSrc || !_analyticsUtmData) {
+    // Show base data
+    if (_analyticsBaseData) _renderAnalyticsData(_analyticsBaseData);
+    return;
+  }
+
+  // Find the selected source in UTM data
+  const srcData = _analyticsUtmData.sources.find(s => s.source === selectedSrc);
+  if (!srcData) return;
+
+  const base = _analyticsBaseData;
+  const cur = base?.currency || 'USD';
+
+  // Build a data object in the same shape as the base analytics response
+  const filteredData = {
+    currency: cur,
+    revenue: {
+      labels: _analyticsUtmData.labels,
+      values: srcData.daily_revenue,
+      total: srcData.revenue
+    },
+    orders: {
+      values: srcData.daily_orders,
+      total: srcData.orders
+    },
+    aov: srcData.aov,
+    period: base?.period || {},
+    source: 'utm_filter',
+    funnel: null  // Funnel not available per UTM source
+  };
+
+  _renderAnalyticsData(filteredData);
 }
 
 function _renderAnalyticsChart(labels, values, currency) {
