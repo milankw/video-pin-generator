@@ -2668,59 +2668,71 @@ def _analytics_via_shopifyql(domain, token, start, end, tz=None):
     }, None
 
 def _extract_utm_source(landing_site, referring_site, note_attributes=None):
-    """Extract UTM source from order's note_attributes, landing_site URL params, or referring_site."""
+    """Extract UTM source from landing_site, referring_site, then note_attributes as fallback.
+
+    Priority order matters: landing URL and referrer reflect the current purchasing
+    session. note_attributes are theme cookies that can be stale from a previous visit.
+    """
+    from urllib.parse import urlparse, parse_qs
     landing = landing_site or ''
+    landing_lower = landing.lower()
     referring = (referring_site or '').lower()
     notes = note_attributes or []
 
-    # Priority 1: Check note_attributes for utm_source (theme-captured UTM)
-    for attr in notes:
-        if attr.get('name', '').lower() == 'utm_source' and attr.get('value', ''):
-            return attr['value'].lower()
-
-    # Priority 2: Explicit utm_source in landing URL
+    # Priority 1: Explicit utm_source in landing URL (current session)
     if 'utm_source=' in landing:
         try:
-            from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(landing).query)
             src = qs.get('utm_source', [''])[0]
             if src:
                 return src.lower()
         except Exception:
             pass
-    # Priority 3: Infer from referring_site or landing page markers
-    if 'pinterest' in referring or 'pins_campaign_id' in landing:
+
+    # Priority 2: Click IDs in landing URL + referring_site domain
+    if 'pins_campaign_id' in landing_lower or 'pinterest' in referring:
         return 'pinterest'
-    if 'google' in referring or 'gclid' in landing:
+    if 'gclid' in landing_lower or 'gad_source' in landing_lower or 'google' in referring:
         return 'google'
-    if 'facebook' in referring or 'fbclid' in landing or 'fb_' in landing:
+    if 'fbclid' in landing_lower or 'facebook' in referring or 'instagram' in referring:
         return 'facebook'
-    if 'instagram' in referring:
-        return 'instagram'
-    if 'tiktok' in referring or 'ttclid' in landing:
-        return 'tiktok'
-    if 'taboola' in referring or 'taboola' in landing.lower():
-        return 'taboola'
-    if 'outbrain' in referring or 'outbrain' in landing.lower():
+    if 'outbrain' in landing_lower or 'outbrain' in referring:
         return 'outbrain'
-    if 'teads' in referring or 'teads' in landing.lower():
-        return 'teads'
-    if 'bing' in referring or 'msclkid' in landing:
+    if 'taboola' in landing_lower or 'taboola' in referring:
+        return 'taboola'
+    if 'msclkid' in landing_lower or 'bing' in referring:
         return 'bing'
-    if 'yahoo' in referring:
-        return 'yahoo'
-    if 'snapchat' in referring or 'sclid' in landing:
+    if 'ttclid' in landing_lower or 'tiktok' in referring:
+        return 'tiktok'
+    if 'sclid' in landing_lower or 'snapchat' in referring:
         return 'snapchat'
+    if 'klaviyo' in landing_lower or 'klaviyo' in referring:
+        return 'klaviyo'
+    # Unknown referrer — extract domain name as source
     if referring and referring != 'null':
-        # Try to extract domain as source
         try:
-            from urllib.parse import urlparse
             host = urlparse(referring).hostname or ''
             host = host.replace('www.', '').replace('android-app://', '').replace('com.', '')
             if host:
                 return host.split('.')[0]
         except Exception:
             pass
+
+    # Priority 3: note_attributes cookie (fallback — may be stale from previous visit)
+    for attr in notes:
+        name = attr.get('name', '').lower()
+        val = attr.get('value', '')
+        if name == 'utm_source' and val:
+            return val.lower()
+    # Check note_attributes for click ID keys
+    note_map = {a.get('name', '').lower(): a.get('value', '') for a in notes}
+    if note_map.get('gclid'):
+        return 'google'
+    if note_map.get('epik'):
+        return 'pinterest'
+    if note_map.get('fbclid'):
+        return 'facebook'
+
     return 'direct'
 
 def _fetch_orders_with_utm(domain, token, start, end):
