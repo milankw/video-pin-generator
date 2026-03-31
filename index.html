@@ -666,6 +666,23 @@ textarea { resize: vertical; min-height: 80px; }
   text-transform: capitalize;
 }
 
+.platform-toggles { display: flex; gap: 4px; }
+.platform-toggle {
+  display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 500; cursor: pointer; transition: all 0.15s;
+  border: 1px solid var(--gray-200); background: #fff; color: var(--gray-400); user-select: none;
+}
+.platform-toggle:hover { border-color: var(--gray-300); color: var(--gray-600); }
+.platform-toggle.active { color: #fff; border-color: transparent; }
+.platform-toggle.active.plat-google { background: #4285f4; }
+.platform-toggle.active.plat-pinterest { background: #e60023; }
+.platform-toggle.active.plat-native { background: #f59e0b; }
+.analytics-platform-badges { display: inline-flex; gap: 4px; margin-left: 8px; }
+.analytics-plat-badge { font-size: 10px; padding: 2px 7px; border-radius: 8px; font-weight: 600; color: #fff; }
+.analytics-plat-badge.plat-google { background: #4285f4; }
+.analytics-plat-badge.plat-pinterest { background: #e60023; }
+.analytics-plat-badge.plat-native { background: #f59e0b; }
+
 /* ===== Drive Browser ===== */
 .drive-tree {
   border: 1px solid var(--gray-200);
@@ -1235,6 +1252,7 @@ textarea { resize: vertical; min-height: 80px; }
             <th>Store Name</th>
             <th>Domain</th>
             <th>Category</th>
+            <th>Platforms</th>
             <th>Status</th>
             <th>Products</th>
             <th>Actions</th>
@@ -1408,6 +1426,7 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
       <div class="analytics-tz-row" id="analytics-tz-row" style="display:none;">
         <span class="analytics-tz-label">Store timezone: <span class="tz-badge" id="analytics-tz-badge">--</span></span>
+        <span class="analytics-platform-badges" id="analytics-platform-badges"></span>
         <span class="analytics-tz-override">View as: <select id="analytics-tz-override" onchange="loadAnalytics(true)"><option value="">Store default</option></select></span>
       </div>
       <div class="analytics-utm-row" id="analytics-utm-row">
@@ -1533,6 +1552,7 @@ let _analyticsTzCache = {};  // storeId -> {iana, abbr, offset}
 let _analyticsTzPopulated = false;
 let _analyticsUtmData = null;  // cached UTM breakdown response
 let _analyticsBaseData = null; // cached base analytics response (for restoring after UTM filter)
+let _analyticsStoresMap = {};  // storeId -> store object (for platform badges)
 
 // ===== Toast =====
 function toast(msg, type='info') {
@@ -1577,7 +1597,13 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'stores') loadStoresTable();
     if (tab.dataset.tab === 'orders') { if (!_ordersLoaded) loadOrdersSummary(); }
     if (tab.dataset.tab === 'apps') { if (!_appsLoaded) loadStoreApps(); }
-    if (tab.dataset.tab === 'analytics') { loadAnalytics(); }
+    if (tab.dataset.tab === 'analytics') {
+      // Clear selector to force repopulation (picks up platform changes from Stores tab)
+      const aSel = document.getElementById('analytics-store-select');
+      aSel.innerHTML = '';
+      _analyticsLoaded = false;
+      loadAnalytics();
+    }
   });
 });
 
@@ -2071,11 +2097,18 @@ async function loadStoresTable() {
 
     const promptCountLabel = s.promptCount ? `${s.promptCount} prompts` : 'defaults';
 
+    const plats = s.platforms || [];
+    const platToggles = ['google', 'pinterest', 'native'].map(p => {
+      const active = plats.includes(p) ? ' active' : '';
+      return `<span class="platform-toggle plat-${p}${active}" data-store="${escAttr(s.id)}" data-plat="${p}" onclick="togglePlatform(this)">${p.charAt(0).toUpperCase() + p.slice(1)}</span>`;
+    }).join('');
+
     tr.innerHTML = `
       <td><span class="status-dot ${dotClass}"></span></td>
       <td style="font-weight:500;">${escHtml(s.name || 'Unnamed')}</td>
       <td><span class="domain-text" title="${escAttr(domain)}">${escHtml(truncDomain)}</span></td>
       <td><span class="category-badge">${escHtml(category)}</span></td>
+      <td><div class="platform-toggles">${platToggles}</div></td>
       <td>${statusBadge}</td>
       <td style="color:var(--gray-500);">${productCount}</td>
       <td style="display:flex;gap:6px;align-items:center;">
@@ -2087,6 +2120,26 @@ async function loadStoresTable() {
   });
 }
 
+
+// ===== Platform Toggles =====
+async function togglePlatform(el) {
+  const storeId = el.dataset.store;
+  const plat = el.dataset.plat;
+  el.classList.toggle('active');
+  // Collect all active platforms for this store
+  const row = el.closest('tr');
+  const activeToggles = row.querySelectorAll('.platform-toggle.active');
+  const platforms = Array.from(activeToggles).map(t => t.dataset.plat);
+  // Save to server
+  const resp = await api(`/api/stores/${storeId}/platforms`, 'PUT', { platforms });
+  if (!resp?.success) {
+    el.classList.toggle('active'); // revert on error
+    toast('Failed to update platforms', 'error');
+  }
+  // Update the in-memory stores array
+  const s = stores.find(s => s.id === storeId);
+  if (s) s.platforms = platforms;
+}
 
 // ===== Store Selector (Winners tab) =====
 async function loadStoreSelector() {
@@ -3434,7 +3487,7 @@ async function loadAnalytics(force) {
   const empty = document.getElementById('analytics-empty');
   const sel = document.getElementById('analytics-store-select');
 
-  // Populate store selector on first load only
+  // Populate store selector on first load only — only stores with platforms configured
   if (!sel.options.length) {
     const storeData = await api('/api/stores');
     if (!storeData?.success || !storeData.stores?.length) {
@@ -3443,17 +3496,23 @@ async function loadAnalytics(force) {
       empty.style.display = '';
       return;
     }
-    const connected = storeData.stores.filter(s => s.hasToken);
-    if (!connected.length) {
+    // Only show stores that have a Shopify token AND at least one platform set
+    const eligible = storeData.stores.filter(s => s.hasToken && s.platforms && s.platforms.length > 0);
+    // Cache all stores for reference
+    storeData.stores.forEach(s => { _analyticsStoresMap[s.id] = s; });
+    if (!eligible.length) {
       loading.style.display = 'none';
       content.style.display = 'none';
       empty.style.display = '';
+      empty.querySelector('.empty-state-text').textContent = 'No stores with platforms configured';
+      empty.querySelector('.empty-state-sub').textContent = 'Go to the Stores tab and set which platforms (Google, Pinterest, Native) each store is live on.';
       return;
     }
-    connected.forEach(s => {
+    eligible.forEach(s => {
       const opt = document.createElement('option');
       opt.value = s.id;
-      opt.textContent = s.name || s.domain;
+      const platLabels = (s.platforms || []).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(', ');
+      opt.textContent = (s.name || s.domain) + (platLabels ? ` [${platLabels}]` : '');
       sel.appendChild(opt);
     });
   }
@@ -3488,6 +3547,17 @@ async function loadAnalytics(force) {
     tzRow.style.display = 'flex';
   } else {
     tzRow.style.display = 'none';
+  }
+
+  // Show platform badges
+  const platBadgesEl = document.getElementById('analytics-platform-badges');
+  const storeInfo = _analyticsStoresMap[storeId];
+  if (storeInfo && storeInfo.platforms && storeInfo.platforms.length) {
+    platBadgesEl.innerHTML = storeInfo.platforms.map(p =>
+      `<span class="analytics-plat-badge plat-${p}">${p.charAt(0).toUpperCase() + p.slice(1)}</span>`
+    ).join('');
+  } else {
+    platBadgesEl.innerHTML = '';
   }
 
   // Populate timezone override dropdown once

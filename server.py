@@ -880,6 +880,23 @@ def health():
 
 
 # ===== Routes: Store Prompts =====
+@app.route('/api/stores/<store_id>/platforms', methods=['PUT'])
+@login_required
+def update_store_platforms(store_id):
+    """Update which ad platforms a store is live on."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+    body = request.get_json(force=True)
+    platforms = body.get('platforms', [])
+    # Validate: only allow known platform values
+    valid = {'google', 'pinterest', 'native'}
+    platforms = [p for p in platforms if p in valid]
+    store['platforms'] = platforms
+    _save_stores(stores)
+    return jsonify({'success': True, 'platforms': platforms})
+
 @app.route('/api/stores/<store_id>/prompts', methods=['GET'])
 @login_required
 def get_store_prompts(store_id):
@@ -940,7 +957,8 @@ def get_stores():
             'storeCategory': s.get('storeCategory', ''),
             'productCount': s.get('productCount', None),
             'hasToken': bool(s.get('shopifyAccessToken', '')),
-            'promptCount': len(s.get('prompts', []))
+            'promptCount': len(s.get('prompts', [])),
+            'platforms': s.get('platforms', [])
         })
     return jsonify({'success': True, 'stores': safe})
 
