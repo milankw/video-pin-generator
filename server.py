@@ -2603,9 +2603,15 @@ def _analytics_via_shopifyql(domain, token, start, end, tz=None):
     rev_result = [None, None]
     fun_result = [None, None]
     def run_rev():
-        rev_result[0], rev_result[1] = _shopifyql_query(domain, token, revenue_q)
+        try:
+            rev_result[0], rev_result[1] = _shopifyql_query(domain, token, revenue_q)
+        except Exception as e:
+            rev_result[1] = str(e)
     def run_fun():
-        fun_result[0], fun_result[1] = _shopifyql_query(domain, token, funnel_q)
+        try:
+            fun_result[0], fun_result[1] = _shopifyql_query(domain, token, funnel_q)
+        except Exception as e:
+            fun_result[1] = str(e)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         pool.submit(run_rev)
@@ -2617,6 +2623,8 @@ def _analytics_via_shopifyql(domain, token, start, end, tz=None):
 
     # Parse revenue data — rows are dicts with column names as keys
     td = rev_result[0]
+    if not td:
+        return None, 'ShopifyQL returned no data'
     rows = td.get('rows', [])
     labels = []
     rev_values = []
