@@ -3657,10 +3657,11 @@ async function loadAnalytics(force) {
       _analyticsUtmData = utmResp;
       // Populate UTM dropdown
       while (utmSel.options.length > 1) utmSel.remove(1);
+      const utmTotalRev = utmResp.sources.reduce((sum, s) => sum + s.revenue, 0);
       utmResp.sources.forEach(s => {
         const opt = document.createElement('option');
         opt.value = s.source;
-        const pct = _analyticsBaseData?.revenue?.total > 0 ? ` (${Math.round(s.revenue / _analyticsBaseData.revenue.total * 100)}%)` : '';
+        const pct = utmTotalRev > 0 ? ` (${Math.round(s.revenue / utmTotalRev * 100)}%)` : '';
         opt.textContent = `${s.source} — ${s.orders} orders — $${s.revenue.toLocaleString()}${pct}`;
         utmSel.appendChild(opt);
       });
