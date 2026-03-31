@@ -2565,11 +2565,18 @@ def _analytics_via_shopifyql(domain, token, start, end, tz=None):
         'source': 'shopifyql'
     }, None
 
-def _extract_utm_source(landing_site, referring_site):
-    """Extract UTM source from order's landing_site URL params + referring_site."""
+def _extract_utm_source(landing_site, referring_site, note_attributes=None):
+    """Extract UTM source from order's note_attributes, landing_site URL params, or referring_site."""
     landing = landing_site or ''
     referring = (referring_site or '').lower()
-    # Explicit utm_source in URL
+    notes = note_attributes or []
+
+    # Priority 1: Check note_attributes for utm_source (theme-captured UTM)
+    for attr in notes:
+        if attr.get('name', '').lower() == 'utm_source' and attr.get('value', ''):
+            return attr['value'].lower()
+
+    # Priority 2: Explicit utm_source in landing URL
     if 'utm_source=' in landing:
         try:
             from urllib.parse import urlparse, parse_qs
@@ -2579,7 +2586,7 @@ def _extract_utm_source(landing_site, referring_site):
                 return src.lower()
         except Exception:
             pass
-    # Infer from referring_site or landing page markers
+    # Priority 3: Infer from referring_site or landing page markers
     if 'pinterest' in referring or 'pins_campaign_id' in landing:
         return 'pinterest'
     if 'google' in referring or 'gclid' in landing:
@@ -2609,7 +2616,7 @@ def _extract_utm_source(landing_site, referring_site):
             host = urlparse(referring).hostname or ''
             host = host.replace('www.', '').replace('android-app://', '').replace('com.', '')
             if host:
-                return host.split('.')[0]  # e.g. "bing" from "bing.com"
+                return host.split('.')[0]
         except Exception:
             pass
     return 'direct'
@@ -2623,7 +2630,7 @@ def _fetch_orders_with_utm(domain, token, start, end):
     all_orders = []
     page_url = (f'{base_url}/orders.json?status=any'
                 f'&created_at_min={start_dt}&created_at_max={end_dt}'
-                f'&limit=250&fields=id,created_at,current_total_price,landing_site,referring_site,financial_status')
+                f'&limit=250&fields=id,created_at,current_total_price,landing_site,referring_site,financial_status,note_attributes')
     pages = 0
     while page_url and pages < 50:
         resp = http_requests.get(page_url, headers=headers, timeout=20)
@@ -2729,7 +2736,7 @@ def analytics_utm_breakdown(store_id):
         # Group by utm_source
         sources = {}  # source -> {revenue, orders, daily: {date -> {rev, ord}}}
         for o in orders:
-            src = _extract_utm_source(o.get('landing_site'), o.get('referring_site'))
+            src = _extract_utm_source(o.get('landing_site'), o.get('referring_site'), o.get('note_attributes'))
             price = float(o.get('current_total_price', '0') or '0')
             day = o.get('created_at', '')[:10]
             if src not in sources:
