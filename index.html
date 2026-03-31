@@ -3536,18 +3536,22 @@ async function loadAnalytics(force) {
   _analyticsLoaded = true;
   _analyticsBaseData = data;
 
-  // Reset UTM filter to All Sources
+  // Reset UTM filter — clear old options immediately
   const utmSel = document.getElementById('analytics-utm-select');
+  while (utmSel.options.length > 1) utmSel.remove(1);
   utmSel.value = '';
+  _analyticsUtmData = null;
 
   // Render base data
   _renderAnalyticsData(data);
 
-  // Fetch UTM breakdown in background
-  _analyticsUtmData = null;
+  // Fetch UTM breakdown in background for this store + date range
   const utmLoading = document.getElementById('analytics-utm-loading');
   utmLoading.style.display = 'inline';
+  const utmFetchStoreId = storeId;  // capture to detect stale responses
   api(`/api/analytics/utm-breakdown/${storeId}?start=${start}&end=${end}`).then(utmResp => {
+    // Ignore if user already switched to a different store
+    if (document.getElementById('analytics-store-select').value !== utmFetchStoreId) return;
     utmLoading.style.display = 'none';
     if (utmResp?.success) {
       _analyticsUtmData = utmResp;
