@@ -2066,7 +2066,7 @@ def shopify_winners(store_id):
             batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
             try:
                 pr = http_requests.get(
-                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,product_type,status',
+                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,variants,product_type,status',
                     headers=headers, timeout=30
                 )
                 if pr.status_code == 200:
@@ -2074,9 +2074,23 @@ def shopify_winners(store_id):
                         pid = prod.get('id')
                         if pid:
                             imgs = prod.get('images', [])
+                            img_by_id = {img['id']: img.get('src', '') for img in imgs if img.get('id')}
+                            default_img = imgs[0].get('src', '') if imgs else ''
+                            # Build variant list with resolved images
+                            variants = []
+                            seen_imgs = set()
+                            for v in prod.get('variants', []):
+                                v_img = img_by_id.get(v.get('image_id'), default_img)
+                                variants.append({
+                                    'id': str(v.get('id', '')),
+                                    'title': v.get('title', 'Default'),
+                                    'image': v_img
+                                })
+                                seen_imgs.add(v_img)
                             product_details[pid] = {
                                 'handle': prod.get('handle', ''),
-                                'image': imgs[0].get('src', '') if imgs else '',
+                                'image': default_img,
+                                'variants': variants if len(seen_imgs) > 1 else [],
                                 'product_type': prod.get('product_type', ''),
                                 'status': prod.get('status', 'unknown')
                             }
@@ -2121,6 +2135,7 @@ def shopify_winners(store_id):
                 'sales': p['quantity'],
                 'revenue': round(p['revenue'], 2),
                 'image': image_url,
+                'variants': detail.get('variants', []),
                 'handle': handle,
                 'productType': product_type,
                 'shopifyStatus': shopify_status,

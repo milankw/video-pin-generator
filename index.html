@@ -345,6 +345,18 @@ textarea { resize: vertical; min-height: 80px; }
   color: var(--gray-400);
   font-size: 32px;
 }
+.variant-selector {
+  display: flex; gap: 4px; padding: 6px 10px 0; overflow-x: auto;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.variant-selector::-webkit-scrollbar { display: none; }
+.variant-thumb {
+  width: 28px; height: 28px; border-radius: 50%; object-fit: cover;
+  border: 2px solid var(--gray-200); cursor: pointer; flex-shrink: 0;
+  transition: border-color .15s;
+}
+.variant-thumb:hover { border-color: var(--gray-400); }
+.variant-thumb.active { border-color: #3b82f6; box-shadow: 0 0 0 1px #3b82f6; }
 .product-card-body { padding: 14px; }
 .product-card-name {
   font-size: 13px;
@@ -1536,6 +1548,7 @@ textarea { resize: vertical; min-height: 80px; }
 // ===== State =====
 let stores = [];
 let winners = [];
+const selectedVariantImages = new Map(); // productId -> chosen image URL
 let selectedProducts = new Set();
 let queueInterval = null;
 let allSelectState = false;
@@ -2256,6 +2269,7 @@ async function fetchWinners() {
 
   winners = data.products;
   selectedProducts.clear();
+  selectedVariantImages.clear();
   allSelectState = false;
 
   // Fetch store prompt count for generate button label
@@ -2305,9 +2319,26 @@ function renderProducts() {
     card.className = `product-card${selectedProducts.has(p.id) ? ' selected' : ''}`;
     card.onclick = () => toggleProduct(p.id);
 
-    const imgHtml = p.image
-      ? `<img class="product-card-img" src="${p.image}" alt="${p.name}" loading="lazy">`
+    const displayImg = selectedVariantImages.get(p.id) || p.image;
+    const imgHtml = displayImg
+      ? `<img class="product-card-img" id="card-img-${p.id}" src="${displayImg}" alt="${p.name}" loading="lazy">`
       : `<div class="product-card-img-placeholder">&#128722;</div>`;
+
+    // Variant thumbnails (only when 2+ distinct images)
+    let variantHtml = '';
+    const variants = p.variants || [];
+    if (variants.length > 1) {
+      const seen = new Set();
+      const unique = variants.filter(v => { if (seen.has(v.image)) return false; seen.add(v.image); return true; });
+      if (unique.length > 1) {
+        const thumbs = unique.map(v => {
+          const isActive = (selectedVariantImages.get(p.id) || p.image) === v.image ? ' active' : '';
+          return `<img class="variant-thumb${isActive}" src="${v.image}" title="${escHtml(v.title)}" onclick="selectVariant(event,'${p.id}','${v.image.replace(/'/g, "\\'")}')"`
+            + ` loading="lazy">`;
+        }).join('');
+        variantHtml = `<div class="variant-selector">${thumbs}</div>`;
+      }
+    }
 
     let badgeHtml;
     if (p.videoStatus === 'done') {
@@ -2340,6 +2371,7 @@ function renderProducts() {
       ${badgeHtml}
       ${linkBtnHtml}
       ${imgHtml}
+      ${variantHtml}
       <div class="product-card-body">
         <div class="product-card-name">${escHtml(p.name)}</div>
         <div class="product-card-stats">
@@ -2367,6 +2399,21 @@ function toggleSelectAll() {
     selectedProducts.clear();
   }
   renderProducts();
+}
+
+function selectVariant(event, productId, imageUrl) {
+  event.stopPropagation();
+  selectedVariantImages.set(productId, imageUrl);
+  // Update main image without full re-render
+  const mainImg = document.getElementById(`card-img-${productId}`);
+  if (mainImg) mainImg.src = imageUrl;
+  // Update active thumbnail
+  const card = mainImg?.closest('.product-card');
+  if (card) {
+    card.querySelectorAll('.variant-thumb').forEach(t => {
+      t.classList.toggle('active', t.src === imageUrl);
+    });
+  }
 }
 
 function updateSelectionUI() {
@@ -2400,7 +2447,7 @@ async function generateVideos() {
       productId: p.id,
       productName: p.name,
       handle: p.handle,
-      imageUrl: p.image,
+      imageUrl: selectedVariantImages.get(p.id) || p.image,
       storeCategory: store.storeCategory || 'default'
     }));
 
