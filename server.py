@@ -146,13 +146,28 @@ def _load_json(filename, default=None):
 def _save_json(filename, data):
     path = os.path.join(DATA_DIR, filename)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
+    # Backup before overwriting critical files
+    if filename in ('stores.json', 'settings.json') and os.path.exists(path):
+        try:
+            existing = os.path.getsize(path)
+            if existing > 0:
+                import shutil
+                shutil.copy2(path, path + '.bak')
+        except Exception:
+            pass
+    # Atomic write: write to temp file then rename
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
 
 def _load_stores():
     return _load_json('stores.json', [])
 
 def _save_stores(stores):
+    if not stores:
+        log.warning('Refusing to save empty stores list')
+        return
     _save_json('stores.json', stores)
 
 # ===== Exchange rate helpers =====
