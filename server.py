@@ -3037,7 +3037,34 @@ def store_analytics(store_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ===== Video cleanup =====
+def _cleanup_old_videos(max_age_days=5):
+    """Delete local video files older than max_age_days."""
+    videos_dir = os.path.join(DATA_DIR, 'videos')
+    if not os.path.isdir(videos_dir):
+        return
+    cutoff = time.time() - (max_age_days * 86400)
+    deleted = 0
+    for root, dirs, files in os.walk(videos_dir, topdown=False):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                if os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+                    deleted += 1
+            except Exception:
+                pass
+        # Remove empty directories
+        try:
+            if not os.listdir(root) and root != videos_dir:
+                os.rmdir(root)
+        except Exception:
+            pass
+    if deleted:
+        log.info(f'Cleaned up {deleted} video files older than {max_age_days} days')
+
 # ===== Main =====
 if __name__ == '__main__':
+    _cleanup_old_videos(5)
     _ensure_worker()
     app.run(host='0.0.0.0', port=5110, debug=False)
