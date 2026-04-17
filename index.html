@@ -1741,6 +1741,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'stores') loadStoresTable();
     if (tab.dataset.tab === 'orders') { if (!_ordersLoaded) loadOrdersSummary(); }
     if (tab.dataset.tab === 'apps') { if (!_appsLoaded) loadStoreApps(); }
+    if (tab.dataset.tab === 'studio') { studioLoadJobs(); }
     if (tab.dataset.tab === 'analytics') {
       // Clear selector to force repopulation (picks up platform changes from Stores tab)
       const aSel = document.getElementById('analytics-store-select');
@@ -3622,7 +3623,25 @@ let _studioFile = null;  // selected File object
 let _studioDuration = 5;
 let _studioResolution = '720p';
 let _studioDetectedRatio = null;  // detected from uploaded image
-const _studioVideos = []; // {job_id, prompt, status, video_url, error, aspect_ratio, duration, resolution}
+let _studioVideos = []; // {job_id, prompt, status, video_url, error, aspect_ratio, duration, resolution}
+let _studioLoaded = false;
+
+async function studioLoadJobs() {
+  if (_studioLoaded && _studioVideos.length > 0) { studioRenderVideos(); return; }
+  try {
+    const data = await api('/api/studio/jobs');
+    if (data?.success && data.jobs) {
+      // Merge: keep any local 'generating' entries not yet in server list
+      const serverIds = new Set(data.jobs.map(j => j.job_id));
+      const localGenerating = _studioVideos.filter(v => v.status === 'generating' && !serverIds.has(v.job_id));
+      _studioVideos = [...localGenerating, ...data.jobs];
+      _studioLoaded = true;
+      studioRenderVideos();
+      // Resume polling for any still-generating jobs
+      _studioVideos.filter(v => v.status === 'generating').forEach(v => studioStartPolling(v));
+    }
+  } catch(e) { console.error('Failed to load studio jobs', e); }
+}
 
 const _studioRatioMap = [
   {w: 1, h: 1, label: '1:1'},
@@ -3762,8 +3781,9 @@ function studioRenderVideos() {
     let mediaHtml;
     if (v.status === 'done' && v.video_url) {
       mediaHtml = `<video controls preload="metadata" src="${v.video_url}"></video>`;
-    } else if (v.status === 'failed') {
-      mediaHtml = `<div class="studio-generating" style="color:#e53e3e">Failed${v.error ? ': ' + escHtml(v.error) : ''}</div>`;
+    } else if (v.status === 'failed' || v.status === 'expired') {
+      const msg = v.status === 'expired' ? 'Video expired (auto-deleted after 5 days)' : ('Failed' + (v.error ? ': ' + escHtml(v.error) : ''));
+      mediaHtml = `<div class="studio-generating" style="color:#e53e3e">${msg}</div>`;
     } else {
       mediaHtml = `<div class="studio-generating"><span class="spinner" style="width:18px;height:18px;border-width:2px;margin-right:8px"></span> Generating...</div>`;
     }
@@ -3779,6 +3799,7 @@ function studioRenderVideos() {
         <div class="studio-video-actions">
           ${dlBtn}
           <button onclick="studioRegenerate(${i})">Regenerate</button>
+          <button onclick="studioDeleteJob(${i})" style="color:#e53e3e">Delete</button>
         </div>
       </div>
     </div>`;
@@ -3789,6 +3810,17 @@ function studioRegenerate(index) {
   const v = _studioVideos[index];
   if (v) document.getElementById('studio-prompt').value = v.prompt;
   document.getElementById('studio-prompt').focus();
+}
+
+async function studioDeleteJob(index) {
+  const v = _studioVideos[index];
+  if (!v) return;
+  if (!confirm('Delete this video?')) return;
+  try {
+    await fetch(`/api/studio/jobs/${v.job_id}`, {method: 'DELETE'});
+  } catch(e) { /* ignore */ }
+  _studioVideos.splice(index, 1);
+  studioRenderVideos();
 }
 
 // Drag & drop for studio upload

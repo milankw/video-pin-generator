@@ -3040,7 +3040,69 @@ def store_analytics(store_id):
 # ===== Creative Studio =====
 STUDIO_DIR = os.path.join(DATA_DIR, 'studio')
 os.makedirs(STUDIO_DIR, exist_ok=True)
-_studio_jobs = {}  # job_id -> {request_id, status, video_url, error, prompt, ...}
+STUDIO_JOBS_FILE = os.path.join(DATA_DIR, 'studio_jobs.json')
+
+def _load_studio_jobs():
+    """Load persisted studio jobs from disk."""
+    if os.path.exists(STUDIO_JOBS_FILE):
+        try:
+            with open(STUDIO_JOBS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_studio_jobs(jobs):
+    """Persist studio jobs to disk (atomic write)."""
+    tmp = STUDIO_JOBS_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(jobs, f, indent=2)
+    os.replace(tmp, STUDIO_JOBS_FILE)
+
+_studio_jobs = _load_studio_jobs()
+
+@app.route('/api/studio/jobs', methods=['GET'])
+@admin_required
+def studio_list_jobs():
+    """Return all studio jobs (newest first) for the frontend to display on load."""
+    jobs = []
+    for job_id, job in _studio_jobs.items():
+        # Check if the video file still exists on disk for done jobs
+        if job.get('status') == 'done' and job.get('video_url'):
+            fname = job['video_url'].split('/')[-1]
+            if not os.path.exists(os.path.join(STUDIO_DIR, fname)):
+                job['status'] = 'expired'
+                job['video_url'] = None
+        jobs.append({
+            'job_id': job_id,
+            'status': job.get('status', 'unknown'),
+            'prompt': job.get('prompt', ''),
+            'aspect_ratio': job.get('aspect_ratio', ''),
+            'duration': job.get('duration', 5),
+            'resolution': job.get('resolution', '720p'),
+            'video_url': job.get('video_url'),
+            'error': job.get('error'),
+            'created': job.get('created', 0)
+        })
+    jobs.sort(key=lambda j: j['created'], reverse=True)
+    return jsonify({'success': True, 'jobs': jobs})
+
+@app.route('/api/studio/jobs/<job_id>', methods=['DELETE'])
+@admin_required
+def studio_delete_job(job_id):
+    """Delete a studio job and its video file."""
+    job = _studio_jobs.pop(job_id, None)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+    # Delete video file if it exists
+    if job.get('video_url'):
+        fname = job['video_url'].split('/')[-1]
+        fpath = os.path.join(STUDIO_DIR, fname)
+        if os.path.exists(fpath):
+            try: os.remove(fpath)
+            except Exception: pass
+    _save_studio_jobs(_studio_jobs)
+    return jsonify({'success': True})
 
 @app.route('/api/studio/generate', methods=['POST'])
 @admin_required
@@ -3109,6 +3171,7 @@ def studio_generate():
             'error': None,
             'created': time.time()
         }
+        _save_studio_jobs(_studio_jobs)
         return jsonify({'success': True, 'job_id': job_id})
 
     except Exception as e:
@@ -3123,7 +3186,7 @@ def studio_status(job_id):
     if not job:
         return jsonify({'success': False, 'error': 'Job not found'}), 404
 
-    if job['status'] in ('done', 'failed'):
+    if job['status'] in ('done', 'failed', 'expired'):
         return jsonify({'success': True, 'status': job['status'], 'video_url': job.get('video_url'), 'error': job.get('error')})
 
     settings = _load_settings()
@@ -3131,6 +3194,7 @@ def studio_status(job_id):
     if not api_key:
         job['status'] = 'failed'
         job['error'] = 'No xAI API key'
+        _save_studio_jobs(_studio_jobs)
         return jsonify({'success': True, 'status': 'failed', 'error': job['error']})
 
     try:
@@ -3159,9 +3223,11 @@ def studio_status(job_id):
             else:
                 job['status'] = 'failed'
                 job['error'] = 'No video URL returned'
+            _save_studio_jobs(_studio_jobs)
         elif status in ('failed', 'error'):
             job['status'] = 'failed'
             job['error'] = data.get('error', 'Generation failed')
+            _save_studio_jobs(_studio_jobs)
 
         return jsonify({'success': True, 'status': job['status'], 'video_url': job.get('video_url'), 'error': job.get('error')})
 
