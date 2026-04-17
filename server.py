@@ -3,7 +3,7 @@
 Single-file Flask backend. Port 5110.
 """
 
-from flask import Flask, send_file, request, jsonify, redirect, session, make_response, url_for
+from flask import Flask, send_file, send_from_directory, request, jsonify, redirect, session, make_response, url_for
 from functools import wraps
 import bcrypt
 import secrets
