@@ -3037,10 +3037,142 @@ def store_analytics(store_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+# ===== Creative Studio =====
+STUDIO_DIR = os.path.join(DATA_DIR, 'studio')
+os.makedirs(STUDIO_DIR, exist_ok=True)
+_studio_jobs = {}  # job_id -> {request_id, status, video_url, error, prompt, ...}
+
+@app.route('/api/studio/generate', methods=['POST'])
+@admin_required
+def studio_generate():
+    """Generate a video from an uploaded image + prompt via Grok API."""
+    settings = _load_settings()
+    api_key = settings.get('xai_api_key', '')
+    if not api_key:
+        return jsonify({'success': False, 'error': 'No xAI API key configured'}), 400
+
+    image_file = request.files.get('image')
+    prompt = request.form.get('prompt', '').strip()
+    aspect_ratio = request.form.get('aspect_ratio', '9:16')
+    duration = int(request.form.get('duration', 5))
+
+    if not image_file or not prompt:
+        return jsonify({'success': False, 'error': 'Image and prompt are required'}), 400
+
+    # Read image and encode as base64 data URL
+    import base64
+    img_data = image_file.read()
+    ext = image_file.filename.rsplit('.', 1)[-1].lower() if '.' in image_file.filename else 'jpeg'
+    mime = f'image/{"jpeg" if ext in ("jpg", "jpeg") else ext}'
+    b64 = base64.b64encode(img_data).decode('utf-8')
+    data_url = f'data:{mime};base64,{b64}'
+
+    # Submit to Grok API
+    try:
+        resp = http_requests.post(
+            'https://api.x.ai/v1/videos/generations',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json={
+                'model': settings.get('xai_video_model', 'grok-imagine-video'),
+                'prompt': prompt,
+                'image': {'url': data_url},
+                'duration': duration,
+                'aspect_ratio': aspect_ratio,
+                'resolution': '720p'
+            },
+            timeout=60
+        )
+        if resp.status_code != 200:
+            return jsonify({'success': False, 'error': f'xAI API error {resp.status_code}: {resp.text[:300]}'}), 500
+
+        data = resp.json()
+        request_id = data.get('request_id')
+        if not request_id:
+            return jsonify({'success': False, 'error': 'No request_id returned'}), 500
+
+        job_id = str(uuid.uuid4())
+        _studio_jobs[job_id] = {
+            'request_id': request_id,
+            'status': 'generating',
+            'prompt': prompt,
+            'aspect_ratio': aspect_ratio,
+            'duration': duration,
+            'video_url': None,
+            'error': None,
+            'created': time.time()
+        }
+        return jsonify({'success': True, 'job_id': job_id})
+
+    except Exception as e:
+        log.error(f'Studio generate error: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/studio/status/<job_id>', methods=['GET'])
+@admin_required
+def studio_status(job_id):
+    """Poll Grok API for studio job status."""
+    job = _studio_jobs.get(job_id)
+    if not job:
+        return jsonify({'success': False, 'error': 'Job not found'}), 404
+
+    if job['status'] in ('done', 'failed'):
+        return jsonify({'success': True, 'status': job['status'], 'video_url': job.get('video_url'), 'error': job.get('error')})
+
+    settings = _load_settings()
+    api_key = settings.get('xai_api_key', '')
+    if not api_key:
+        job['status'] = 'failed'
+        job['error'] = 'No xAI API key'
+        return jsonify({'success': True, 'status': 'failed', 'error': job['error']})
+
+    try:
+        resp = http_requests.get(
+            f'https://api.x.ai/v1/videos/{job["request_id"]}',
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=30
+        )
+        if resp.status_code != 200:
+            return jsonify({'success': True, 'status': 'generating', 'video_url': None, 'error': None})
+
+        data = resp.json()
+        status = data.get('status', '')
+
+        if status == 'done':
+            video_url = data.get('video', {}).get('url', '')
+            if video_url:
+                # Download video locally
+                fname = f'{job_id}.mp4'
+                local_path = os.path.join(STUDIO_DIR, fname)
+                vr = http_requests.get(video_url, timeout=60)
+                with open(local_path, 'wb') as f:
+                    f.write(vr.content)
+                job['status'] = 'done'
+                job['video_url'] = f'/data/studio/{fname}'
+            else:
+                job['status'] = 'failed'
+                job['error'] = 'No video URL returned'
+        elif status in ('failed', 'error'):
+            job['status'] = 'failed'
+            job['error'] = data.get('error', 'Generation failed')
+
+        return jsonify({'success': True, 'status': job['status'], 'video_url': job.get('video_url'), 'error': job.get('error')})
+
+    except Exception as e:
+        log.error(f'Studio poll error: {e}')
+        return jsonify({'success': True, 'status': 'generating', 'video_url': None, 'error': None})
+
+@app.route('/data/studio/<path:filename>')
+@login_required
+def serve_studio_file(filename):
+    return send_from_directory(STUDIO_DIR, filename)
+
 # ===== Video cleanup =====
 def _cleanup_old_videos(max_age_days=5):
     """Delete local video files older than max_age_days."""
-    videos_dir = os.path.join(DATA_DIR, 'videos')
+    for subdir in ('videos', 'studio'):
+        _cleanup_dir(os.path.join(DATA_DIR, subdir), max_age_days)
+
+def _cleanup_dir(videos_dir, max_age_days):
     if not os.path.isdir(videos_dir):
         return
     cutoff = time.time() - (max_age_days * 86400)

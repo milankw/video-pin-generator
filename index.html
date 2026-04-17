@@ -694,6 +694,39 @@ textarea { resize: vertical; min-height: 80px; }
 .analytics-plat-badge.plat-google { background: #4285f4; }
 .analytics-plat-badge.plat-pinterest { background: #e60023; }
 .analytics-plat-badge.plat-native { background: #f59e0b; }
+/* ===== Studio ===== */
+.studio-container { max-width: 800px; margin: 0 auto; padding: 24px; }
+.studio-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.studio-upload-area {
+  width: 100%; min-height: 140px; border: 2px dashed var(--gray-300); border-radius: 12px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: border-color .2s, background .2s; padding: 16px;
+}
+.studio-upload-area:hover { border-color: var(--gray-400); background: var(--gray-50); }
+.studio-upload-area.has-image { border-style: solid; border-color: var(--gray-200); }
+.studio-options { display: flex; gap: 20px; width: 100%; }
+.studio-option-group label { font-size: 12px; font-weight: 600; color: var(--gray-600); display: block; margin-bottom: 4px; }
+.studio-option-group select { padding: 8px 12px; border: 1px solid var(--gray-200); border-radius: 8px; font-size: 13px; }
+.studio-duration-toggle { display: flex; gap: 0; }
+.studio-dur-btn {
+  padding: 8px 18px; border: 1px solid var(--gray-200); background: #fff; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all .15s;
+}
+.studio-dur-btn:first-child { border-radius: 8px 0 0 8px; }
+.studio-dur-btn:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+.studio-dur-btn.active { background: var(--gray-800); color: #fff; border-color: var(--gray-800); }
+.studio-videos-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.studio-video-card {
+  border: 1px solid var(--gray-200); border-radius: 12px; overflow: hidden; background: #fff;
+}
+.studio-video-card video { width: 100%; display: block; background: #000; }
+.studio-video-card-body { padding: 10px 12px; }
+.studio-video-prompt { font-size: 12px; color: var(--gray-500); margin-bottom: 8px; line-height: 1.4; word-break: break-word; }
+.studio-video-actions { display: flex; gap: 6px; }
+.studio-video-actions button { font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--gray-200); background: #fff; cursor: pointer; }
+.studio-video-actions button:hover { background: var(--gray-50); }
+.studio-generating { display: flex; align-items: center; justify-content: center; min-height: 160px; background: var(--gray-50); color: var(--gray-400); font-size: 13px; }
+
 .analytics-conversion-badge { font-size: 11px; padding: 3px 9px; border-radius: 8px; font-weight: 600; background: #7c3aed; color: #fff; margin-left: 4px; }
 
 /* ===== Drive Browser ===== */
@@ -1088,6 +1121,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="gallery">Gallery <span class="badge badge-green" id="gallery-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="orders">Orders</div>
   <div class="tab" data-tab="apps">Apps</div>
+  <div class="tab" data-tab="studio">Studio</div>
   <div class="tab" data-tab="analytics">Analytics</div>
 </div>
 
@@ -1416,6 +1450,56 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
   </div>
 
+  <div class="tab-panel" id="panel-studio">
+    <div class="studio-container">
+      <h2 style="margin:0 0 4px">Creative Studio</h2>
+      <p style="color:var(--gray-500);margin:0 0 20px;font-size:13px">Generate videos using Grok AI — upload an image, write a prompt, hit generate.</p>
+
+      <div class="studio-controls">
+        <div class="studio-upload-area" id="studio-upload-area" onclick="document.getElementById('studio-file-input').click()">
+          <input type="file" id="studio-file-input" accept="image/*" style="display:none" onchange="studioImageSelected(this)">
+          <div id="studio-upload-placeholder">
+            <div style="font-size:36px;color:var(--gray-300)">&#128247;</div>
+            <div style="color:var(--gray-500);font-size:13px;margin-top:6px">Click or drag & drop an image</div>
+          </div>
+          <img id="studio-preview" style="display:none;max-width:100%;max-height:200px;border-radius:8px;object-fit:contain">
+        </div>
+
+        <div class="studio-options">
+          <div class="studio-option-group">
+            <label>Format</label>
+            <select id="studio-ratio">
+              <option value="9:16">9:16 Vertical</option>
+              <option value="1:1">1:1 Square</option>
+              <option value="16:9">16:9 Landscape</option>
+            </select>
+          </div>
+          <div class="studio-option-group">
+            <label>Duration</label>
+            <div class="studio-duration-toggle">
+              <button class="studio-dur-btn active" data-dur="5" onclick="studioSetDuration(this,5)">5s</button>
+              <button class="studio-dur-btn" data-dur="10" onclick="studioSetDuration(this,10)">10s</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="width:100%">
+          <label style="font-size:12px;font-weight:600;color:var(--gray-600);display:block;margin-bottom:4px">Prompt</label>
+          <textarea id="studio-prompt" rows="3" placeholder="Describe the video you want to generate..." style="width:100%;border:1px solid var(--gray-200);border-radius:8px;padding:10px;font-size:13px;resize:vertical;font-family:inherit"></textarea>
+        </div>
+
+        <button id="studio-generate-btn" class="btn-primary" onclick="studioGenerate()" style="margin-top:8px;padding:10px 28px;font-size:14px">
+          Generate Video
+        </button>
+      </div>
+
+      <div id="studio-videos-section" style="display:none;margin-top:28px">
+        <h3 style="margin:0 0 12px;font-size:15px;color:var(--gray-700)">Generated Videos</h3>
+        <div id="studio-videos-grid" class="studio-videos-grid"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="tab-panel" id="panel-analytics">
     <div id="analytics-loading" class="loading-overlay"><div class="spinner"></div> Loading analytics data...</div>
     <div id="analytics-content" style="display:none;">
@@ -1578,7 +1662,7 @@ async function applyRoleGating() {
     _userRole = data.role || 'admin';
     if (_userRole === 'viewer') {
       // Hide all tabs except Analytics
-      const hideTabs = ['settings', 'stores', 'winners', 'queue', 'gallery', 'orders', 'apps'];
+      const hideTabs = ['settings', 'stores', 'winners', 'queue', 'gallery', 'orders', 'apps', 'studio'];
       hideTabs.forEach(t => {
         const tab = document.querySelector(`.tab[data-tab="${t}"]`);
         if (tab) tab.style.display = 'none';
@@ -3517,6 +3601,150 @@ function formatFileSize(bytes) {
     window.history.replaceState({}, '', '/');
   }
 })();
+
+// ===== Creative Studio =====
+let _studioFile = null;  // selected File object
+let _studioDuration = 5;
+const _studioVideos = []; // {job_id, prompt, status, video_url, error, aspect_ratio, duration}
+
+function studioImageSelected(input) {
+  const file = input.files[0];
+  if (!file) return;
+  _studioFile = file;
+  const preview = document.getElementById('studio-preview');
+  const placeholder = document.getElementById('studio-upload-placeholder');
+  const area = document.getElementById('studio-upload-area');
+  preview.src = URL.createObjectURL(file);
+  preview.style.display = 'block';
+  placeholder.style.display = 'none';
+  area.classList.add('has-image');
+}
+
+function studioSetDuration(btn, dur) {
+  _studioDuration = dur;
+  document.querySelectorAll('.studio-dur-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+async function studioGenerate() {
+  const prompt = document.getElementById('studio-prompt').value.trim();
+  const ratio = document.getElementById('studio-ratio').value;
+  if (!_studioFile) return toast('Upload an image first', 'error');
+  if (!prompt) return toast('Enter a prompt', 'error');
+
+  const btn = document.getElementById('studio-generate-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:6px"></span> Generating...';
+
+  const fd = new FormData();
+  fd.append('image', _studioFile);
+  fd.append('prompt', prompt);
+  fd.append('aspect_ratio', ratio);
+  fd.append('duration', _studioDuration);
+
+  try {
+    const resp = await fetch('/api/studio/generate', {method: 'POST', body: fd});
+    const data = await resp.json();
+    if (!data.success) {
+      toast(data.error || 'Generation failed', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Generate Video';
+      return;
+    }
+
+    const entry = {
+      job_id: data.job_id,
+      prompt: prompt,
+      status: 'generating',
+      video_url: null,
+      error: null,
+      aspect_ratio: ratio,
+      duration: _studioDuration
+    };
+    _studioVideos.unshift(entry);
+    studioRenderVideos();
+    studioStartPolling(entry);
+
+  } catch (e) {
+    toast('Network error: ' + e.message, 'error');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Generate Video';
+}
+
+function studioStartPolling(entry) {
+  const poll = async () => {
+    try {
+      const data = await api(`/api/studio/status/${entry.job_id}`);
+      if (!data?.success) return;
+      entry.status = data.status;
+      entry.video_url = data.video_url;
+      entry.error = data.error;
+      studioRenderVideos();
+      if (data.status === 'done' || data.status === 'failed') return;
+      setTimeout(poll, 5000);
+    } catch {
+      setTimeout(poll, 5000);
+    }
+  };
+  setTimeout(poll, 5000);
+}
+
+function studioRenderVideos() {
+  const section = document.getElementById('studio-videos-section');
+  const grid = document.getElementById('studio-videos-grid');
+  if (_studioVideos.length === 0) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  grid.innerHTML = _studioVideos.map((v, i) => {
+    let mediaHtml;
+    if (v.status === 'done' && v.video_url) {
+      mediaHtml = `<video controls preload="metadata" src="${v.video_url}"></video>`;
+    } else if (v.status === 'failed') {
+      mediaHtml = `<div class="studio-generating" style="color:#e53e3e">Failed${v.error ? ': ' + escHtml(v.error) : ''}</div>`;
+    } else {
+      mediaHtml = `<div class="studio-generating"><span class="spinner" style="width:18px;height:18px;border-width:2px;margin-right:8px"></span> Generating...</div>`;
+    }
+    const promptShort = v.prompt.length > 120 ? escHtml(v.prompt.slice(0, 120)) + '...' : escHtml(v.prompt);
+    const dlBtn = v.status === 'done' && v.video_url
+      ? `<a href="${v.video_url}" download style="text-decoration:none"><button>Download</button></a>`
+      : '';
+    return `<div class="studio-video-card">
+      ${mediaHtml}
+      <div class="studio-video-card-body">
+        <div class="studio-video-prompt" title="${escHtml(v.prompt)}">${promptShort}</div>
+        <div style="font-size:11px;color:var(--gray-400);margin-bottom:6px">${v.aspect_ratio} &middot; ${v.duration}s</div>
+        <div class="studio-video-actions">
+          ${dlBtn}
+          <button onclick="studioRegenerate(${i})">Regenerate</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function studioRegenerate(index) {
+  const v = _studioVideos[index];
+  if (v) document.getElementById('studio-prompt').value = v.prompt;
+  document.getElementById('studio-prompt').focus();
+}
+
+// Drag & drop for studio upload
+document.addEventListener('DOMContentLoaded', () => {
+  const area = document.getElementById('studio-upload-area');
+  if (!area) return;
+  ['dragenter','dragover'].forEach(e => area.addEventListener(e, ev => { ev.preventDefault(); area.style.borderColor = 'var(--gray-400)'; }));
+  ['dragleave','drop'].forEach(e => area.addEventListener(e, ev => { ev.preventDefault(); area.style.borderColor = ''; }));
+  area.addEventListener('drop', ev => {
+    const file = ev.dataTransfer?.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      const input = document.getElementById('studio-file-input');
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      studioImageSelected(input);
+    }
+  });
+});
 
 // ===== Analytics Tab =====
 function _analyticsDateRange() {
