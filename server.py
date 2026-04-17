@@ -3055,6 +3055,9 @@ def studio_generate():
     prompt = request.form.get('prompt', '').strip()
     aspect_ratio = request.form.get('aspect_ratio', '9:16')
     duration = int(request.form.get('duration', 5))
+    resolution = request.form.get('resolution', '720p')
+    if resolution not in ('480p', '720p'):
+        resolution = '720p'
 
     if not image_file or not prompt:
         return jsonify({'success': False, 'error': 'Image and prompt are required'}), 400
@@ -3067,19 +3070,23 @@ def studio_generate():
     b64 = base64.b64encode(img_data).decode('utf-8')
     data_url = f'data:{mime};base64,{b64}'
 
+    # Build API payload — omit aspect_ratio when 'auto' so API uses image's native ratio
+    api_payload = {
+        'model': settings.get('xai_video_model', 'grok-imagine-video'),
+        'prompt': prompt,
+        'image': {'url': data_url},
+        'duration': duration,
+        'resolution': resolution
+    }
+    if aspect_ratio and aspect_ratio != 'auto':
+        api_payload['aspect_ratio'] = aspect_ratio
+
     # Submit to Grok API
     try:
         resp = http_requests.post(
             'https://api.x.ai/v1/videos/generations',
             headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-            json={
-                'model': settings.get('xai_video_model', 'grok-imagine-video'),
-                'prompt': prompt,
-                'image': {'url': data_url},
-                'duration': duration,
-                'aspect_ratio': aspect_ratio,
-                'resolution': '720p'
-            },
+            json=api_payload,
             timeout=60
         )
         if resp.status_code != 200:
@@ -3097,6 +3104,7 @@ def studio_generate():
             'prompt': prompt,
             'aspect_ratio': aspect_ratio,
             'duration': duration,
+            'resolution': resolution,
             'video_url': None,
             'error': None,
             'created': time.time()

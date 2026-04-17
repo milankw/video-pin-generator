@@ -1469,16 +1469,31 @@ textarea { resize: vertical; min-height: 80px; }
           <div class="studio-option-group">
             <label>Format</label>
             <select id="studio-ratio">
+              <option value="auto">Auto (from image)</option>
               <option value="9:16">9:16 Vertical</option>
               <option value="1:1">1:1 Square</option>
               <option value="16:9">16:9 Landscape</option>
+              <option value="4:3">4:3 Standard</option>
+              <option value="3:4">3:4 Portrait</option>
+              <option value="3:2">3:2 Photo</option>
+              <option value="2:3">2:3 Tall</option>
             </select>
+            <div id="studio-detected-ratio" style="font-size:11px;color:var(--gray-400);margin-top:3px;display:none"></div>
           </div>
           <div class="studio-option-group">
             <label>Duration</label>
             <div class="studio-duration-toggle">
+              <button class="studio-dur-btn" data-dur="3" onclick="studioSetDuration(this,3)">3s</button>
               <button class="studio-dur-btn active" data-dur="5" onclick="studioSetDuration(this,5)">5s</button>
+              <button class="studio-dur-btn" data-dur="6" onclick="studioSetDuration(this,6)">6s</button>
               <button class="studio-dur-btn" data-dur="10" onclick="studioSetDuration(this,10)">10s</button>
+            </div>
+          </div>
+          <div class="studio-option-group">
+            <label>Resolution</label>
+            <div class="studio-duration-toggle">
+              <button class="studio-dur-btn active" data-res="720p" onclick="studioSetResolution(this,'720p')">720p</button>
+              <button class="studio-dur-btn" data-res="480p" onclick="studioSetResolution(this,'480p')">480p</button>
             </div>
           </div>
         </div>
@@ -3605,7 +3620,29 @@ function formatFileSize(bytes) {
 // ===== Creative Studio =====
 let _studioFile = null;  // selected File object
 let _studioDuration = 5;
-const _studioVideos = []; // {job_id, prompt, status, video_url, error, aspect_ratio, duration}
+let _studioResolution = '720p';
+let _studioDetectedRatio = null;  // detected from uploaded image
+const _studioVideos = []; // {job_id, prompt, status, video_url, error, aspect_ratio, duration, resolution}
+
+const _studioRatioMap = [
+  {w: 1, h: 1, label: '1:1'},
+  {w: 16, h: 9, label: '16:9'},
+  {w: 9, h: 16, label: '9:16'},
+  {w: 4, h: 3, label: '4:3'},
+  {w: 3, h: 4, label: '3:4'},
+  {w: 3, h: 2, label: '3:2'},
+  {w: 2, h: 3, label: '2:3'}
+];
+
+function _detectClosestRatio(w, h) {
+  const imgRatio = w / h;
+  let best = null, bestDiff = Infinity;
+  for (const r of _studioRatioMap) {
+    const diff = Math.abs(imgRatio - (r.w / r.h));
+    if (diff < bestDiff) { bestDiff = diff; best = r.label; }
+  }
+  return best;
+}
 
 function studioImageSelected(input) {
   const file = input.files[0];
@@ -3614,23 +3651,47 @@ function studioImageSelected(input) {
   const preview = document.getElementById('studio-preview');
   const placeholder = document.getElementById('studio-upload-placeholder');
   const area = document.getElementById('studio-upload-area');
-  preview.src = URL.createObjectURL(file);
+  const url = URL.createObjectURL(file);
+  preview.src = url;
   preview.style.display = 'block';
   placeholder.style.display = 'none';
   area.classList.add('has-image');
+
+  // Detect image aspect ratio
+  const img = new Image();
+  img.onload = () => {
+    const detected = _detectClosestRatio(img.naturalWidth, img.naturalHeight);
+    _studioDetectedRatio = detected;
+    const hint = document.getElementById('studio-detected-ratio');
+    if (hint) {
+      hint.textContent = `Detected: ${img.naturalWidth}×${img.naturalHeight} → ${detected}`;
+      hint.style.display = '';
+    }
+  };
+  img.src = url;
 }
 
 function studioSetDuration(btn, dur) {
   _studioDuration = dur;
-  document.querySelectorAll('.studio-dur-btn').forEach(b => b.classList.remove('active'));
+  // Only toggle within the same button group (Duration)
+  btn.parentElement.querySelectorAll('.studio-dur-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function studioSetResolution(btn, res) {
+  _studioResolution = res;
+  btn.parentElement.querySelectorAll('.studio-dur-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
 }
 
 async function studioGenerate() {
   const prompt = document.getElementById('studio-prompt').value.trim();
-  const ratio = document.getElementById('studio-ratio').value;
+  let ratio = document.getElementById('studio-ratio').value;
   if (!_studioFile) return toast('Upload an image first', 'error');
   if (!prompt) return toast('Enter a prompt', 'error');
+
+  // Resolve auto to detected or default
+  const displayRatio = ratio === 'auto' ? (_studioDetectedRatio || 'auto') : ratio;
 
   const btn = document.getElementById('studio-generate-btn');
   btn.disabled = true;
@@ -3641,6 +3702,7 @@ async function studioGenerate() {
   fd.append('prompt', prompt);
   fd.append('aspect_ratio', ratio);
   fd.append('duration', _studioDuration);
+  fd.append('resolution', _studioResolution);
 
   try {
     const resp = await fetch('/api/studio/generate', {method: 'POST', body: fd});
@@ -3658,8 +3720,9 @@ async function studioGenerate() {
       status: 'generating',
       video_url: null,
       error: null,
-      aspect_ratio: ratio,
-      duration: _studioDuration
+      aspect_ratio: displayRatio,
+      duration: _studioDuration,
+      resolution: _studioResolution
     };
     _studioVideos.unshift(entry);
     studioRenderVideos();
@@ -3712,7 +3775,7 @@ function studioRenderVideos() {
       ${mediaHtml}
       <div class="studio-video-card-body">
         <div class="studio-video-prompt" title="${escHtml(v.prompt)}">${promptShort}</div>
-        <div style="font-size:11px;color:var(--gray-400);margin-bottom:6px">${v.aspect_ratio} &middot; ${v.duration}s</div>
+        <div style="font-size:11px;color:var(--gray-400);margin-bottom:6px">${v.aspect_ratio} &middot; ${v.duration}s &middot; ${v.resolution || '720p'}</div>
         <div class="studio-video-actions">
           ${dlBtn}
           <button onclick="studioRegenerate(${i})">Regenerate</button>
