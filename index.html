@@ -4610,8 +4610,6 @@ async function collDeleteNode(nodeId) {
   } catch(e) { toast('Error', 'error'); }
 }
 
-let _collPendingProduct = null;
-
 async function collFetchProduct() {
   const input = document.getElementById('coll-url-input');
   const url = input.value.trim();
