@@ -3487,6 +3487,11 @@ def api_add_product_to_node(node_id):
     node = _find_collection_node(data['tree'], node_id)
     if not node:
         return jsonify({'success': False, 'error': 'Collection not found'}), 404
+    # Prevent duplicates — check if same URL already in this node
+    existing_urls = {(p.get('url','') or '').strip() for p in node.get('products', [])}
+    product_url = (product.get('url','') or '').strip()
+    if product_url and product_url in existing_urls:
+        return jsonify({'success': False, 'error': 'This product is already in this collection'})
     node.setdefault('products', []).append(product)
     _save_collections(data)
     return jsonify({'success': True, 'tree': data['tree']})
