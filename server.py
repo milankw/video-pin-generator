@@ -3413,6 +3413,41 @@ def api_delete_collection_node(node_id):
         return jsonify({'success': True, 'tree': data['tree']})
     return jsonify({'success': False, 'error': 'Node not found'}), 404
 
+COLLECTION_IMAGES_DIR = os.path.join(DATA_DIR, 'collection_images')
+os.makedirs(COLLECTION_IMAGES_DIR, exist_ok=True)
+
+def _save_collection_image(image_url, product_id):
+    """Download an image and save it locally. Returns local URL path or original URL on failure."""
+    if not image_url:
+        return ''
+    try:
+        resp = http_requests.get(image_url, timeout=15, verify=False,
+                                 headers={'User-Agent': 'Mozilla/5.0'}, stream=True)
+        if resp.status_code != 200:
+            return image_url
+        content_type = resp.headers.get('Content-Type', '')
+        ext = '.jpg'
+        if 'png' in content_type:
+            ext = '.png'
+        elif 'webp' in content_type:
+            ext = '.webp'
+        elif 'gif' in content_type:
+            ext = '.gif'
+        filename = f"{product_id}_{uuid.uuid4().hex[:8]}{ext}"
+        filepath = os.path.join(COLLECTION_IMAGES_DIR, filename)
+        with open(filepath, 'wb') as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+        return f'/api/collections/images/{filename}'
+    except Exception:
+        return image_url
+
+@app.route('/api/collections/images/<filename>')
+def serve_collection_image(filename):
+    """Serve saved collection product images."""
+    safe = os.path.basename(filename)
+    return send_from_directory(COLLECTION_IMAGES_DIR, safe)
+
 @app.route('/api/collections/fetch-product', methods=['POST'])
 @admin_required
 def api_fetch_product():
@@ -3426,9 +3461,19 @@ def api_fetch_product():
     result = _fetch_product_data(source, product_id)
     if isinstance(result, tuple):
         return jsonify({'success': False, 'error': result[1]})
+    prod_id = 'prod_' + str(uuid.uuid4())[:12]
     result['url'] = url
-    result['id'] = 'prod_' + str(uuid.uuid4())[:12]
+    result['id'] = prod_id
     result['added'] = int(time.time())
+    # Save images locally so they persist even if external URLs die
+    if result.get('image'):
+        result['image'] = _save_collection_image(result['image'], prod_id)
+    if result.get('images'):
+        result['images'] = [_save_collection_image(img, prod_id) for img in result['images']]
+    if result.get('colors'):
+        for c in result['colors']:
+            if c.get('image'):
+                c['image'] = _save_collection_image(c['image'], prod_id)
     return jsonify({'success': True, 'product': result})
 
 @app.route('/api/collections/node/<node_id>/products', methods=['POST'])
