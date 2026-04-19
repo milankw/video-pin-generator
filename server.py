@@ -3116,7 +3116,11 @@ def _fetch_product_data(source, product_id):
                                 params={'apiToken': key, 'item_id': product_id, 'country': 'us'},
                                 timeout=30, verify=False)
             data = resp.json()
-            item = data.get('data', data)
+            if data.get('code') and data['code'] != 200:
+                return None, f"AliExpress API error: {data.get('msg', 'Unknown error')} (code {data['code']})"
+            item = data.get('data', {})
+            if not item:
+                return None, 'AliExpress API returned no product data'
             title = item.get('title', '')
             # Price — try price_info.price, then sale_price, then raw price
             price_info = item.get('price_info', {})
@@ -3178,7 +3182,11 @@ def _fetch_product_data(source, product_id):
                                 params={'apiToken': key, 'item_id': product_id, 'language': 'en'},
                                 timeout=30, verify=False)
             data = resp.json()
-            item = data.get('data', data)
+            if data.get('code') and data['code'] != 200:
+                return None, f"1688 API error: {data.get('msg', 'Unknown error')} (code {data['code']})"
+            item = data.get('data', {})
+            if not item:
+                return None, '1688 API returned no product data'
             title = item.get('title', '')
             # Price
             price_range = item.get('price_range', [])
