@@ -1143,6 +1143,11 @@ textarea { resize: vertical; min-height: 80px; }
 .coll-product-card-img {
   width: 100%; aspect-ratio: 1; object-fit: cover; display: block; cursor: pointer; flex-shrink: 0;
 }
+.coll-product-card-noimg {
+  width: 100%; aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  background: var(--gray-100); color: var(--gray-400); font-size: 12px; flex-shrink: 0;
+  border-radius: 10px 10px 0 0;
+}
 .coll-product-card-body { padding: 10px 12px; flex: 1; }
 .coll-product-card-title {
   font-size: 12px; font-weight: 500; color: var(--gray-700);
@@ -4549,8 +4554,12 @@ function collRenderProducts(node) {
   grid.innerHTML = products.map((p, i) => {
     const sourceClass = p.source.toLowerCase().replace(/\s/g, '').replace('1688', 's1688');
     const priceStr = p.price ? `${p.currency || '$'}${Number(p.price).toFixed(2)}` : '';
-    return `<div class="coll-product-card">
-      <img class="coll-product-card-img" src="${p.image || ''}" alt="${escHtml(p.title)}" onclick="window.open('${p.url}','_blank')" title="Open product page" onerror="this.style.display='none'">
+    const imgHtml = p.image
+      ? `<img class="coll-product-card-img" src="${p.image}" alt="${escHtml(p.title)}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex'">
+         <div class="coll-product-card-noimg" style="display:none">No Image</div>`
+      : `<div class="coll-product-card-noimg">No Image</div>`;
+    return `<div class="coll-product-card" onclick="window.open('${p.url}','_blank')" style="cursor:pointer" title="Open product page">
+      ${imgHtml}
       <div class="coll-product-card-body">
         <div class="coll-product-card-title" title="${escHtml(p.title)}">${escHtml(p.title)}</div>
         <div class="coll-product-card-meta">
@@ -4559,7 +4568,7 @@ function collRenderProducts(node) {
         </div>
       </div>
       <div class="coll-product-card-actions">
-        <button onclick="collRemoveProduct('${node.id}','${p.id}')" class="delete-btn">Remove</button>
+        <button onclick="event.stopPropagation();collRemoveProduct('${node.id}','${p.id}')" class="delete-btn">Remove</button>
       </div>
     </div>`;
   }).join('');

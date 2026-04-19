@@ -16,6 +16,7 @@ import uuid
 import threading
 import requests as http_requests
 import re
+import html as html_mod
 try:
     from urllib3.exceptions import InsecureRequestWarning
     http_requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -3296,6 +3297,8 @@ def _fetch_product_data(source, product_id):
         try:
             resp = http_requests.get(url, timeout=15, verify=False,
                                 headers={'User-Agent': 'Mozilla/5.0'})
+            if resp.status_code == 404:
+                return None, 'Product not found (404) — it may have been removed from the store'
             html = resp.text[:30000]
             is_shoplazza = 'shoplazza' in html.lower() or 'staticdj.com' in html
             detected_source = 'Shoplazza' if is_shoplazza else 'Shopify'
@@ -3328,7 +3331,11 @@ def _fetch_product_data(source, product_id):
             if not title:
                 m = re.search(r'<title>([^<]+)</title>', html)
                 if m:
-                    title = m.group(1).strip()
+                    raw = m.group(1).strip()
+                    # Reject 404 / error pages
+                    if '404' in raw.lower() or 'not found' in raw.lower() or 'page not found' in raw.lower():
+                        return None, 'Product not found (404) — it may have been removed from the store'
+                    title = html_mod.unescape(raw)
             # Fallback: og:image
             if not image:
                 m = re.search(r'property="og:image"\s+content="([^"]+)"', html)
