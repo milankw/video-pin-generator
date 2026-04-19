@@ -1134,13 +1134,14 @@ textarea { resize: vertical; min-height: 80px; }
 
 /* Collection product cards */
 .coll-product-card {
-  border: 1px solid var(--gray-200); border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--gray-200); border-radius: 10px;
   background: white; transition: border-color 0.15s, box-shadow 0.15s;
   position: relative; display: flex; flex-direction: column;
 }
+.coll-product-card > .coll-product-card-img { border-radius: 10px 10px 0 0; }
 .coll-product-card:hover { border-color: var(--gray-300); box-shadow: var(--shadow); }
 .coll-product-card-img {
-  width: 100%; aspect-ratio: 1; object-fit: cover; display: block; cursor: pointer;
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block; cursor: pointer; flex-shrink: 0;
 }
 .coll-product-card-body { padding: 10px 12px; flex: 1; }
 .coll-product-card-title {
