@@ -1172,6 +1172,65 @@ textarea { resize: vertical; min-height: 80px; }
 .coll-product-card-actions button:hover { background: var(--gray-50); color: var(--gray-700); }
 .coll-product-card-actions button.delete-btn { color: #e53e3e; }
 .coll-product-card-actions button.delete-btn:hover { background: #fff5f5; }
+
+/* Image picker modal */
+.coll-img-picker-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+}
+.coll-img-picker {
+  background: white; border-radius: 12px; width: 600px; max-width: 92vw;
+  max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+.coll-img-picker-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--gray-200);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.coll-img-picker-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.coll-img-picker-close {
+  background: none; border: none; font-size: 20px; cursor: pointer; color: var(--gray-400);
+  padding: 4px 8px; border-radius: 4px;
+}
+.coll-img-picker-close:hover { background: var(--gray-100); color: var(--gray-700); }
+.coll-img-picker-body {
+  padding: 16px 20px; overflow-y: auto; flex: 1;
+}
+.coll-img-picker-section { margin-bottom: 16px; }
+.coll-img-picker-section-title {
+  font-size: 12px; font-weight: 600; color: var(--gray-500); text-transform: uppercase;
+  letter-spacing: 0.5px; margin-bottom: 8px;
+}
+.coll-img-picker-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px;
+}
+.coll-img-picker-thumb {
+  aspect-ratio: 1; border-radius: 8px; overflow: hidden; cursor: pointer;
+  border: 3px solid transparent; transition: border-color 0.15s, transform 0.15s;
+  position: relative;
+}
+.coll-img-picker-thumb:hover { border-color: var(--primary); transform: scale(1.03); }
+.coll-img-picker-thumb.selected { border-color: var(--primary); }
+.coll-img-picker-thumb.selected::after {
+  content: '✓'; position: absolute; top: 4px; right: 4px;
+  background: var(--primary); color: white; width: 20px; height: 20px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: bold;
+}
+.coll-img-picker-thumb img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.coll-img-picker-thumb-label {
+  position: absolute; bottom: 0; left: 0; right: 0; padding: 2px 4px;
+  background: rgba(0,0,0,0.6); color: white; font-size: 9px;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.coll-img-picker-footer {
+  padding: 12px 20px; border-top: 1px solid var(--gray-200);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.coll-img-picker-preview {
+  width: 48px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--gray-200);
+}
 </style>
 </head>
 <body>
@@ -4551,6 +4610,8 @@ async function collDeleteNode(nodeId) {
   } catch(e) { toast('Error', 'error'); }
 }
 
+let _collPendingProduct = null;
+
 async function collFetchProduct() {
   const input = document.getElementById('coll-url-input');
   const url = input.value.trim();
@@ -4566,17 +4627,18 @@ async function collFetchProduct() {
   try {
     const data = await api('/api/collections/fetch-product', {method: 'POST', body: JSON.stringify({url})});
     if (data?.success && data.product) {
-      status.innerHTML = `<span style="color:var(--primary)">✓ ${escHtml(data.product.title)}</span>`;
-      const addData = await api(`/api/collections/node/${_collActiveNode}/products`, {method: 'POST', body: JSON.stringify({product: data.product})});
-      if (addData?.success) {
-        _collTree = addData.tree;
-        collRenderTree();
-        collSelectNode(_collActiveNode);
-        input.value = '';
-        status.textContent = 'Product added successfully';
-        toast('Product added to collection');
+      const p = data.product;
+      const allImages = (p.images || []).slice();
+      const colorImgs = (p.colors || []).filter(c => c.image).map(c => ({url: c.image, label: c.name}));
+      // If there are multiple images or color variants, show picker
+      if (allImages.length > 1 || colorImgs.length > 0) {
+        _collPendingProduct = p;
+        status.innerHTML = `<span style="color:var(--primary)">✓ ${escHtml(p.title)} — pick an image</span>`;
+        _collShowImagePicker(p, allImages, colorImgs);
       } else {
-        toast(addData?.error || 'Failed to add product', 'error');
+        // Only one image, add directly
+        status.innerHTML = `<span style="color:var(--primary)">✓ ${escHtml(p.title)}</span>`;
+        await _collAddProduct(p);
       }
     } else {
       status.innerHTML = `<span style="color:#e53e3e">${escHtml(data?.error || 'Could not fetch product')}</span>`;
@@ -4589,6 +4651,95 @@ async function collFetchProduct() {
     btn.disabled = false;
     btn.textContent = 'Fetch Product';
   }
+}
+
+function _collShowImagePicker(product, mainImages, colorImgs) {
+  let selectedUrl = product.image || (mainImages[0] || '');
+  // Build unique list: deduplicate by URL
+  const seen = new Set();
+  const mainUnique = [];
+  for (const url of mainImages) {
+    if (url && !seen.has(url)) { seen.add(url); mainUnique.push(url); }
+  }
+  const colorUnique = [];
+  for (const c of colorImgs) {
+    if (c.url && !seen.has(c.url)) { seen.add(c.url); colorUnique.push(c); }
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'coll-img-picker-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  const renderThumbs = (items, isColor) => items.map((item, i) => {
+    const url = isColor ? item.url : item;
+    const label = isColor ? item.label : '';
+    const sel = url === selectedUrl ? 'selected' : '';
+    return `<div class="coll-img-picker-thumb ${sel}" data-url="${escHtml(url)}" onclick="_collPickImage(this)"><img src="${escHtml(url)}" onerror="this.parentElement.style.display='none'">${label ? `<div class="coll-img-picker-thumb-label">${escHtml(label)}</div>` : ''}</div>`;
+  }).join('');
+
+  let bodyHTML = '';
+  if (mainUnique.length) {
+    bodyHTML += `<div class="coll-img-picker-section"><div class="coll-img-picker-section-title">Product Images (${mainUnique.length})</div><div class="coll-img-picker-grid">${renderThumbs(mainUnique, false)}</div></div>`;
+  }
+  if (colorUnique.length) {
+    bodyHTML += `<div class="coll-img-picker-section"><div class="coll-img-picker-section-title">Variant Images (${colorUnique.length})</div><div class="coll-img-picker-grid">${renderThumbs(colorUnique, true)}</div></div>`;
+  }
+
+  overlay.innerHTML = `<div class="coll-img-picker">
+    <div class="coll-img-picker-header">
+      <h3>Choose Image — ${escHtml(product.title)}</h3>
+      <button class="coll-img-picker-close" onclick="this.closest('.coll-img-picker-overlay').remove()">✕</button>
+    </div>
+    <div class="coll-img-picker-body">${bodyHTML}</div>
+    <div class="coll-img-picker-footer">
+      <div style="display:flex;align-items:center;gap:10px">
+        <img class="coll-img-picker-preview" id="coll-picker-preview" src="${escHtml(selectedUrl)}">
+        <span style="font-size:12px;color:var(--gray-500)" id="coll-picker-label">Selected image</span>
+      </div>
+      <button class="btn btn-primary" style="padding:8px 24px" onclick="_collConfirmImagePick()">Add Product</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(overlay);
+}
+
+function _collPickImage(el) {
+  const url = el.dataset.url;
+  const overlay = el.closest('.coll-img-picker-overlay');
+  overlay.querySelectorAll('.coll-img-picker-thumb').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  overlay.querySelector('#coll-picker-preview').src = url;
+  _collPendingProduct._selectedImage = url;
+}
+
+async function _collConfirmImagePick() {
+  const overlay = document.querySelector('.coll-img-picker-overlay');
+  if (overlay) overlay.remove();
+  if (!_collPendingProduct) return;
+  if (_collPendingProduct._selectedImage) {
+    _collPendingProduct.image = _collPendingProduct._selectedImage;
+    delete _collPendingProduct._selectedImage;
+  }
+  await _collAddProduct(_collPendingProduct);
+  _collPendingProduct = null;
+}
+
+async function _collAddProduct(product) {
+  const input = document.getElementById('coll-url-input');
+  const status = document.getElementById('coll-fetch-status');
+  try {
+    const addData = await api(`/api/collections/node/${_collActiveNode}/products`, {method: 'POST', body: JSON.stringify({product})});
+    if (addData?.success) {
+      _collTree = addData.tree;
+      collRenderTree();
+      collSelectNode(_collActiveNode);
+      input.value = '';
+      status.textContent = 'Product added successfully';
+      toast('Product added to collection');
+    } else {
+      toast(addData?.error || 'Failed to add product', 'error');
+    }
+  } catch(e) { toast('Error adding product', 'error'); }
 }
 
 async function collRemoveProduct(nodeId, productId) {
