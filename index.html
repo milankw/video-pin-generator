@@ -1608,9 +1608,12 @@ textarea { resize: vertical; min-height: 80px; }
           </div>
           <div id="coll-fetch-status" style="font-size:12px;color:var(--gray-400);margin-top:6px"></div>
         </div>
-        <!-- Breadcrumb showing selected collection -->
-        <div id="coll-breadcrumb" style="padding:8px 20px;font-size:12px;color:var(--gray-500);border-bottom:1px solid var(--gray-100)">
-          Select a collection from the sidebar
+        <!-- Breadcrumb + Export -->
+        <div style="padding:8px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--gray-100)">
+          <div id="coll-breadcrumb" style="font-size:12px;color:var(--gray-500)">
+            Select a collection from the sidebar
+          </div>
+          <button onclick="collExportCSV()" class="btn btn-sm" style="font-size:11px;padding:4px 12px;white-space:nowrap">Export CSV</button>
         </div>
         <!-- Product grid -->
         <div id="coll-product-grid" style="flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;align-content:start">
@@ -4592,6 +4595,50 @@ async function collRemoveProduct(nodeId, productId) {
     if (data?.success) { _collTree = data.tree; collRenderTree(); collSelectNode(nodeId); }
     else toast(data?.error || 'Failed', 'error');
   } catch(e) { toast('Error', 'error'); }
+}
+
+function collExportCSV() {
+  // Flatten the entire tree into CSV rows
+  const rows = [['Collection', 'Subcollection', 'Title', 'Source', 'Price', 'Currency', 'URL', 'Image', 'Colors', 'Sizes', 'Date Added']];
+  function _walkTree(nodes, parentPath) {
+    for (const node of nodes) {
+      const path = parentPath ? parentPath : node.name;
+      const sub = parentPath ? node.name : '';
+      for (const p of (node.products || [])) {
+        const colors = (p.colors || []).map(c => c.name).join('; ');
+        const sizes = (p.sizes || []).join('; ');
+        const date = p.added ? new Date(p.added * 1000).toISOString().split('T')[0] : '';
+        rows.push([
+          parentPath || node.name,
+          parentPath ? node.name : '',
+          p.title || '',
+          p.source || '',
+          p.price || '',
+          p.currency || '',
+          p.url || '',
+          p.image || '',
+          colors,
+          sizes,
+          date
+        ]);
+      }
+      if (node.children?.length) {
+        _walkTree(node.children, parentPath ? `${parentPath} > ${node.name}` : node.name);
+      }
+    }
+  }
+  _walkTree(_collTree, '');
+  if (rows.length <= 1) return toast('No products to export', 'error');
+  // Build CSV string
+  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `collections_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('CSV exported');
 }
 </script>
 </body>
