@@ -1097,6 +1097,78 @@ textarea { resize: vertical; min-height: 80px; }
   .funnel-label { min-width: 120px; font-size: 12px; }
   .a-stat-value { font-size: 22px; }
 }
+
+/* Collections tree */
+.coll-tree-node { padding: 0 8px; }
+.coll-tree-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--gray-700);
+  transition: background 0.15s;
+}
+.coll-tree-item:hover { background: var(--gray-100); }
+.coll-tree-item.active { background: var(--primary); color: white; }
+.coll-tree-item .coll-expand {
+  width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--gray-400); transition: transform 0.2s; flex-shrink: 0;
+}
+.coll-tree-item .coll-expand.open { transform: rotate(90deg); }
+.coll-tree-children { padding-left: 16px; }
+.coll-tree-item .coll-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.coll-tree-item .coll-count {
+  font-size: 11px; background: var(--gray-200); color: var(--gray-500);
+  padding: 1px 6px; border-radius: 10px; flex-shrink: 0;
+}
+.coll-tree-item.active .coll-count { background: rgba(255,255,255,0.25); color: white; }
+.coll-tree-actions {
+  display: none; gap: 2px; flex-shrink: 0;
+}
+.coll-tree-item:hover .coll-tree-actions { display: flex; }
+.coll-tree-item.active .coll-tree-actions { display: flex; }
+.coll-tree-actions button {
+  background: none; border: none; cursor: pointer; padding: 2px 4px; font-size: 12px;
+  color: var(--gray-400); border-radius: 3px;
+}
+.coll-tree-actions button:hover { background: rgba(0,0,0,0.08); color: var(--gray-700); }
+.coll-tree-item.active .coll-tree-actions button { color: rgba(255,255,255,0.6); }
+.coll-tree-item.active .coll-tree-actions button:hover { color: white; background: rgba(255,255,255,0.15); }
+
+/* Collection product cards */
+.coll-product-card {
+  border: 1px solid var(--gray-200); border-radius: 10px; overflow: hidden;
+  background: white; transition: border-color 0.15s, box-shadow 0.15s;
+  position: relative;
+}
+.coll-product-card:hover { border-color: var(--gray-300); box-shadow: var(--shadow); }
+.coll-product-card img {
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block; cursor: pointer;
+}
+.coll-product-card-body { padding: 10px 12px; }
+.coll-product-card-title {
+  font-size: 12px; font-weight: 500; color: var(--gray-700);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.coll-product-card-meta {
+  font-size: 11px; color: var(--gray-400); margin-top: 4px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.coll-source-badge {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px;
+  font-weight: 600; text-transform: uppercase;
+}
+.coll-source-badge.aliexpress { background: #fff0e6; color: #e04d01; }
+.coll-source-badge.s1688 { background: #fff7e6; color: #d48806; }
+.coll-source-badge.shopify { background: #e6f7e9; color: #008060; }
+.coll-source-badge.shoplazza { background: #e6f0ff; color: #1a56db; }
+.coll-product-card-actions {
+  display: flex; gap: 4px; padding: 0 12px 10px; justify-content: flex-end;
+}
+.coll-product-card-actions button {
+  font-size: 11px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--gray-200); background: white; color: var(--gray-500);
+}
+.coll-product-card-actions button:hover { background: var(--gray-50); color: var(--gray-700); }
+.coll-product-card-actions button.delete-btn { color: #e53e3e; }
+.coll-product-card-actions button.delete-btn:hover { background: #fff5f5; }
 </style>
 </head>
 <body>
@@ -1122,6 +1194,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="orders">Orders</div>
   <div class="tab" data-tab="apps">Apps</div>
   <div class="tab" data-tab="studio">Studio</div>
+  <div class="tab" data-tab="collections">Collections</div>
   <div class="tab" data-tab="analytics">Analytics</div>
 </div>
 
@@ -1515,6 +1588,37 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
   </div>
 
+  <div class="tab-panel" id="panel-collections">
+    <div style="display:flex;gap:0;height:calc(100vh - 120px);overflow:hidden">
+      <!-- LEFT: Tree sidebar -->
+      <div id="coll-tree-sidebar" style="width:280px;min-width:280px;border-right:1px solid var(--gray-200);display:flex;flex-direction:column;background:var(--gray-50)">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--gray-200);display:flex;align-items:center;justify-content:space-between">
+          <h3 style="margin:0;font-size:14px;font-weight:600">Collections</h3>
+          <button onclick="collAddRootNode()" style="font-size:12px;padding:4px 10px" class="btn btn-sm">+ New</button>
+        </div>
+        <div id="coll-tree" style="flex:1;overflow-y:auto;padding:8px 0"></div>
+      </div>
+      <!-- RIGHT: Main content -->
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
+        <!-- URL Input Bar -->
+        <div style="padding:16px 20px;border-bottom:1px solid var(--gray-200)">
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="coll-url-input" placeholder="Paste product URL (AliExpress, 1688, Shopify, Shoplazza)..." style="flex:1;padding:8px 12px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px">
+            <button onclick="collFetchProduct()" id="coll-fetch-btn" class="btn btn-primary" style="white-space:nowrap">Fetch Product</button>
+          </div>
+          <div id="coll-fetch-status" style="font-size:12px;color:var(--gray-400);margin-top:6px"></div>
+        </div>
+        <!-- Breadcrumb showing selected collection -->
+        <div id="coll-breadcrumb" style="padding:8px 20px;font-size:12px;color:var(--gray-500);border-bottom:1px solid var(--gray-100)">
+          Select a collection from the sidebar
+        </div>
+        <!-- Product grid -->
+        <div id="coll-product-grid" style="flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;align-content:start">
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="tab-panel" id="panel-analytics">
     <div id="analytics-loading" class="loading-overlay"><div class="spinner"></div> Loading analytics data...</div>
     <div id="analytics-content" style="display:none;">
@@ -1677,7 +1781,7 @@ async function applyRoleGating() {
     _userRole = data.role || 'admin';
     if (_userRole === 'viewer') {
       // Hide all tabs except Analytics
-      const hideTabs = ['settings', 'stores', 'winners', 'queue', 'gallery', 'orders', 'apps', 'studio'];
+      const hideTabs = ['settings', 'stores', 'winners', 'queue', 'gallery', 'orders', 'apps', 'studio', 'collections'];
       hideTabs.forEach(t => {
         const tab = document.querySelector(`.tab[data-tab="${t}"]`);
         if (tab) tab.style.display = 'none';
@@ -1742,6 +1846,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'orders') { if (!_ordersLoaded) loadOrdersSummary(); }
     if (tab.dataset.tab === 'apps') { if (!_appsLoaded) loadStoreApps(); }
     if (tab.dataset.tab === 'studio') { studioLoadJobs(); }
+    if (tab.dataset.tab === 'collections') { collLoadTree(); }
     if (tab.dataset.tab === 'analytics') {
       // Clear selector to force repopulation (picks up platform changes from Stores tab)
       const aSel = document.getElementById('analytics-store-select');
@@ -4276,6 +4381,218 @@ applyRoleGating().then(() => {
     refreshQueue();
   }
 });
+
+// ===== Collections Tab =====
+let _collTree = [];
+let _collActiveNode = null;
+let _collLoaded = false;
+let _collPendingProduct = null;
+
+async function collLoadTree() {
+  try {
+    const data = await api('/api/collections');
+    if (data?.success) {
+      _collTree = data.tree || [];
+      collRenderTree();
+      if (_collActiveNode) collSelectNode(_collActiveNode);
+      _collLoaded = true;
+    }
+  } catch(e) { console.error('Failed to load collections', e); }
+}
+
+function collRenderTree() {
+  const container = document.getElementById('coll-tree');
+  container.innerHTML = _renderTreeNodes(_collTree, 0);
+}
+
+function _renderTreeNodes(nodes, depth) {
+  if (!nodes || !nodes.length) return '';
+  return nodes.map(node => {
+    const hasChildren = node.children && node.children.length > 0;
+    const productCount = _countNodeProducts(node);
+    const isActive = _collActiveNode === node.id;
+    const expandClass = hasChildren ? 'coll-expand open' : 'coll-expand';
+
+    return `<div class="coll-tree-node">
+      <div class="coll-tree-item${isActive ? ' active' : ''}" onclick="collSelectNode('${node.id}')" data-node-id="${node.id}">
+        <span class="${expandClass}" onclick="event.stopPropagation();collToggleExpand(this)">${hasChildren ? '▶' : ''}</span>
+        <span class="coll-name" title="${escHtml(node.name)}">${escHtml(node.name)}</span>
+        <span class="coll-count">${productCount}</span>
+        <span class="coll-tree-actions">
+          <button onclick="event.stopPropagation();collAddChildNode('${node.id}')" title="Add subcollection">+</button>
+          <button onclick="event.stopPropagation();collRenameNode('${node.id}')" title="Rename">✎</button>
+          <button onclick="event.stopPropagation();collDeleteNode('${node.id}')" title="Delete">✕</button>
+        </span>
+      </div>
+      <div class="coll-tree-children">${_renderTreeNodes(node.children || [], depth + 1)}</div>
+    </div>`;
+  }).join('');
+}
+
+function _countNodeProducts(node) {
+  let count = (node.products || []).length;
+  (node.children || []).forEach(c => { count += _countNodeProducts(c); });
+  return count;
+}
+
+function collToggleExpand(el) {
+  el.classList.toggle('open');
+  const childrenDiv = el.closest('.coll-tree-node').querySelector('.coll-tree-children');
+  if (childrenDiv) childrenDiv.style.display = childrenDiv.style.display === 'none' ? '' : 'none';
+}
+
+function collSelectNode(nodeId) {
+  _collActiveNode = nodeId;
+  document.querySelectorAll('.coll-tree-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.nodeId === nodeId);
+  });
+  const node = _findNodeInTree(_collTree, nodeId);
+  if (node) {
+    const path = _getNodePath(_collTree, nodeId);
+    document.getElementById('coll-breadcrumb').innerHTML = path.map(n => escHtml(n.name)).join(' <span style="color:var(--gray-300);margin:0 4px">›</span> ');
+    collRenderProducts(node);
+  }
+}
+
+function _findNodeInTree(tree, id) {
+  for (const node of tree) {
+    if (node.id === id) return node;
+    const found = _findNodeInTree(node.children || [], id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function _getNodePath(tree, id, path = []) {
+  for (const node of tree) {
+    if (node.id === id) return [...path, node];
+    const found = _getNodePath(node.children || [], id, [...path, node]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function collRenderProducts(node) {
+  const grid = document.getElementById('coll-product-grid');
+  const products = node.products || [];
+
+  if (!products.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--gray-400)"><div style="font-size:32px;margin-bottom:12px">📦</div><div>No products yet. Paste a URL above to add products.</div></div>';
+    return;
+  }
+
+  grid.innerHTML = products.map((p, i) => {
+    const sourceClass = p.source.toLowerCase().replace(/\s/g, '').replace('1688', 's1688');
+    const priceStr = p.price ? `${p.currency || '$'}${Number(p.price).toFixed(2)}` : '';
+    return `<div class="coll-product-card">
+      <img src="${p.image || ''}" alt="${escHtml(p.title)}" onclick="window.open('${p.url}','_blank')" title="Open product page" onerror="this.style.display='none'">
+      <div class="coll-product-card-body">
+        <div class="coll-product-card-title" title="${escHtml(p.title)}">${escHtml(p.title)}</div>
+        <div class="coll-product-card-meta">
+          <span class="coll-source-badge ${sourceClass}">${escHtml(p.source)}</span>
+          <span>${priceStr}</span>
+        </div>
+      </div>
+      <div class="coll-product-card-actions">
+        <button onclick="collRemoveProduct('${node.id}','${p.id}')" class="delete-btn">Remove</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ---- Collections CRUD operations ----
+
+async function collAddRootNode() {
+  const name = prompt('Collection name:');
+  if (!name || !name.trim()) return;
+  try {
+    const data = await api('/api/collections/node', {method: 'POST', body: JSON.stringify({parent_id: null, name: name.trim()})});
+    if (data?.success) { _collTree = data.tree; collRenderTree(); toast('Collection created'); }
+    else toast(data?.error || 'Failed', 'error');
+  } catch(e) { toast('Error creating collection', 'error'); }
+}
+
+async function collAddChildNode(parentId) {
+  const name = prompt('Subcollection name:');
+  if (!name || !name.trim()) return;
+  try {
+    const data = await api('/api/collections/node', {method: 'POST', body: JSON.stringify({parent_id: parentId, name: name.trim()})});
+    if (data?.success) { _collTree = data.tree; collRenderTree(); if (_collActiveNode) collSelectNode(_collActiveNode); toast('Subcollection created'); }
+    else toast(data?.error || 'Failed', 'error');
+  } catch(e) { toast('Error', 'error'); }
+}
+
+async function collRenameNode(nodeId) {
+  const node = _findNodeInTree(_collTree, nodeId);
+  const name = prompt('Rename collection:', node?.name || '');
+  if (!name || !name.trim()) return;
+  try {
+    const data = await api(`/api/collections/node/${nodeId}`, {method: 'PUT', body: JSON.stringify({name: name.trim()})});
+    if (data?.success) { _collTree = data.tree; collRenderTree(); if (_collActiveNode) collSelectNode(_collActiveNode); }
+    else toast(data?.error || 'Failed', 'error');
+  } catch(e) { toast('Error', 'error'); }
+}
+
+async function collDeleteNode(nodeId) {
+  if (!confirm('Delete this collection and all products inside?')) return;
+  try {
+    const data = await api(`/api/collections/node/${nodeId}`, {method: 'DELETE'});
+    if (data?.success) {
+      _collTree = data.tree;
+      if (_collActiveNode === nodeId) { _collActiveNode = null; document.getElementById('coll-breadcrumb').textContent = 'Select a collection from the sidebar'; document.getElementById('coll-product-grid').innerHTML = ''; }
+      collRenderTree();
+    } else toast(data?.error || 'Failed', 'error');
+  } catch(e) { toast('Error', 'error'); }
+}
+
+async function collFetchProduct() {
+  const input = document.getElementById('coll-url-input');
+  const url = input.value.trim();
+  if (!url) return toast('Paste a product URL first', 'error');
+  if (!_collActiveNode) return toast('Select a collection first', 'error');
+
+  const btn = document.getElementById('coll-fetch-btn');
+  const status = document.getElementById('coll-fetch-status');
+  btn.disabled = true;
+  btn.textContent = 'Fetching...';
+  status.textContent = 'Fetching product data...';
+
+  try {
+    const data = await api('/api/collections/fetch-product', {method: 'POST', body: JSON.stringify({url})});
+    if (data?.success && data.product) {
+      status.innerHTML = `<span style="color:var(--primary)">✓ ${escHtml(data.product.title)}</span>`;
+      const addData = await api(`/api/collections/node/${_collActiveNode}/products`, {method: 'POST', body: JSON.stringify({product: data.product})});
+      if (addData?.success) {
+        _collTree = addData.tree;
+        collRenderTree();
+        collSelectNode(_collActiveNode);
+        input.value = '';
+        status.textContent = 'Product added successfully';
+        toast('Product added to collection');
+      } else {
+        toast(addData?.error || 'Failed to add product', 'error');
+      }
+    } else {
+      status.innerHTML = `<span style="color:#e53e3e">${escHtml(data?.error || 'Could not fetch product')}</span>`;
+      toast(data?.error || 'Fetch failed', 'error');
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:#e53e3e">Network error</span>`;
+    toast('Network error', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fetch Product';
+  }
+}
+
+async function collRemoveProduct(nodeId, productId) {
+  if (!confirm('Remove this product?')) return;
+  try {
+    const data = await api(`/api/collections/node/${nodeId}/products/${productId}`, {method: 'DELETE'});
+    if (data?.success) { _collTree = data.tree; collRenderTree(); collSelectNode(nodeId); }
+    else toast(data?.error || 'Failed', 'error');
+  } catch(e) { toast('Error', 'error'); }
+}
 </script>
 </body>
 </html>

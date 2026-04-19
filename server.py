@@ -16,6 +16,11 @@ import uuid
 import threading
 import requests as http_requests
 import re
+try:
+    from urllib3.exceptions import InsecureRequestWarning
+    http_requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+except Exception:
+    pass
 import datetime
 import logging
 
@@ -3035,6 +3040,431 @@ def store_analytics(store_id):
         import traceback
         log.error(f'Analytics error for {store.get("name","")}: {e}\n{traceback.format_exc()}')
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ===== Collections =====
+COLLECTIONS_FILE = os.path.join(DATA_DIR, 'collections.json')
+
+def _load_collections():
+    if os.path.exists(COLLECTIONS_FILE):
+        try:
+            with open(COLLECTIONS_FILE, 'r') as f:
+                return json.load(f)
+        except: pass
+    return {'tree': []}
+
+def _save_collections(data):
+    tmp = COLLECTIONS_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, COLLECTIONS_FILE)
+
+def _find_collection_node(tree, node_id):
+    for node in tree:
+        if node['id'] == node_id:
+            return node
+        found = _find_collection_node(node.get('children', []), node_id)
+        if found:
+            return found
+    return None
+
+def _delete_collection_node(tree, node_id):
+    for i, node in enumerate(tree):
+        if node['id'] == node_id:
+            tree.pop(i)
+            return True
+        if _delete_collection_node(node.get('children', []), node_id):
+            return True
+    return False
+
+def _parse_product_url(url):
+    """Parse a product URL and return (source, product_id) or (None, None)."""
+    # AliExpress: standard item URL
+    m = re.search(r'aliexpress\.[a-z.]+/item/(\d+)', url)
+    if m:
+        return 'AliExpress', m.group(1)
+    # AliExpress: short URL with productId param
+    m = re.search(r'aliexpress.*[?&]productId=(\d+)', url)
+    if m:
+        return 'AliExpress', m.group(1)
+    # 1688
+    m = re.search(r'1688\.com/offer/(\d+)', url)
+    if m:
+        return '1688', m.group(1)
+    # Shopify / Shoplazza
+    m = re.search(r'(https?://[^/]+)(?:/[^/]+)*/products/([^/?#]+)', url)
+    if m:
+        canonical = f"{m.group(1)}/products/{m.group(2)}"
+        return 'shopify_url', canonical
+    return None, None
+
+def _get_tmapi_key():
+    try:
+        with open('/root/product-research/config.json', 'r') as f:
+            return json.load(f).get('tmapi_key', '')
+    except:
+        return ''
+
+def _fetch_product_data(source, product_id):
+    """Fetch product data. Returns dict on success, or (None, error_string) on failure."""
+    if source == 'AliExpress':
+        key = _get_tmapi_key()
+        if not key:
+            return None, 'TMAPI key not configured'
+        try:
+            resp = http_requests.get('http://api.tmapi.top/aliexpress/item_detail',
+                                params={'apiToken': key, 'item_id': product_id, 'country': 'us'},
+                                timeout=30, verify=False)
+            data = resp.json()
+            item = data.get('data', data)
+            title = item.get('title', '')
+            # Price — try price_info.price, then sale_price, then raw price
+            price_info = item.get('price_info', {})
+            price = ''
+            if price_info.get('price'):
+                price = price_info['price']
+            elif price_info.get('sale_price'):
+                sp = price_info['sale_price']
+                price = sp.get('min_amount', sp) if isinstance(sp, dict) else sp
+            elif item.get('sale_price'):
+                price = item['sale_price']
+            else:
+                price = item.get('price', '')
+            currency = price_info.get('currency', 'USD')
+            # Images
+            images = item.get('main_imgs', item.get('images', []))
+            if isinstance(images, str):
+                images = [images]
+            image = images[0] if images else ''
+            # Colors and sizes from sku_props (API uses 'prop_name' not 'name')
+            COLOR_KW_AE = ('color', 'colour', 'colors', 'color classification', 'colour name',
+                           'style', 'type', 'design', 'pattern', 'model')
+            SIZE_KW_AE = ('size', 'sizes', 'us size', 'eu size', 'uk size', 'shoe size',
+                          'length', 'ring size', 'diameter', 'specification')
+            colors = []
+            sizes = []
+            for prop in item.get('sku_props', []):
+                prop_name = (prop.get('prop_name', '') or prop.get('name', '') or '').lower().strip()
+                values = prop.get('values', [])
+                has_images = any(v.get('imageUrl') or v.get('image') or v.get('img') for v in values)
+                if prop_name in SIZE_KW_AE:
+                    for v in values:
+                        name = v.get('name', '')
+                        if name: sizes.append(name)
+                elif prop_name in COLOR_KW_AE or has_images:
+                    for v in values:
+                        name = v.get('name', '')
+                        img = v.get('imageUrl', '') or v.get('image', '') or v.get('img', '') or ''
+                        if name: colors.append({'name': name, 'image': img})
+            return {
+                'title': title,
+                'image': image,
+                'images': images,
+                'price': price,
+                'currency': currency,
+                'colors': colors,
+                'sizes': sizes,
+                'source': 'AliExpress'
+            }
+        except Exception as e:
+            return None, f'AliExpress API error: {str(e)}'
+
+    elif source == '1688':
+        key = _get_tmapi_key()
+        if not key:
+            return None, 'TMAPI key not configured'
+        try:
+            resp = http_requests.get('http://api.tmapi.top/1688/item_detail',
+                                params={'apiToken': key, 'item_id': product_id, 'language': 'en'},
+                                timeout=30, verify=False)
+            data = resp.json()
+            item = data.get('data', data)
+            title = item.get('title', '')
+            # Price
+            price_range = item.get('price_range', [])
+            if price_range and isinstance(price_range, list):
+                price = price_range[0].get('price', '')
+            else:
+                price = item.get('price', '')
+            currency = 'CNY'
+            # Images
+            images = item.get('main_imgs', item.get('images', []))
+            if isinstance(images, str):
+                images = [images]
+            # Normalize 1688 image URLs
+            normalized = []
+            for img in images:
+                if img.startswith('//'):
+                    img = 'https:' + img
+                img = re.sub(r'\.\d+x\d+\.', '.', img)
+                normalized.append(img)
+            images = normalized
+            image = images[0] if images else ''
+            # Colors and sizes
+            color_kw = ['color', 'colour', '颜色', '颜色分类', '色', 'style', '款式', '款', '图案', 'pattern']
+            size_kw = ['size', '尺码', '尺寸', '码', '号', 'length', 'ring size', 'diameter']
+            colors = []
+            sizes = []
+            for prop in item.get('sku_props', item.get('skuProps', [])):
+                prop_name = str(prop.get('prop_name', prop.get('propName', prop.get('name', '')))).lower()
+                values = prop.get('values', prop.get('propValues', []))
+                has_images = any(v.get('image') or v.get('imageUrl') for v in values)
+                if any(k in prop_name for k in size_kw) and not has_images:
+                    for v in values:
+                        name = v.get('name', v.get('valueName', ''))
+                        if name: sizes.append(name)
+                elif any(k in prop_name for k in color_kw) or has_images:
+                    for v in values:
+                        name = v.get('name', v.get('valueName', ''))
+                        img = v.get('image', v.get('imageUrl', '')) or ''
+                        if img and not img.startswith('http'):
+                            img = 'https:' + img if img.startswith('//') else img
+                        if img:
+                            img = re.sub(r'\.\d+x\d+\.', '.', img)
+                        if name: colors.append({'name': name, 'image': img})
+            return {
+                'title': title,
+                'image': image,
+                'images': images,
+                'price': price,
+                'currency': currency,
+                'colors': colors,
+                'sizes': sizes,
+                'source': '1688'
+            }
+        except Exception as e:
+            return None, f'1688 API error: {str(e)}'
+
+    elif source == 'shopify_url':
+        url = product_id  # canonical URL
+        # Step 1: Try .json endpoint
+        try:
+            resp = http_requests.get(url + '.json', timeout=15, verify=False,
+                                headers={'User-Agent': 'Mozilla/5.0'})
+            if resp.status_code == 200:
+                product = resp.json().get('product', {})
+                title = product.get('title', '')
+                images = [img.get('src', '') for img in product.get('images', [])]
+                image = images[0] if images else ''
+                variants = product.get('variants', [])
+                price = variants[0].get('price', '') if variants else ''
+                currency = 'USD'
+                # Map option positions (option1, option2, option3) to option names
+                option_names = {}
+                for idx, opt in enumerate(product.get('options', [])):
+                    option_names[f'option{idx+1}'] = (opt.get('name', '') or '').lower()
+                # Extract colors and sizes using option names
+                color_kw_shop = ('color', 'colour', 'style', 'design')
+                size_kw_shop = ('size', 'length', 'width')
+                colors = []
+                sizes = []
+                seen_colors = set()
+                seen_sizes = set()
+                for v in variants:
+                    for opt_key in ['option1', 'option2', 'option3']:
+                        val = v.get(opt_key, '')
+                        if not val: continue
+                        opt_name = option_names.get(opt_key, '')
+                        if any(k in opt_name for k in color_kw_shop) and val.lower() not in seen_colors:
+                            seen_colors.add(val.lower())
+                            # Try to find variant image
+                            var_img = ''
+                            if v.get('featured_image') and v['featured_image'].get('src'):
+                                var_img = v['featured_image']['src']
+                            colors.append({'name': val, 'image': var_img})
+                        elif any(k in opt_name for k in size_kw_shop) and val.lower() not in seen_sizes:
+                            seen_sizes.add(val.lower())
+                            sizes.append(val)
+                detected_source = 'Shopify'
+                return {
+                    'title': title, 'image': image, 'images': images,
+                    'price': price, 'currency': currency,
+                    'colors': colors, 'sizes': sizes,
+                    'source': detected_source
+                }
+        except:
+            pass
+        # Step 2: Fetch HTML page for Shoplazza detection
+        try:
+            resp = http_requests.get(url, timeout=15, verify=False,
+                                headers={'User-Agent': 'Mozilla/5.0'})
+            html = resp.text[:30000]
+            is_shoplazza = 'shoplazza' in html.lower() or 'staticdj.com' in html
+            detected_source = 'Shoplazza' if is_shoplazza else 'Shopify'
+            # Try to extract JSON product data from script tags
+            title = ''
+            image = ''
+            images = []
+            price = ''
+            currency = 'USD'
+            colors = []
+            sizes = []
+            # Look for product JSON in script tags
+            for pattern in [r'"product"\s*:\s*(\{[^<]+?\})\s*[,}]', r'var\s+product\s*=\s*(\{.+?\});']:
+                m = re.search(pattern, html, re.DOTALL)
+                if m:
+                    try:
+                        pdata = json.loads(m.group(1))
+                        title = pdata.get('title', '')
+                        p_images = pdata.get('images', [])
+                        if p_images:
+                            images = [im.get('src', im) if isinstance(im, dict) else im for im in p_images]
+                            image = images[0] if images else ''
+                        p_variants = pdata.get('variants', [])
+                        if p_variants:
+                            price = p_variants[0].get('price', '')
+                        break
+                    except:
+                        pass
+            # Fallback: extract title from <title> tag
+            if not title:
+                m = re.search(r'<title>([^<]+)</title>', html)
+                if m:
+                    title = m.group(1).strip()
+            # Fallback: og:image
+            if not image:
+                m = re.search(r'property="og:image"\s+content="([^"]+)"', html)
+                if m:
+                    image = m.group(1)
+                    images = [image]
+            if not title:
+                return None, 'Could not extract product data from page'
+            return {
+                'title': title, 'image': image, 'images': images,
+                'price': price, 'currency': currency,
+                'colors': colors, 'sizes': sizes,
+                'source': detected_source
+            }
+        except Exception as e:
+            return None, f'Shopify/Shoplazza fetch error: {str(e)}'
+
+    return None, 'Unsupported product source'
+
+
+@app.route('/api/collections', methods=['GET'])
+@admin_required
+def api_get_collections():
+    data = _load_collections()
+    return jsonify({'success': True, 'tree': data.get('tree', [])})
+
+@app.route('/api/collections', methods=['POST'])
+@admin_required
+def api_save_collections():
+    body = request.get_json(force=True)
+    _save_collections(body)
+    return jsonify({'success': True})
+
+@app.route('/api/collections/node', methods=['POST'])
+@admin_required
+def api_add_collection_node():
+    body = request.get_json(force=True)
+    parent_id = body.get('parent_id')
+    name = body.get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Name required'}), 400
+    data = _load_collections()
+    new_node = {'id': 'col_' + str(uuid.uuid4())[:12], 'name': name, 'children': [], 'products': []}
+    if parent_id:
+        parent = _find_collection_node(data['tree'], parent_id)
+        if not parent:
+            return jsonify({'success': False, 'error': 'Parent not found'}), 404
+        parent.setdefault('children', []).append(new_node)
+    else:
+        data['tree'].append(new_node)
+    _save_collections(data)
+    return jsonify({'success': True, 'tree': data['tree'], 'node': new_node})
+
+@app.route('/api/collections/node/<node_id>', methods=['PUT'])
+@admin_required
+def api_rename_collection_node(node_id):
+    body = request.get_json(force=True)
+    name = body.get('name', '').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Name required'}), 400
+    data = _load_collections()
+    node = _find_collection_node(data['tree'], node_id)
+    if not node:
+        return jsonify({'success': False, 'error': 'Node not found'}), 404
+    node['name'] = name
+    _save_collections(data)
+    return jsonify({'success': True, 'tree': data['tree']})
+
+@app.route('/api/collections/node/<node_id>', methods=['DELETE'])
+@admin_required
+def api_delete_collection_node(node_id):
+    data = _load_collections()
+    if _delete_collection_node(data['tree'], node_id):
+        _save_collections(data)
+        return jsonify({'success': True, 'tree': data['tree']})
+    return jsonify({'success': False, 'error': 'Node not found'}), 404
+
+@app.route('/api/collections/fetch-product', methods=['POST'])
+@admin_required
+def api_fetch_product():
+    body = request.get_json(force=True)
+    url = body.get('url', '').strip()
+    if not url:
+        return jsonify({'success': False, 'error': 'URL required'}), 400
+    source, product_id = _parse_product_url(url)
+    if not source:
+        return jsonify({'success': False, 'error': 'Could not parse URL. Supported: AliExpress, 1688, Shopify, Shoplazza'}), 400
+    result = _fetch_product_data(source, product_id)
+    if isinstance(result, tuple):
+        return jsonify({'success': False, 'error': result[1]})
+    result['url'] = url
+    result['id'] = 'prod_' + str(uuid.uuid4())[:12]
+    result['added'] = int(time.time())
+    return jsonify({'success': True, 'product': result})
+
+@app.route('/api/collections/node/<node_id>/products', methods=['POST'])
+@admin_required
+def api_add_product_to_node(node_id):
+    body = request.get_json(force=True)
+    product = body.get('product')
+    if not product:
+        return jsonify({'success': False, 'error': 'Product data required'}), 400
+    data = _load_collections()
+    node = _find_collection_node(data['tree'], node_id)
+    if not node:
+        return jsonify({'success': False, 'error': 'Collection not found'}), 404
+    node.setdefault('products', []).append(product)
+    _save_collections(data)
+    return jsonify({'success': True, 'tree': data['tree']})
+
+@app.route('/api/collections/node/<node_id>/products/<product_id>', methods=['DELETE'])
+@admin_required
+def api_remove_product_from_node(node_id, product_id):
+    data = _load_collections()
+    node = _find_collection_node(data['tree'], node_id)
+    if not node:
+        return jsonify({'success': False, 'error': 'Collection not found'}), 404
+    products = node.get('products', [])
+    node['products'] = [p for p in products if p.get('id') != product_id]
+    _save_collections(data)
+    return jsonify({'success': True, 'tree': data['tree']})
+
+@app.route('/api/collections/node/<node_id>/move', methods=['POST'])
+@admin_required
+def api_move_collection_node(node_id):
+    body = request.get_json(force=True)
+    new_parent_id = body.get('new_parent_id')
+    data = _load_collections()
+    # Find and remove the node
+    node = _find_collection_node(data['tree'], node_id)
+    if not node:
+        return jsonify({'success': False, 'error': 'Node not found'}), 404
+    node_copy = dict(node)
+    _delete_collection_node(data['tree'], node_id)
+    # Insert into new parent
+    if new_parent_id:
+        parent = _find_collection_node(data['tree'], new_parent_id)
+        if not parent:
+            return jsonify({'success': False, 'error': 'Target parent not found'}), 404
+        parent.setdefault('children', []).append(node_copy)
+    else:
+        data['tree'].append(node_copy)
+    _save_collections(data)
+    return jsonify({'success': True, 'tree': data['tree']})
 
 
 # ===== Creative Studio =====
