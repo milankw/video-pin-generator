@@ -3448,6 +3448,24 @@ def serve_collection_image(filename):
     safe = os.path.basename(filename)
     return send_from_directory(COLLECTION_IMAGES_DIR, safe)
 
+@app.route('/api/collections/upload-image', methods=['POST'])
+@admin_required
+def api_upload_collection_image():
+    """Upload an image file for a collection product (manual entry fallback)."""
+    if 'image' not in request.files:
+        return jsonify({'success': False, 'error': 'No image file provided'}), 400
+    f = request.files['image']
+    if not f.filename:
+        return jsonify({'success': False, 'error': 'Empty filename'}), 400
+    ext = os.path.splitext(f.filename)[1].lower() or '.jpg'
+    if ext not in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+        ext = '.jpg'
+    filename = f"manual_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = os.path.join(COLLECTION_IMAGES_DIR, filename)
+    f.save(filepath)
+    local_url = f'/api/collections/images/{filename}'
+    return jsonify({'success': True, 'url': local_url})
+
 @app.route('/api/collections/fetch-product', methods=['POST'])
 @admin_required
 def api_fetch_product():
@@ -3487,11 +3505,6 @@ def api_add_product_to_node(node_id):
     node = _find_collection_node(data['tree'], node_id)
     if not node:
         return jsonify({'success': False, 'error': 'Collection not found'}), 404
-    # Prevent duplicates — check if same URL already in this node
-    existing_urls = {(p.get('url','') or '').strip() for p in node.get('products', [])}
-    product_url = (product.get('url','') or '').strip()
-    if product_url and product_url in existing_urls:
-        return jsonify({'success': False, 'error': 'This product is already in this collection'})
     node.setdefault('products', []).append(product)
     _save_collections(data)
     return jsonify({'success': True, 'tree': data['tree']})

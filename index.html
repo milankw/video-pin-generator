@@ -1236,6 +1236,32 @@ textarea { resize: vertical; min-height: 80px; }
 .coll-img-picker-preview {
   width: 48px; height: 48px; border-radius: 6px; object-fit: cover; border: 1px solid var(--gray-200);
 }
+
+/* Manual product entry */
+.coll-manual-entry {
+  margin-top: 10px; padding: 14px 16px; border: 1px solid var(--gray-200);
+  border-radius: 10px; background: var(--gray-50);
+}
+.coll-manual-entry h4 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--gray-700); }
+.coll-manual-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.coll-manual-row input { flex: 1; padding: 7px 10px; border: 1px solid var(--gray-200); border-radius: 6px; font-size: 12px; }
+.coll-manual-row select { padding: 7px 10px; border: 1px solid var(--gray-200); border-radius: 6px; font-size: 12px; background: white; }
+.coll-manual-dropzone {
+  border: 2px dashed var(--gray-300); border-radius: 8px; padding: 20px;
+  text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s;
+  color: var(--gray-400); font-size: 12px; position: relative; min-height: 80px;
+  display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px;
+}
+.coll-manual-dropzone:hover, .coll-manual-dropzone.dragover {
+  border-color: var(--primary); background: rgba(14,165,233,0.04);
+}
+.coll-manual-dropzone img {
+  max-height: 120px; max-width: 100%; border-radius: 6px; object-fit: contain;
+}
+.coll-manual-dropzone input[type=file] {
+  position: absolute; inset: 0; opacity: 0; cursor: pointer;
+}
+.coll-manual-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -1674,6 +1700,7 @@ textarea { resize: vertical; min-height: 80px; }
             <button onclick="collFetchProduct()" id="coll-fetch-btn" class="btn btn-primary" style="white-space:nowrap">Fetch Product</button>
           </div>
           <div id="coll-fetch-status" style="font-size:12px;color:var(--gray-400);margin-top:6px"></div>
+          <div id="coll-manual-entry-container"></div>
         </div>
         <!-- Breadcrumb + Export -->
         <div style="padding:8px 20px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--gray-100)">
@@ -4648,12 +4675,11 @@ async function collFetchProduct() {
         await _collAddProduct(p);
       }
     } else {
-      status.innerHTML = `<span style="color:#e53e3e">${escHtml(data?.error || 'Could not fetch product')}</span>`;
-      toast(data?.error || 'Fetch failed', 'error');
+      const errMsg = data?.error || 'Could not fetch product';
+      status.innerHTML = `<span style="color:#e53e3e">${escHtml(errMsg)}</span> <span style="color:var(--primary);cursor:pointer;text-decoration:underline" onclick="_collShowManualEntry()">Add manually</span>`;
     }
   } catch(e) {
-    status.innerHTML = `<span style="color:#e53e3e">Network error</span>`;
-    toast('Network error', 'error');
+    status.innerHTML = `<span style="color:#e53e3e">Network error</span> <span style="color:var(--primary);cursor:pointer;text-decoration:underline" onclick="_collShowManualEntry()">Add manually</span>`;
   } finally {
     btn.disabled = false;
     btn.textContent = 'Fetch Product';
@@ -4747,6 +4773,119 @@ async function _collAddProduct(product) {
       toast(addData?.error || 'Failed to add product', 'error');
     }
   } catch(e) { toast('Error adding product', 'error'); }
+}
+
+// ---- Manual product entry (fallback when API fails) ----
+let _collManualImageUrl = '';
+
+function _collShowManualEntry() {
+  if (!_collActiveNode) return toast('Select a collection first', 'error');
+  const container = document.getElementById('coll-manual-entry-container');
+  const productUrl = document.getElementById('coll-url-input').value.trim();
+  // Detect source from URL
+  let source = 'AliExpress';
+  if (/1688\.com/i.test(productUrl)) source = '1688';
+  else if (/shopify|myshopify/i.test(productUrl)) source = 'Shopify';
+  else if (/shoplazza|fantaskycdn|staticdj/i.test(productUrl)) source = 'Shoplazza';
+  _collManualImageUrl = '';
+  container.innerHTML = `<div class="coll-manual-entry">
+    <h4>Add Product Manually</h4>
+    <div class="coll-manual-row">
+      <input type="text" id="coll-manual-title" placeholder="Product title">
+      <select id="coll-manual-source"><option ${source==='AliExpress'?'selected':''}>AliExpress</option><option ${source==='1688'?'selected':''}>1688</option><option ${source==='Shopify'?'selected':''}>Shopify</option><option ${source==='Shoplazza'?'selected':''}>Shoplazza</option></select>
+    </div>
+    <div class="coll-manual-row">
+      <input type="text" id="coll-manual-price" placeholder="Price (e.g. 12.99)" style="max-width:140px">
+      <input type="text" id="coll-manual-currency" placeholder="Currency" value="USD" style="max-width:80px">
+    </div>
+    <div class="coll-manual-dropzone" id="coll-manual-dropzone"
+         ondragover="event.preventDefault();this.classList.add('dragover')"
+         ondragleave="this.classList.remove('dragover')"
+         ondrop="_collManualDrop(event)">
+      <input type="file" accept="image/*" onchange="_collManualFileSelect(event)">
+      <div id="coll-manual-img-preview">Click to upload, drag & drop, or paste (Ctrl+V)</div>
+    </div>
+    <div class="coll-manual-actions">
+      <button class="btn btn-sm" onclick="_collHideManualEntry()">Cancel</button>
+      <button class="btn btn-primary btn-sm" onclick="_collManualAdd()">Add Product</button>
+    </div>
+  </div>`;
+  // Listen for paste events
+  document.addEventListener('paste', _collManualPaste);
+}
+
+function _collHideManualEntry() {
+  document.getElementById('coll-manual-entry-container').innerHTML = '';
+  document.removeEventListener('paste', _collManualPaste);
+  _collManualImageUrl = '';
+}
+
+function _collManualPaste(e) {
+  // Only handle if manual entry is visible
+  if (!document.getElementById('coll-manual-dropzone')) return;
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) _collManualUploadFile(file);
+      return;
+    }
+  }
+}
+
+function _collManualDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  const file = e.dataTransfer?.files?.[0];
+  if (file && file.type.startsWith('image/')) _collManualUploadFile(file);
+}
+
+function _collManualFileSelect(e) {
+  const file = e.target.files?.[0];
+  if (file) _collManualUploadFile(file);
+}
+
+async function _collManualUploadFile(file) {
+  const preview = document.getElementById('coll-manual-img-preview');
+  preview.innerHTML = '<span style="color:var(--gray-400)">Uploading...</span>';
+  try {
+    const form = new FormData();
+    form.append('image', file);
+    const resp = await fetch('/api/collections/upload-image', {method: 'POST', body: form});
+    const data = await resp.json();
+    if (data?.success && data.url) {
+      _collManualImageUrl = data.url;
+      preview.innerHTML = `<img src="${data.url}"><div style="margin-top:4px;color:var(--gray-500);font-size:11px">Click or paste to replace</div>`;
+    } else {
+      preview.innerHTML = '<span style="color:#e53e3e">Upload failed. Try again.</span>';
+    }
+  } catch(e) {
+    preview.innerHTML = '<span style="color:#e53e3e">Upload error. Try again.</span>';
+  }
+}
+
+async function _collManualAdd() {
+  const title = document.getElementById('coll-manual-title')?.value.trim();
+  if (!title) return toast('Enter a product title', 'error');
+  if (!_collManualImageUrl) return toast('Upload an image first', 'error');
+  if (!_collActiveNode) return toast('Select a collection first', 'error');
+  const product = {
+    id: 'prod_' + Math.random().toString(36).substr(2, 12),
+    title: title,
+    image: _collManualImageUrl,
+    images: [_collManualImageUrl],
+    price: document.getElementById('coll-manual-price')?.value.trim() || '',
+    currency: document.getElementById('coll-manual-currency')?.value.trim() || 'USD',
+    source: document.getElementById('coll-manual-source')?.value || 'AliExpress',
+    url: document.getElementById('coll-url-input')?.value.trim() || '',
+    colors: [],
+    sizes: [],
+    added: Math.floor(Date.now() / 1000)
+  };
+  _collHideManualEntry();
+  await _collAddProduct(product);
 }
 
 async function collRemoveProduct(nodeId, productId) {
