@@ -1136,19 +1136,21 @@ textarea { resize: vertical; min-height: 80px; }
 .coll-product-card {
   border: 1px solid var(--gray-200); border-radius: 10px; overflow: hidden;
   background: white; transition: border-color 0.15s, box-shadow 0.15s;
-  position: relative;
+  position: relative; display: flex; flex-direction: column;
 }
 .coll-product-card:hover { border-color: var(--gray-300); box-shadow: var(--shadow); }
-.coll-product-card img {
+.coll-product-card-img {
   width: 100%; aspect-ratio: 1; object-fit: cover; display: block; cursor: pointer;
 }
-.coll-product-card-body { padding: 10px 12px; }
+.coll-product-card-body { padding: 10px 12px; flex: 1; }
 .coll-product-card-title {
   font-size: 12px; font-weight: 500; color: var(--gray-700);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+  -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal;
+  line-height: 1.4;
 }
 .coll-product-card-meta {
-  font-size: 11px; color: var(--gray-400); margin-top: 4px;
+  font-size: 11px; color: var(--gray-400); margin-top: 6px;
   display: flex; justify-content: space-between; align-items: center;
 }
 .coll-source-badge {
@@ -1616,7 +1618,7 @@ textarea { resize: vertical; min-height: 80px; }
           <button onclick="collExportCSV()" class="btn btn-sm" style="font-size:11px;padding:4px 12px;white-space:nowrap">Export CSV</button>
         </div>
         <!-- Product grid -->
-        <div id="coll-product-grid" style="flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;align-content:start">
+        <div id="coll-product-grid" style="flex:1;overflow-y:auto;padding:16px 20px;display:grid;grid-template-columns:repeat(auto-fill,minmax(175px,1fr));gap:14px;align-content:start">
         </div>
       </div>
     </div>
@@ -4488,7 +4490,7 @@ function collRenderProducts(node) {
     const sourceClass = p.source.toLowerCase().replace(/\s/g, '').replace('1688', 's1688');
     const priceStr = p.price ? `${p.currency || '$'}${Number(p.price).toFixed(2)}` : '';
     return `<div class="coll-product-card">
-      <img src="${p.image || ''}" alt="${escHtml(p.title)}" onclick="window.open('${p.url}','_blank')" title="Open product page" onerror="this.style.display='none'">
+      <img class="coll-product-card-img" src="${p.image || ''}" alt="${escHtml(p.title)}" onclick="window.open('${p.url}','_blank')" title="Open product page" onerror="this.style.display='none'">
       <div class="coll-product-card-body">
         <div class="coll-product-card-title" title="${escHtml(p.title)}">${escHtml(p.title)}</div>
         <div class="coll-product-card-meta">
