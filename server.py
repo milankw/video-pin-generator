@@ -3246,57 +3246,123 @@ def _fetch_product_data(source, product_id):
 
     elif source == 'shopify_url':
         url = product_id  # canonical URL
+        _browser_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+
+        def _parse_shopify_json_product(product):
+            """Extract structured data from a Shopify product JSON object."""
+            title = product.get('title', '')
+            images = [img.get('src', '') for img in product.get('images', [])] if isinstance(product.get('images'), list) and product['images'] and isinstance(product['images'][0], dict) else product.get('images', [])
+            image = images[0] if images else ''
+            variants = product.get('variants', [])
+            price = variants[0].get('price', '') if variants else ''
+            currency = 'USD'
+            option_names = {}
+            for idx, opt in enumerate(product.get('options', [])):
+                option_names[f'option{idx+1}'] = (opt.get('name', '') or '').lower()
+            color_kw_shop = ('color', 'colour', 'style', 'design')
+            size_kw_shop = ('size', 'length', 'width')
+            colors = []
+            sizes = []
+            seen_colors = set()
+            seen_sizes = set()
+            for v in variants:
+                for opt_key in ['option1', 'option2', 'option3']:
+                    val = v.get(opt_key, '')
+                    if not val: continue
+                    opt_name = option_names.get(opt_key, '')
+                    if any(k in opt_name for k in color_kw_shop) and val.lower() not in seen_colors:
+                        seen_colors.add(val.lower())
+                        var_img = ''
+                        if v.get('featured_image') and v['featured_image'].get('src'):
+                            var_img = v['featured_image']['src']
+                        colors.append({'name': val, 'image': var_img})
+                    elif any(k in opt_name for k in size_kw_shop) and val.lower() not in seen_sizes:
+                        seen_sizes.add(val.lower())
+                        sizes.append(val)
+            return {
+                'title': title, 'image': image, 'images': images,
+                'price': price, 'currency': currency,
+                'colors': colors, 'sizes': sizes,
+            }
+
         # Step 1: Try .json endpoint
         try:
-            resp = http_requests.get(url + '.json', timeout=15, verify=False,
-                                headers={'User-Agent': 'Mozilla/5.0'})
+            resp = http_requests.get(url + '.json', timeout=15, verify=False, headers=_browser_headers)
             if resp.status_code == 200:
                 product = resp.json().get('product', {})
-                title = product.get('title', '')
-                images = [img.get('src', '') for img in product.get('images', [])]
-                image = images[0] if images else ''
-                variants = product.get('variants', [])
-                price = variants[0].get('price', '') if variants else ''
-                currency = 'USD'
-                # Map option positions (option1, option2, option3) to option names
-                option_names = {}
-                for idx, opt in enumerate(product.get('options', [])):
-                    option_names[f'option{idx+1}'] = (opt.get('name', '') or '').lower()
-                # Extract colors and sizes using option names
-                color_kw_shop = ('color', 'colour', 'style', 'design')
-                size_kw_shop = ('size', 'length', 'width')
-                colors = []
-                sizes = []
-                seen_colors = set()
-                seen_sizes = set()
-                for v in variants:
-                    for opt_key in ['option1', 'option2', 'option3']:
-                        val = v.get(opt_key, '')
-                        if not val: continue
-                        opt_name = option_names.get(opt_key, '')
-                        if any(k in opt_name for k in color_kw_shop) and val.lower() not in seen_colors:
-                            seen_colors.add(val.lower())
-                            # Try to find variant image
-                            var_img = ''
-                            if v.get('featured_image') and v['featured_image'].get('src'):
-                                var_img = v['featured_image']['src']
-                            colors.append({'name': val, 'image': var_img})
-                        elif any(k in opt_name for k in size_kw_shop) and val.lower() not in seen_sizes:
-                            seen_sizes.add(val.lower())
-                            sizes.append(val)
-                detected_source = 'Shopify'
-                return {
-                    'title': title, 'image': image, 'images': images,
-                    'price': price, 'currency': currency,
-                    'colors': colors, 'sizes': sizes,
-                    'source': detected_source
-                }
+                if product.get('title'):
+                    result = _parse_shopify_json_product(product)
+                    result['source'] = 'Shopify'
+                    return result
         except:
             pass
-        # Step 2: Fetch HTML page for Shoplazza detection
+        # Step 2: Try .js endpoint (some stores block .json but allow .js)
         try:
-            resp = http_requests.get(url, timeout=15, verify=False,
-                                headers={'User-Agent': 'Mozilla/5.0'})
+            resp = http_requests.get(url + '.js', timeout=15, verify=False, headers=_browser_headers)
+            if resp.status_code == 200:
+                product = resp.json()
+                if product.get('title'):
+                    # .js returns product directly, images are objects with src
+                    title = product.get('title', '')
+                    raw_images = product.get('images', product.get('media', []))
+                    images = []
+                    for im in raw_images:
+                        if isinstance(im, dict):
+                            images.append(im.get('src', ''))
+                        elif isinstance(im, str):
+                            images.append(im)
+                    image = images[0] if images else product.get('featured_image', '')
+                    variants = product.get('variants', [])
+                    price = ''
+                    if variants:
+                        price = variants[0].get('price', '')
+                        # .js returns price in cents sometimes
+                        if isinstance(price, (int, float)) and price > 1000:
+                            price = price / 100
+                    currency = 'USD'
+                    colors = []
+                    sizes = []
+                    option_names = {}
+                    for idx, opt_name in enumerate(product.get('options', [])):
+                        if isinstance(opt_name, str):
+                            option_names[f'option{idx+1}'] = opt_name.lower()
+                        elif isinstance(opt_name, dict):
+                            option_names[f'option{idx+1}'] = (opt_name.get('name', '') or '').lower()
+                    color_kw_shop = ('color', 'colour', 'style', 'design')
+                    size_kw_shop = ('size', 'length', 'width')
+                    seen_colors = set()
+                    seen_sizes = set()
+                    for v in variants:
+                        for opt_key in ['option1', 'option2', 'option3']:
+                            val = v.get(opt_key, '')
+                            if not val: continue
+                            opt_name = option_names.get(opt_key, '')
+                            if any(k in opt_name for k in color_kw_shop) and val.lower() not in seen_colors:
+                                seen_colors.add(val.lower())
+                                var_img = ''
+                                if v.get('featured_image') and isinstance(v['featured_image'], dict) and v['featured_image'].get('src'):
+                                    var_img = v['featured_image']['src']
+                                elif v.get('featured_image') and isinstance(v['featured_image'], str):
+                                    var_img = v['featured_image']
+                                colors.append({'name': val, 'image': var_img})
+                            elif any(k in opt_name for k in size_kw_shop) and val.lower() not in seen_sizes:
+                                seen_sizes.add(val.lower())
+                                sizes.append(val)
+                    return {
+                        'title': title, 'image': image, 'images': images,
+                        'price': price, 'currency': currency,
+                        'colors': colors, 'sizes': sizes,
+                        'source': 'Shopify'
+                    }
+        except:
+            pass
+        # Step 3: Fetch HTML page for Shoplazza detection / fallback
+        try:
+            resp = http_requests.get(url, timeout=15, verify=False, headers=_browser_headers)
             if resp.status_code == 404:
                 return None, 'Product not found (404) — it may have been removed from the store'
             html = resp.text[:30000]
@@ -3332,9 +3398,10 @@ def _fetch_product_data(source, product_id):
                 m = re.search(r'<title>([^<]+)</title>', html)
                 if m:
                     raw = m.group(1).strip()
-                    # Reject 404 / error pages
-                    if '404' in raw.lower() or 'not found' in raw.lower() or 'page not found' in raw.lower():
-                        return None, 'Product not found (404) — it may have been removed from the store'
+                    # Reject error / 404 pages
+                    raw_lower = raw.lower()
+                    if any(err in raw_lower for err in ('404', 'not found', 'page not found', 'something went wrong', 'error', 'unavailable', 'access denied')):
+                        return None, f'Store returned an error page ("{raw}") — the product may be unavailable or the store is blocking requests'
                     title = html_mod.unescape(raw)
             # Fallback: og:image
             if not image:
