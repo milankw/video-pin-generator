@@ -2162,25 +2162,34 @@ def shopify_winners(store_id):
             shopify_status = detail.get('status', 'unknown')
             video_status = product_video_status.get(str(pid), 'none')  # none = no video at all
 
-            # Build per-variant sales breakdown sorted by quantity desc
-            variant_breakdown = sorted(
-                p.get('variant_sales', {}).values(),
-                key=lambda v: v['quantity'], reverse=True
-            )
-            # Enrich variant breakdown with image from product details
+            # Build per-colour sales breakdown (group variants by colour, ignore sizes)
             detail_variants = detail.get('variants', [])
             vid_to_img = {}
             for dv in detail_variants:
                 vid_to_img[str(dv.get('id', ''))] = dv.get('image', '')
 
-            enriched_breakdown = []
-            for vb in variant_breakdown:
-                enriched_breakdown.append({
-                    'title': vb['title'],
-                    'quantity': vb['quantity'],
-                    'revenue': round(vb['revenue'], 2),
-                    'image': vid_to_img.get(vb['variant_id'], ''),
-                })
+            # Group variant sales by colour (first option before " / ")
+            colour_sales = {}  # colour_name -> {quantity, revenue, image}
+            for vb in p.get('variant_sales', {}).values():
+                vtitle = vb.get('title', '') or 'Default'
+                # Extract colour: first part before " / " (rest is usually size)
+                colour = vtitle.split(' / ')[0].strip() if ' / ' in vtitle else vtitle.strip()
+                if not colour:
+                    colour = 'Default'
+                if colour not in colour_sales:
+                    colour_sales[colour] = {'title': colour, 'quantity': 0, 'revenue': 0.0, 'image': ''}
+                colour_sales[colour]['quantity'] += vb['quantity']
+                colour_sales[colour]['revenue'] += vb['revenue']
+                # Use first variant image found for this colour
+                if not colour_sales[colour]['image']:
+                    colour_sales[colour]['image'] = vid_to_img.get(vb.get('variant_id', ''), '')
+
+            enriched_breakdown = sorted(
+                colour_sales.values(),
+                key=lambda v: v['quantity'], reverse=True
+            )
+            for eb in enriched_breakdown:
+                eb['revenue'] = round(eb['revenue'], 2)
 
             results.append({
                 'id': str(pid),
