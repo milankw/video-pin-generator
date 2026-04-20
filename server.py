@@ -2060,9 +2060,23 @@ def shopify_winners(store_id):
                             'title': item.get('title', 'Unknown'),
                             'quantity': 0,
                             'revenue': 0.0,
+                            'variant_sales': {},  # variant_id -> {title, quantity, revenue}
                         }
                     product_sales[pid]['quantity'] += qty
                     product_sales[pid]['revenue'] += revenue
+
+                    # Track per-variant breakdown
+                    vid = str(item.get('variant_id', '') or '')
+                    vtitle = item.get('variant_title', '') or 'Default'
+                    if vid not in product_sales[pid]['variant_sales']:
+                        product_sales[pid]['variant_sales'][vid] = {
+                            'variant_id': vid,
+                            'title': vtitle,
+                            'quantity': 0,
+                            'revenue': 0.0,
+                        }
+                    product_sales[pid]['variant_sales'][vid]['quantity'] += qty
+                    product_sales[pid]['variant_sales'][vid]['revenue'] += revenue
 
             # Pagination via Link header
             link_header = resp.headers.get('Link', '')
@@ -2148,6 +2162,26 @@ def shopify_winners(store_id):
             shopify_status = detail.get('status', 'unknown')
             video_status = product_video_status.get(str(pid), 'none')  # none = no video at all
 
+            # Build per-variant sales breakdown sorted by quantity desc
+            variant_breakdown = sorted(
+                p.get('variant_sales', {}).values(),
+                key=lambda v: v['quantity'], reverse=True
+            )
+            # Enrich variant breakdown with image from product details
+            detail_variants = detail.get('variants', [])
+            vid_to_img = {}
+            for dv in detail_variants:
+                vid_to_img[str(dv.get('id', ''))] = dv.get('image', '')
+
+            enriched_breakdown = []
+            for vb in variant_breakdown:
+                enriched_breakdown.append({
+                    'title': vb['title'],
+                    'quantity': vb['quantity'],
+                    'revenue': round(vb['revenue'], 2),
+                    'image': vid_to_img.get(vb['variant_id'], ''),
+                })
+
             results.append({
                 'id': str(pid),
                 'name': p['title'],
@@ -2157,6 +2191,7 @@ def shopify_winners(store_id):
                 'revenue': round(p['revenue'], 2),
                 'image': image_url,
                 'variants': detail.get('variants', []),
+                'variantSales': enriched_breakdown,
                 'handle': handle,
                 'productType': product_type,
                 'shopifyStatus': shopify_status,

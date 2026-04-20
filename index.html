@@ -375,6 +375,65 @@ textarea { resize: vertical; min-height: 80px; }
   color: var(--gray-500);
 }
 .product-card-stats strong { color: var(--gray-700); }
+.variant-sales-breakdown {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.variant-sales-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--gray-600);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--gray-100);
+}
+.variant-sales-row:last-child { border-bottom: none; }
+.variant-sales-color {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--gray-700);
+}
+.variant-sales-qty {
+  font-weight: 600;
+  color: var(--primary);
+  white-space: nowrap;
+}
+.variant-sales-rev {
+  color: var(--gray-400);
+  white-space: nowrap;
+  font-size: 10px;
+}
+.variant-sales-bar {
+  width: 40px;
+  height: 4px;
+  background: var(--gray-100);
+  border-radius: 2px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.variant-sales-bar-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.variant-sales-toggle {
+  font-size: 11px;
+  color: var(--primary);
+  cursor: pointer;
+  margin-top: 4px;
+  text-align: center;
+}
+.variant-sales-toggle:hover { text-decoration: underline; }
 .product-card-check {
   position: absolute;
   top: 10px;
@@ -2667,6 +2726,25 @@ function renderProducts() {
       ? `<a href="${productUrl}" target="_blank" rel="noopener" class="product-card-link" onclick="event.stopPropagation();" title="View on Shopify">&#8599;</a>`
       : '';
 
+    // Build variant sales breakdown HTML
+    let variantSalesHtml = '';
+    const vs = p.variantSales || [];
+    if (vs.length > 1) {
+      const maxQty = vs[0]?.quantity || 1;
+      const rows = vs.map(v => {
+        const pct = Math.round((v.quantity / maxQty) * 100);
+        // Extract colour name: first part before " / " or full title
+        const colorName = v.title.includes(' / ') ? v.title.split(' / ')[0] : v.title;
+        return `<div class="variant-sales-row">
+          <span class="variant-sales-color" title="${escHtml(v.title)}">${escHtml(colorName)}</span>
+          <div class="variant-sales-bar"><div class="variant-sales-bar-fill" style="width:${pct}%"></div></div>
+          <span class="variant-sales-qty">${v.quantity}</span>
+          <span class="variant-sales-rev">$${v.revenue.toFixed(2)}</span>
+        </div>`;
+      }).join('');
+      variantSalesHtml = `<div class="variant-sales-breakdown" onclick="event.stopPropagation()">${rows}</div>`;
+    }
+
     card.innerHTML = `
       <div class="product-card-check"></div>
       ${shopBadgeHtml}
@@ -2680,6 +2758,7 @@ function renderProducts() {
           <span><strong>${p.sales}</strong> sales</span>
           <span><strong>$${p.revenue.toFixed(2)}</strong> revenue</span>
         </div>
+        ${variantSalesHtml}
       </div>
     `;
     grid.appendChild(card);
