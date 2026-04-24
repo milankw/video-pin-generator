@@ -617,6 +617,71 @@ textarea { resize: vertical; min-height: 80px; }
   margin-top: 2px;
 }
 
+/* ===== Winners sync banner ===== */
+.winners-sync-banner {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.winners-sync-banner.is-needs {
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+.winners-sync-banner.is-syncing {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+.winners-sync-banner.is-cached {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+.winners-sync-banner.is-error {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+.winners-sync-banner-text {
+  flex: 1;
+  min-width: 220px;
+}
+.winners-sync-banner-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--gray-900);
+  margin-bottom: 2px;
+}
+.winners-sync-banner-sub {
+  font-size: 12px;
+  color: var(--gray-600);
+}
+.winners-sync-progress {
+  width: 100%;
+  height: 8px;
+  background: var(--gray-200);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+.winners-sync-progress-bar {
+  height: 100%;
+  background: #3b82f6;
+  transition: width 0.3s ease;
+  width: 0%;
+  /* Indeterminate shimmer for unknown total */
+  background-image: linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%);
+  background-size: 200% 100%;
+  animation: winners-sync-shimmer 1.5s linear infinite;
+}
+@keyframes winners-sync-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* ===== Loader ===== */
 .spinner {
   display: inline-block;
@@ -1578,6 +1643,10 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
 
     <div id="winners-stats" class="stats-row" style="display:none;"></div>
+
+    <!-- Sync status banner (needs sync / syncing / cached) -->
+    <div id="winners-sync-banner" class="winners-sync-banner" style="display:none;"></div>
+
     <div class="loading-overlay" id="winners-loading"><div class="spinner"></div> Fetching winning products...</div>
     <div class="empty-state" id="winners-empty">
       <div class="empty-state-icon">&#128640;</div>
@@ -2606,14 +2675,110 @@ async function loadVideoModels() {
 }
 
 // ===== Winners =====
+let _winnerSyncPollTimer = null;
+let _winnerSyncPollStoreId = null;
+
+function _formatTimeAgo(ts) {
+  if (!ts) return 'never';
+  const sec = Math.floor(Date.now() / 1000 - ts);
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+function _hideSyncBanner() {
+  const el = document.getElementById('winners-sync-banner');
+  if (el) { el.style.display = 'none'; el.className = 'winners-sync-banner'; el.innerHTML = ''; }
+}
+
+function _showSyncBanner(kind, titleHtml, subHtml, actionHtml, showProgress) {
+  const el = document.getElementById('winners-sync-banner');
+  if (!el) return;
+  el.className = 'winners-sync-banner is-' + kind;
+  el.style.display = 'flex';
+  el.innerHTML = `
+    <div class="winners-sync-banner-text">
+      <div class="winners-sync-banner-title">${titleHtml}</div>
+      <div class="winners-sync-banner-sub">${subHtml}</div>
+      ${showProgress ? '<div class="winners-sync-progress"><div class="winners-sync-progress-bar"></div></div>' : ''}
+    </div>
+    ${actionHtml || ''}
+  `;
+}
+
+function _stopSyncPolling() {
+  if (_winnerSyncPollTimer) { clearInterval(_winnerSyncPollTimer); _winnerSyncPollTimer = null; }
+  _winnerSyncPollStoreId = null;
+}
+
+async function _pollSyncStatus(storeId) {
+  try {
+    const res = await api(`/api/shopify/winners/${storeId}/sync/status`);
+    if (!res?.success) return;
+    const meta = res.meta || {};
+    const pages = meta.pages_scanned || 0;
+    const orders = meta.total_orders || 0;
+    const products = meta.total_products || 0;
+    if (meta.status === 'running') {
+      _showSyncBanner('syncing',
+        `Syncing all paid orders from Shopify…`,
+        `Scanned <strong>${pages}</strong> pages · <strong>${orders}</strong> units · <strong>${products}</strong> products so far. This runs once per store — you can leave and come back.`,
+        '', true);
+    } else if (meta.status === 'done') {
+      _stopSyncPolling();
+      toast('Sync complete', 'success');
+      // Re-fetch winners now that cache is populated
+      fetchWinners();
+    } else if (meta.status === 'error') {
+      _stopSyncPolling();
+      _showSyncBanner('error',
+        `Sync failed`,
+        `${escHtml(meta.error || 'Unknown error')}`,
+        `<button class="btn btn-primary btn-sm" onclick="startWinnerSync('${storeId}')">Retry</button>`, false);
+      document.getElementById('fetch-btn').disabled = false;
+    }
+  } catch (e) {}
+}
+
+async function startWinnerSync(storeId) {
+  if (!storeId) return;
+  document.getElementById('fetch-btn').disabled = true;
+  document.getElementById('winners-empty').style.display = 'none';
+  document.getElementById('product-grid').innerHTML = '';
+  document.getElementById('winners-stats').style.display = 'none';
+  _showSyncBanner('syncing',
+    `Starting sync…`,
+    `Contacting Shopify and beginning full order history scan.`,
+    '', true);
+  const res = await api(`/api/shopify/winners/${storeId}/sync`, { method: 'POST' });
+  if (!res?.success) {
+    toast(res?.error || 'Failed to start sync', 'error');
+    _hideSyncBanner();
+    document.getElementById('fetch-btn').disabled = false;
+    return;
+  }
+  // Start polling every 2.5s
+  _stopSyncPolling();
+  _winnerSyncPollStoreId = storeId;
+  _pollSyncStatus(storeId);
+  _winnerSyncPollTimer = setInterval(() => {
+    if (_winnerSyncPollStoreId === storeId) _pollSyncStatus(storeId);
+  }, 2500);
+}
+
 async function fetchWinners() {
   const storeId = document.getElementById('store-select').value;
   if (!storeId) { toast('Select a store first', 'error'); return; }
   const threshold = document.getElementById('threshold').value || 5;
 
+  // If we were polling for a different store, stop
+  if (_winnerSyncPollStoreId && _winnerSyncPollStoreId !== storeId) _stopSyncPolling();
+
   document.getElementById('winners-empty').style.display = 'none';
   document.getElementById('product-grid').innerHTML = '';
   document.getElementById('winners-stats').style.display = 'none';
+  _hideSyncBanner();
   document.getElementById('winners-loading').classList.add('active');
   document.getElementById('fetch-btn').disabled = true;
 
@@ -2626,6 +2791,42 @@ async function fetchWinners() {
     toast(data?.error || 'Failed to fetch winners', 'error');
     document.getElementById('winners-empty').style.display = 'block';
     return;
+  }
+
+  // No cache yet — offer to start sync
+  if (data.needsSync) {
+    _showSyncBanner('needs',
+      `No order history synced yet`,
+      `We need to scan this store's full paid-order history once. After that, filtering by any sales threshold is instant.`,
+      `<button class="btn btn-primary" onclick="startWinnerSync('${storeId}')">Start sync</button>`, false);
+    document.getElementById('winners-empty').style.display = 'none';
+    document.getElementById('select-all-btn').style.display = 'none';
+    document.getElementById('generate-btn').style.display = 'none';
+    return;
+  }
+
+  // Sync already in progress — show banner & start polling
+  if (data.syncing) {
+    _stopSyncPolling();
+    _winnerSyncPollStoreId = storeId;
+    _pollSyncStatus(storeId);
+    _winnerSyncPollTimer = setInterval(() => {
+      if (_winnerSyncPollStoreId === storeId) _pollSyncStatus(storeId);
+    }, 2500);
+    document.getElementById('winners-empty').style.display = 'none';
+    document.getElementById('select-all-btn').style.display = 'none';
+    document.getElementById('generate-btn').style.display = 'none';
+    return;
+  }
+
+  // We got cached data — show "Last synced" banner with Re-sync option
+  if (data.fromCache) {
+    const meta = data.meta || {};
+    const ago = _formatTimeAgo(meta.last_synced);
+    _showSyncBanner('cached',
+      `Showing cached results · last synced ${ago}`,
+      `<strong>${meta.total_products || 0}</strong> products from <strong>${meta.total_orders || 0}</strong> units across <strong>${meta.pages_scanned || 0}</strong> order pages. Filtering by threshold is instant.`,
+      `<button class="btn btn-secondary btn-sm" onclick="startWinnerSync('${storeId}')">Re-sync</button>`, false);
   }
 
   winners = data.products;

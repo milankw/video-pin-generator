@@ -2012,34 +2012,103 @@ def get_store_apps():
 
 
 # ===== Routes: Shopify Winners =====
-@app.route('/api/shopify/winners/<store_id>', methods=['GET'])
-@admin_required
-def shopify_winners(store_id):
-    """Fetch top-selling products from Shopify orders."""
-    stores = _load_stores()
-    store = next((s for s in stores if s['id'] == store_id), None)
-    if not store:
-        return jsonify({'success': False, 'error': 'Store not found'}), 404
+# ===== Winner cache (per-store persistent sales aggregation) =====
+WINNER_CACHE_DIR = os.path.join(DATA_DIR, 'winner_cache')
+os.makedirs(WINNER_CACHE_DIR, exist_ok=True)
+_winner_sync_locks = {}  # store_id -> threading.Lock to prevent double-runs
 
-    domain = store.get('domain', '')
-    token = store.get('shopifyAccessToken', '')
-    if not domain or not token:
-        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+def _winner_cache_path(store_id):
+    return os.path.join(WINNER_CACHE_DIR, f'{store_id}.json')
 
-    threshold = int(request.args.get('threshold', 5))
-    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
-    base_url = f'https://{domain}/admin/api/2024-01'
+def _winner_meta_path(store_id):
+    return os.path.join(WINNER_CACHE_DIR, f'{store_id}_meta.json')
+
+def _load_winner_cache(store_id):
+    path = _winner_cache_path(store_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except:
+        return None
+
+def _save_winner_cache(store_id, product_sales):
+    # product_sales keys are product_ids (may be ints) — JSON keys must be strings
+    serialisable = {str(k): v for k, v in product_sales.items()}
+    path = _winner_cache_path(store_id)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(serialisable, f)
+    os.replace(tmp, path)
+
+def _load_winner_meta(store_id):
+    path = _winner_meta_path(store_id)
+    if not os.path.exists(path):
+        return {'status': 'never', 'pages_scanned': 0, 'total_orders': 0, 'total_products': 0, 'last_synced': None, 'error': None}
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except:
+        return {'status': 'never'}
+
+def _save_winner_meta(store_id, meta):
+    path = _winner_meta_path(store_id)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(meta, f)
+    os.replace(tmp, path)
+
+def _run_winner_sync(store_id, domain, token):
+    """Background worker: scans ALL paid orders for a store and saves per-product sales to disk."""
+    lock = _winner_sync_locks.setdefault(store_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return  # Already syncing
+
+    meta = {
+        'status': 'running',
+        'pages_scanned': 0,
+        'total_orders': 0,
+        'total_products': 0,
+        'started_at': time.time(),
+        'last_synced': None,
+        'error': None,
+    }
+    _save_winner_meta(store_id, meta)
 
     try:
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        base_url = f'https://{domain}/admin/api/2024-01'
         product_sales = {}
         page_url = f'{base_url}/orders.json?status=any&financial_status=paid&limit=250&fields=line_items,created_at'
         pages_fetched = 0
-        max_pages = 100
+        max_pages = 10000  # effectively unlimited
 
         while page_url and pages_fetched < max_pages:
-            resp = http_requests.get(page_url, headers=headers, timeout=30)
+            try:
+                resp = http_requests.get(page_url, headers=headers, timeout=60)
+            except Exception as e:
+                # Transient error — retry up to 3 times with backoff
+                retry_ok = False
+                for attempt in range(3):
+                    time.sleep(2 ** attempt)
+                    try:
+                        resp = http_requests.get(page_url, headers=headers, timeout=60)
+                        retry_ok = True
+                        break
+                    except:
+                        continue
+                if not retry_ok:
+                    raise
+
+            # Handle 429 (rate limit) — Shopify returns Retry-After header
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get('Retry-After', '2'))
+                time.sleep(retry_after)
+                continue  # retry same page_url
+
             if resp.status_code != 200:
-                break
+                raise Exception(f'Shopify API error {resp.status_code}: {resp.text[:200]}')
 
             orders = resp.json().get('orders', [])
             if not orders:
@@ -2051,7 +2120,10 @@ def shopify_winners(store_id):
                     if not pid:
                         continue
                     qty = item.get('quantity', 1)
-                    price = float(item.get('price', '0'))
+                    try:
+                        price = float(item.get('price', '0'))
+                    except:
+                        price = 0.0
                     revenue = qty * price
 
                     if pid not in product_sales:
@@ -2060,12 +2132,11 @@ def shopify_winners(store_id):
                             'title': item.get('title', 'Unknown'),
                             'quantity': 0,
                             'revenue': 0.0,
-                            'variant_sales': {},  # variant_id -> {title, quantity, revenue}
+                            'variant_sales': {},
                         }
                     product_sales[pid]['quantity'] += qty
                     product_sales[pid]['revenue'] += revenue
 
-                    # Track per-variant breakdown
                     vid = str(item.get('variant_id', '') or '')
                     vtitle = item.get('variant_title', '') or 'Default'
                     if vid not in product_sales[pid]['variant_sales']:
@@ -2078,7 +2149,6 @@ def shopify_winners(store_id):
                     product_sales[pid]['variant_sales'][vid]['quantity'] += qty
                     product_sales[pid]['variant_sales'][vid]['revenue'] += revenue
 
-            # Pagination via Link header
             link_header = resp.headers.get('Link', '')
             page_url = None
             if 'rel="next"' in link_header:
@@ -2087,14 +2157,133 @@ def shopify_winners(store_id):
                         page_url = part.split('<')[1].split('>')[0]
                         break
             pages_fetched += 1
+
+            # Periodic progress save every 10 pages + final save at end
+            if pages_fetched % 10 == 0:
+                meta['pages_scanned'] = pages_fetched
+                meta['total_orders'] = sum(p['quantity'] for p in product_sales.values())
+                meta['total_products'] = len(product_sales)
+                _save_winner_meta(store_id, meta)
+                _save_winner_cache(store_id, product_sales)
+
+            # Respect Shopify rate limit (2 req/s baseline for REST)
             time.sleep(0.3)
 
-        # Filter and sort
-        sorted_products = sorted(product_sales.values(), key=lambda x: x['quantity'], reverse=True)
-        if threshold > 0:
-            sorted_products = [p for p in sorted_products if p['quantity'] >= threshold]
+        # Final save
+        _save_winner_cache(store_id, product_sales)
+        meta['status'] = 'done'
+        meta['pages_scanned'] = pages_fetched
+        meta['total_orders'] = sum(p['quantity'] for p in product_sales.values())
+        meta['total_products'] = len(product_sales)
+        meta['last_synced'] = time.time()
+        meta['duration_sec'] = round(time.time() - meta['started_at'], 1)
+        _save_winner_meta(store_id, meta)
 
-        # Batch-fetch product details
+    except Exception as e:
+        meta['status'] = 'error'
+        meta['error'] = str(e)
+        _save_winner_meta(store_id, meta)
+    finally:
+        lock.release()
+
+
+@app.route('/api/shopify/winners/<store_id>/sync', methods=['POST'])
+@admin_required
+def shopify_winners_sync_start(store_id):
+    """Start a background sync of ALL paid orders for this store."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+
+    # Check if already running
+    meta = _load_winner_meta(store_id)
+    if meta.get('status') == 'running':
+        return jsonify({'success': True, 'status': 'already_running', 'meta': meta})
+
+    thread = threading.Thread(target=_run_winner_sync, args=(store_id, domain, token), daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'status': 'started'})
+
+
+@app.route('/api/shopify/winners/<store_id>/sync/status', methods=['GET'])
+@admin_required
+def shopify_winners_sync_status(store_id):
+    """Poll sync progress."""
+    meta = _load_winner_meta(store_id)
+    return jsonify({'success': True, 'meta': meta})
+
+
+@app.route('/api/shopify/winners/<store_id>', methods=['GET'])
+@admin_required
+def shopify_winners(store_id):
+    """Fetch top-selling products from the CACHED sales data. Fast.
+
+    If no cache exists, returns a flag telling the client to trigger a sync first.
+    If a sync is running, returns current progress.
+    """
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+
+    threshold = int(request.args.get('threshold', 5))
+
+    meta = _load_winner_meta(store_id)
+    cache = _load_winner_cache(store_id)
+
+    # No cache ever built: tell client to start sync
+    if cache is None and meta.get('status') != 'running':
+        return jsonify({
+            'success': True,
+            'needsSync': True,
+            'store': store.get('name', ''),
+            'meta': meta,
+            'products': [],
+            'totalOrders': 0,
+            'totalProducts': 0,
+            'qualifiedCount': 0,
+            'thresholdUsed': threshold,
+            'pagesScanned': 0,
+        })
+
+    # Sync running, no cache yet
+    if cache is None:
+        return jsonify({
+            'success': True,
+            'syncing': True,
+            'store': store.get('name', ''),
+            'meta': meta,
+            'products': [],
+            'totalOrders': meta.get('total_orders', 0),
+            'totalProducts': meta.get('total_products', 0),
+            'qualifiedCount': 0,
+            'thresholdUsed': threshold,
+            'pagesScanned': meta.get('pages_scanned', 0),
+        })
+
+    # We have a cache — filter by threshold and return
+    product_sales = cache
+    pages_fetched = meta.get('pages_scanned', 0)
+    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+    base_url = f'https://{domain}/admin/api/2024-01'
+
+    try:
+        # Filter and sort
+        sorted_products = sorted(product_sales.values(), key=lambda x: x.get('quantity', 0), reverse=True)
+        if threshold > 0:
+            sorted_products = [p for p in sorted_products if p.get('quantity', 0) >= threshold]
+
+        # Batch-fetch product details (only for qualified products)
         product_details = {}
         all_pids = [p['product_id'] for p in sorted_products]
         for i in range(0, len(all_pids), 250):
@@ -2111,7 +2300,6 @@ def shopify_winners(store_id):
                             imgs = prod.get('images', [])
                             img_by_id = {img['id']: img.get('src', '') for img in imgs if img.get('id')}
                             default_img = imgs[0].get('src', '') if imgs else ''
-                            # Build variant list with resolved images
                             variants = []
                             seen_imgs = set()
                             for v in prod.get('variants', []):
@@ -2133,16 +2321,14 @@ def shopify_winners(store_id):
             except:
                 pass
 
-        # Check which products already have video jobs (done, in-progress, or queued)
-        # Search both active jobs AND archive for complete status picture
+        # Check which products already have video jobs
         all_jobs = _load_all_jobs()
-        product_video_status = {}  # pid -> 'done' | 'in_progress' | 'queued'
+        product_video_status = {}
         for j in all_jobs:
             if j.get('storeId') != store_id:
                 continue
             pid_str = str(j.get('productId', ''))
             jstatus = j.get('status', '')
-            # Priority: done > in_progress > queued
             existing = product_video_status.get(pid_str)
             if jstatus == 'done':
                 product_video_status[pid_str] = 'done'
@@ -2155,24 +2341,28 @@ def shopify_winners(store_id):
         results = []
         for p in sorted_products:
             pid = p['product_id']
-            detail = product_details.get(pid, {})
+            # Look up details — cached pid may be int or str, Shopify returns int
+            detail = product_details.get(pid)
+            if detail is None and isinstance(pid, str) and pid.isdigit():
+                detail = product_details.get(int(pid))
+            if detail is None and isinstance(pid, int):
+                detail = product_details.get(str(pid))
+            if detail is None:
+                detail = {}
             handle = detail.get('handle', '')
             image_url = detail.get('image', '')
             product_type = detail.get('product_type', '')
             shopify_status = detail.get('status', 'unknown')
-            video_status = product_video_status.get(str(pid), 'none')  # none = no video at all
+            video_status = product_video_status.get(str(pid), 'none')
 
-            # Build per-colour sales breakdown (group variants by colour, ignore sizes)
             detail_variants = detail.get('variants', [])
             vid_to_img = {}
             for dv in detail_variants:
                 vid_to_img[str(dv.get('id', ''))] = dv.get('image', '')
 
-            # Group variant sales by colour (first option before " / ")
-            colour_sales = {}  # colour_name -> {quantity, revenue, image}
+            colour_sales = {}
             for vb in p.get('variant_sales', {}).values():
                 vtitle = vb.get('title', '') or 'Default'
-                # Extract colour: first part before " / " (rest is usually size)
                 colour = vtitle.split(' / ')[0].strip() if ' / ' in vtitle else vtitle.strip()
                 if not colour:
                     colour = 'Default'
@@ -2180,7 +2370,6 @@ def shopify_winners(store_id):
                     colour_sales[colour] = {'title': colour, 'quantity': 0, 'revenue': 0.0, 'image': ''}
                 colour_sales[colour]['quantity'] += vb['quantity']
                 colour_sales[colour]['revenue'] += vb['revenue']
-                # Use first variant image found for this colour
                 if not colour_sales[colour]['image']:
                     colour_sales[colour]['image'] = vid_to_img.get(vb.get('variant_id', ''), '')
 
@@ -2211,12 +2400,14 @@ def shopify_winners(store_id):
         return jsonify({
             'success': True,
             'products': results,
-            'totalOrders': sum(p['quantity'] for p in product_sales.values()),
+            'totalOrders': sum(p.get('quantity', 0) for p in product_sales.values()),
             'totalProducts': len(product_sales),
             'qualifiedCount': len(results),
             'thresholdUsed': threshold,
             'pagesScanned': pages_fetched,
-            'store': store.get('name', '')
+            'store': store.get('name', ''),
+            'meta': meta,  # includes last_synced, status
+            'fromCache': True,
         })
 
     except http_requests.exceptions.Timeout:
