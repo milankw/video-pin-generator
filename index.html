@@ -1301,6 +1301,11 @@ textarea { resize: vertical; min-height: 80px; }
 .coll-product-card-actions button:hover { background: var(--gray-50); color: var(--gray-700); }
 .coll-product-card-actions button.delete-btn { color: #e53e3e; }
 .coll-product-card-actions button.delete-btn:hover { background: #fff5f5; }
+.coll-product-card-actions button.copy-btn { color: var(--gray-600); }
+.coll-product-card-actions button.copy-btn:hover { background: var(--gray-50); color: var(--gray-800); }
+.coll-product-card-actions button.copy-btn.copied {
+  background: #e6f7e9; color: #008060; border-color: #b7ebc6;
+}
 
 /* Image picker modal */
 .coll-img-picker-overlay {
@@ -4849,6 +4854,46 @@ function _getNodePath(tree, id, path = []) {
   return null;
 }
 
+function collOpenProductUrl(cardEl) {
+  const url = cardEl?.dataset?.url;
+  if (url) window.open(url, '_blank');
+}
+
+async function collCopyProductUrl(btnEl) {
+  const url = btnEl?.dataset?.url || '';
+  if (!url) { toast('No URL on this card', 'error'); return; }
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    }
+  } catch(e) { /* fall through to legacy path */ }
+  if (!copied) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch(e) { copied = false; }
+  }
+  if (copied) {
+    const original = btnEl.textContent;
+    btnEl.textContent = 'Copied';
+    btnEl.classList.add('copied');
+    setTimeout(() => {
+      btnEl.textContent = original;
+      btnEl.classList.remove('copied');
+    }, 1400);
+    toast('URL copied to clipboard', 'success');
+  } else {
+    toast('Could not copy URL', 'error');
+  }
+}
+
 function collRenderProducts(node) {
   const grid = document.getElementById('coll-product-grid');
   const products = node.products || [];
@@ -4865,7 +4910,8 @@ function collRenderProducts(node) {
       ? `<img class="coll-product-card-img" src="${p.image}" alt="${escHtml(p.title)}" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex'">
          <div class="coll-product-card-noimg" style="display:none">No Image</div>`
       : `<div class="coll-product-card-noimg">No Image</div>`;
-    return `<div class="coll-product-card" onclick="window.open('${p.url}','_blank')" style="cursor:pointer" title="Open product page">
+    const urlAttr = escHtml(p.url || '');
+    return `<div class="coll-product-card" onclick="collOpenProductUrl(this)" data-url="${urlAttr}" style="cursor:pointer" title="Open product page">
       ${imgHtml}
       <div class="coll-product-card-body">
         <div class="coll-product-card-title" title="${escHtml(p.title)}">${escHtml(p.title)}</div>
@@ -4875,6 +4921,7 @@ function collRenderProducts(node) {
         </div>
       </div>
       <div class="coll-product-card-actions">
+        <button onclick="event.stopPropagation();collCopyProductUrl(this)" data-url="${urlAttr}" class="copy-btn" title="Copy destination URL">Copy URL</button>
         <button onclick="event.stopPropagation();collRemoveProduct('${node.id}','${p.id}')" class="delete-btn">Remove</button>
       </div>
     </div>`;
