@@ -1608,12 +1608,19 @@ textarea { resize: vertical; min-height: 80px; }
   <!-- ===== WINNERS TAB ===== -->
   <div class="tab-panel" id="panel-winners">
     <div class="toolbar">
-      <select id="store-select" style="width:240px;">
+      <select id="store-select" style="width:240px;" onchange="onWinnersStoreChange()">
         <option value="">Select a store...</option>
       </select>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;">
         <label style="margin-bottom:0;white-space:nowrap;">Min Sales:</label>
         <input type="number" id="threshold" value="5" min="1" style="width:80px;">
+      </div>
+      <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;" id="winners-collection-group" title="Filter winners to a specific Shopify collection">
+        <label style="margin-bottom:0;white-space:nowrap;">Collection:</label>
+        <select id="winners-collection" style="min-width:180px;max-width:260px;" disabled>
+          <option value="">All collections</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" id="winners-collection-sync-btn" onclick="syncWinnersCollections()" title="Sync collections from Shopify" style="display:none;">Sync</button>
       </div>
       <button class="btn btn-primary" onclick="fetchWinners()" id="fetch-btn">Fetch Winners</button>
       <div class="toolbar-spacer"></div>
@@ -2637,6 +2644,10 @@ async function loadStoreSelector() {
     sel.appendChild(opt);
   });
   if (current) sel.value = current;
+  // If a store is selected, ensure the collection dropdown reflects its state.
+  if (sel.value && typeof loadWinnersCollections === 'function') {
+    loadWinnersCollections(sel.value);
+  }
 }
 
 // ===== Video Model Selector (Winners tab) =====
@@ -2772,6 +2783,139 @@ async function startWinnerSync(storeId) {
   }, 2500);
 }
 
+// ===== Winners: Shopify collection filter =====
+let _winnersCollPollTimer = null;
+let _winnersCollPollStoreId = null;
+
+function _stopCollPolling() {
+  if (_winnersCollPollTimer) { clearInterval(_winnersCollPollTimer); _winnersCollPollTimer = null; }
+  _winnersCollPollStoreId = null;
+}
+
+function _setCollSelectState(state, collections, selectedId) {
+  // state: 'empty' | 'needs-sync' | 'syncing' | 'ready' | 'error'
+  const sel = document.getElementById('winners-collection');
+  const syncBtn = document.getElementById('winners-collection-sync-btn');
+  if (!sel) return;
+
+  // Save current selection if not provided
+  const keep = selectedId !== undefined ? selectedId : sel.value;
+
+  let html = '';
+  if (state === 'empty') {
+    html = '<option value="">All collections</option>';
+    sel.disabled = true;
+    if (syncBtn) syncBtn.style.display = 'none';
+  } else if (state === 'needs-sync') {
+    html = '<option value="">All collections (sync to filter)</option>';
+    sel.disabled = true;
+    if (syncBtn) { syncBtn.style.display = 'inline-flex'; syncBtn.textContent = 'Sync'; syncBtn.disabled = false; }
+  } else if (state === 'syncing') {
+    html = '<option value="">All collections (syncing…)</option>';
+    sel.disabled = true;
+    if (syncBtn) { syncBtn.style.display = 'inline-flex'; syncBtn.textContent = 'Syncing…'; syncBtn.disabled = true; }
+  } else if (state === 'ready') {
+    html = '<option value="">All collections</option>';
+    const list = (collections || []).filter(c => (c.products_count || 0) > 0);
+    for (const c of list) {
+      const label = `${c.title || '(untitled)'} (${c.products_count || 0})`;
+      html += `<option value="${c.id}">${escHtml(label)}</option>`;
+    }
+    sel.disabled = false;
+    if (syncBtn) { syncBtn.style.display = 'inline-flex'; syncBtn.textContent = 'Re-sync'; syncBtn.disabled = false; }
+  } else if (state === 'error') {
+    html = '<option value="">All collections (sync failed)</option>';
+    sel.disabled = true;
+    if (syncBtn) { syncBtn.style.display = 'inline-flex'; syncBtn.textContent = 'Retry'; syncBtn.disabled = false; }
+  }
+  sel.innerHTML = html;
+  if (keep) {
+    // Re-apply selection if the option still exists
+    const exists = Array.from(sel.options).some(o => o.value === keep);
+    if (exists) sel.value = keep;
+  }
+}
+
+async function _pollCollSyncStatus(storeId) {
+  try {
+    const res = await api(`/api/shopify/collections/${storeId}`);
+    if (!res?.success) return;
+    if (res.status === 'running' || res.syncing) {
+      _setCollSelectState('syncing', res.collections || []);
+    } else if (res.status === 'error') {
+      _stopCollPolling();
+      _setCollSelectState('error', []);
+      toast(res.error || 'Collection sync failed', 'error');
+    } else if (res.status === 'done' || res.fromCache) {
+      _stopCollPolling();
+      _setCollSelectState('ready', res.collections || []);
+      toast('Collections synced', 'success');
+    }
+  } catch (e) {}
+}
+
+async function loadWinnersCollections(storeId) {
+  if (!storeId) {
+    _setCollSelectState('empty');
+    return;
+  }
+  try {
+    const res = await api(`/api/shopify/collections/${storeId}`);
+    if (!res?.success) {
+      _setCollSelectState('empty');
+      return;
+    }
+    if (res.needsSync) {
+      _setCollSelectState('needs-sync', []);
+      return;
+    }
+    if (res.syncing || res.status === 'running') {
+      _setCollSelectState('syncing', res.collections || []);
+      // Begin polling
+      _stopCollPolling();
+      _winnersCollPollStoreId = storeId;
+      _winnersCollPollTimer = setInterval(() => {
+        if (_winnersCollPollStoreId === storeId) _pollCollSyncStatus(storeId);
+      }, 2500);
+      return;
+    }
+    if (res.status === 'error') {
+      _setCollSelectState('error', []);
+      return;
+    }
+    _setCollSelectState('ready', res.collections || []);
+  } catch (e) {
+    _setCollSelectState('empty');
+  }
+}
+
+async function syncWinnersCollections() {
+  const storeId = document.getElementById('store-select').value;
+  if (!storeId) { toast('Select a store first', 'error'); return; }
+  _setCollSelectState('syncing', []);
+  const res = await api(`/api/shopify/collections/${storeId}/sync`, { method: 'POST' });
+  if (!res?.success) {
+    toast(res?.error || 'Failed to start collection sync', 'error');
+    _setCollSelectState('needs-sync', []);
+    return;
+  }
+  _stopCollPolling();
+  _winnersCollPollStoreId = storeId;
+  _pollCollSyncStatus(storeId);
+  _winnersCollPollTimer = setInterval(() => {
+    if (_winnersCollPollStoreId === storeId) _pollCollSyncStatus(storeId);
+  }, 2500);
+}
+
+function onWinnersStoreChange() {
+  // Reset collection dropdown and load collections for the new store
+  _stopCollPolling();
+  const sel = document.getElementById('winners-collection');
+  if (sel) sel.value = '';
+  const storeId = document.getElementById('store-select').value;
+  loadWinnersCollections(storeId);
+}
+
 async function fetchWinners() {
   const storeId = document.getElementById('store-select').value;
   if (!storeId) { toast('Select a store first', 'error'); return; }
@@ -2787,7 +2931,10 @@ async function fetchWinners() {
   document.getElementById('winners-loading').classList.add('active');
   document.getElementById('fetch-btn').disabled = true;
 
-  const data = await api(`/api/shopify/winners/${storeId}?threshold=${threshold}`);
+  const collectionId = (document.getElementById('winners-collection')?.value || '').trim();
+  let url = `/api/shopify/winners/${storeId}?threshold=${threshold}`;
+  if (collectionId) url += `&collection_id=${encodeURIComponent(collectionId)}`;
+  const data = await api(url);
 
   document.getElementById('winners-loading').classList.remove('active');
   document.getElementById('fetch-btn').disabled = false;
@@ -2828,10 +2975,28 @@ async function fetchWinners() {
   if (data.fromCache) {
     const meta = data.meta || {};
     const ago = _formatTimeAgo(meta.last_synced);
-    _showSyncBanner('cached',
-      `Showing cached results · last synced ${ago}`,
-      `<strong>${meta.total_products || 0}</strong> products from <strong>${meta.total_orders || 0}</strong> units across <strong>${meta.pages_scanned || 0}</strong> order pages. Filtering by threshold is instant.`,
-      `<button class="btn btn-secondary btn-sm" onclick="startWinnerSync('${storeId}')">Re-sync</button>`, false);
+    const cf = data.collectionFilter || {};
+    let title = `Showing cached results · last synced ${ago}`;
+    let sub = `<strong>${meta.total_products || 0}</strong> products from <strong>${meta.total_orders || 0}</strong> units across <strong>${meta.pages_scanned || 0}</strong> order pages. Filtering by threshold is instant.`;
+
+    if (cf.status === 'applied' && cf.title) {
+      title = `Filtered to collection “${escHtml(cf.title)}” · last synced ${ago}`;
+      sub = `<strong>${data.qualifiedCount || 0}</strong> qualifying products in this collection. Order data is cached — changing filters is instant.`;
+    } else if (cf.status === 'needs_sync') {
+      _showSyncBanner('needs',
+        `Collections not synced yet`,
+        `Sync this store's Shopify collections first to filter winners by collection.`,
+        `<button class="btn btn-primary" onclick="syncWinnersCollections()">Sync collections</button>`, false);
+      // Clear the filter selection so the user isn't stuck on an empty result
+      const collSel = document.getElementById('winners-collection');
+      if (collSel) collSel.value = '';
+      return;
+    } else if (cf.status === 'unknown_collection') {
+      toast('Selected collection no longer exists — showing all', 'error');
+    }
+
+    _showSyncBanner('cached', title, sub,
+      `<button class="btn btn-secondary btn-sm" onclick="startWinnerSync('${storeId}')">Re-sync orders</button>`, false);
   }
 
   winners = data.products;

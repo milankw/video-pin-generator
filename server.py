@@ -2187,6 +2187,234 @@ def _run_winner_sync(store_id, domain, token):
         lock.release()
 
 
+# ===== Shopify collection cache (per-store) =====
+# Stores: {collections: [{id, title, handle, products_count, type}],
+#          product_collections: {product_id_str: [coll_id_int, ...]}}
+_collection_sync_locks = {}  # store_id -> threading.Lock
+
+def _collection_cache_path(store_id):
+    return os.path.join(WINNER_CACHE_DIR, f'{store_id}_collections.json')
+
+def _load_collection_cache(store_id):
+    path = _collection_cache_path(store_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except:
+        return None
+
+def _save_collection_cache(store_id, data):
+    path = _collection_cache_path(store_id)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+def _shopify_get_with_retry(url, headers, timeout=30, max_retries=3):
+    """GET helper that handles 429 (Retry-After) + transient errors."""
+    for attempt in range(max_retries + 1):
+        try:
+            resp = http_requests.get(url, headers=headers, timeout=timeout)
+        except Exception:
+            if attempt >= max_retries:
+                raise
+            time.sleep(2 ** attempt)
+            continue
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get('Retry-After', '2'))
+            time.sleep(retry_after)
+            continue
+        return resp
+    return resp
+
+def _next_link(link_header):
+    if not link_header or 'rel="next"' not in link_header:
+        return None
+    for part in link_header.split(','):
+        if 'rel="next"' in part:
+            try:
+                return part.split('<')[1].split('>')[0]
+            except:
+                return None
+    return None
+
+def _run_collection_sync(store_id, domain, token):
+    """Background worker: fetches all collections + product->collection mapping."""
+    lock = _collection_sync_locks.setdefault(store_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return
+
+    state = {
+        'status': 'running',
+        'started_at': time.time(),
+        'last_synced': None,
+        'error': None,
+        'collections': [],
+        'product_collections': {},
+    }
+    _save_collection_cache(store_id, state)
+
+    try:
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        base_url = f'https://{domain}/admin/api/2024-01'
+
+        collections = []
+        # 1) Custom collections
+        url = f'{base_url}/custom_collections.json?limit=250&fields=id,title,handle,products_count'
+        while url:
+            resp = _shopify_get_with_retry(url, headers, timeout=30)
+            if resp.status_code != 200:
+                raise Exception(f'custom_collections.json {resp.status_code}: {resp.text[:200]}')
+            for c in resp.json().get('custom_collections', []):
+                collections.append({
+                    'id': c.get('id'),
+                    'title': c.get('title', ''),
+                    'handle': c.get('handle', ''),
+                    'products_count': c.get('products_count', 0),
+                    'type': 'custom',
+                })
+            url = _next_link(resp.headers.get('Link', ''))
+            time.sleep(0.3)
+
+        # 2) Smart collections
+        url = f'{base_url}/smart_collections.json?limit=250&fields=id,title,handle,products_count'
+        while url:
+            resp = _shopify_get_with_retry(url, headers, timeout=30)
+            if resp.status_code != 200:
+                raise Exception(f'smart_collections.json {resp.status_code}: {resp.text[:200]}')
+            for c in resp.json().get('smart_collections', []):
+                collections.append({
+                    'id': c.get('id'),
+                    'title': c.get('title', ''),
+                    'handle': c.get('handle', ''),
+                    'products_count': c.get('products_count', 0),
+                    'type': 'smart',
+                })
+            url = _next_link(resp.headers.get('Link', ''))
+            time.sleep(0.3)
+
+        # 3) For each collection, fetch product IDs.
+        # /collections/<id>/products.json works for both custom + smart collections,
+        # and only returns active products (matches what's shown on storefront).
+        product_collections = {}  # pid_str -> [coll_id, ...]
+        for idx, c in enumerate(collections):
+            cid = c['id']
+            if not cid:
+                continue
+            url = f'{base_url}/collections/{cid}/products.json?limit=250&fields=id'
+            page = 0
+            while url and page < 200:  # safety cap
+                resp = _shopify_get_with_retry(url, headers, timeout=30)
+                if resp.status_code != 200:
+                    # Don't fail the whole sync on one bad collection — log + skip
+                    break
+                for prod in resp.json().get('products', []):
+                    pid = prod.get('id')
+                    if pid is None:
+                        continue
+                    pid_str = str(pid)
+                    if pid_str not in product_collections:
+                        product_collections[pid_str] = []
+                    product_collections[pid_str].append(cid)
+                url = _next_link(resp.headers.get('Link', ''))
+                page += 1
+                time.sleep(0.3)
+
+            # Save partial progress every 5 collections so big stores don't lose work
+            if (idx + 1) % 5 == 0:
+                state['collections'] = collections
+                state['product_collections'] = product_collections
+                state['progress'] = {'collections_done': idx + 1, 'collections_total': len(collections)}
+                _save_collection_cache(store_id, state)
+
+        state['status'] = 'done'
+        state['collections'] = collections
+        state['product_collections'] = product_collections
+        state['last_synced'] = time.time()
+        state['progress'] = {'collections_done': len(collections), 'collections_total': len(collections)}
+        state['duration_sec'] = round(time.time() - state['started_at'], 1)
+        _save_collection_cache(store_id, state)
+
+    except Exception as e:
+        state['status'] = 'error'
+        state['error'] = str(e)
+        _save_collection_cache(store_id, state)
+    finally:
+        lock.release()
+
+
+@app.route('/api/shopify/collections/<store_id>', methods=['GET'])
+@admin_required
+def shopify_collections_get(store_id):
+    """Return cached collections for a store, or needsSync flag if no cache exists."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+
+    cache = _load_collection_cache(store_id)
+    if cache is None:
+        return jsonify({
+            'success': True, 'needsSync': True,
+            'collections': [], 'status': 'never', 'last_synced': None,
+        })
+
+    status = cache.get('status', 'unknown')
+    if status == 'running':
+        prog = cache.get('progress', {})
+        return jsonify({
+            'success': True, 'syncing': True,
+            'collections': cache.get('collections', []),  # partial list ok
+            'status': 'running',
+            'progress': prog,
+            'last_synced': cache.get('last_synced'),
+        })
+    if status == 'error':
+        return jsonify({
+            'success': True, 'error': cache.get('error', 'Unknown error'),
+            'status': 'error',
+            'collections': cache.get('collections', []),
+            'last_synced': cache.get('last_synced'),
+        })
+
+    # Sort by title for stable UI
+    collections = sorted(
+        cache.get('collections', []),
+        key=lambda c: (c.get('title') or '').lower()
+    )
+    return jsonify({
+        'success': True,
+        'collections': collections,
+        'status': status,
+        'last_synced': cache.get('last_synced'),
+        'fromCache': True,
+    })
+
+
+@app.route('/api/shopify/collections/<store_id>/sync', methods=['POST'])
+@admin_required
+def shopify_collections_sync_start(store_id):
+    """Start background sync of Shopify collections + product->collection mapping."""
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == store_id), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Store not found'}), 404
+    domain = store.get('domain', '')
+    token = store.get('shopifyAccessToken', '')
+    if not domain or not token:
+        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+
+    cache = _load_collection_cache(store_id)
+    if cache and cache.get('status') == 'running':
+        return jsonify({'success': True, 'status': 'already_running'})
+
+    thread = threading.Thread(target=_run_collection_sync, args=(store_id, domain, token), daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'status': 'started'})
+
+
 @app.route('/api/shopify/winners/<store_id>/sync', methods=['POST'])
 @admin_required
 def shopify_winners_sync_start(store_id):
@@ -2237,6 +2465,7 @@ def shopify_winners(store_id):
         return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
 
     threshold = int(request.args.get('threshold', 5))
+    collection_id_arg = (request.args.get('collection_id') or '').strip()
 
     meta = _load_winner_meta(store_id)
     cache = _load_winner_cache(store_id)
@@ -2282,6 +2511,30 @@ def shopify_winners(store_id):
         sorted_products = sorted(product_sales.values(), key=lambda x: x.get('quantity', 0), reverse=True)
         if threshold > 0:
             sorted_products = [p for p in sorted_products if p.get('quantity', 0) >= threshold]
+
+        # Optional: filter to a specific Shopify collection (uses cached map)
+        collection_filter_status = 'none'  # none | applied | needs_sync | unknown_collection
+        collection_filter_title = None
+        if collection_id_arg:
+            coll_cache = _load_collection_cache(store_id)
+            if not coll_cache or coll_cache.get('status') == 'never':
+                collection_filter_status = 'needs_sync'
+            else:
+                # Find collection title for response
+                for c in coll_cache.get('collections', []) or []:
+                    if str(c.get('id')) == collection_id_arg:
+                        collection_filter_title = c.get('title')
+                        break
+                if collection_filter_title is None:
+                    collection_filter_status = 'unknown_collection'
+                else:
+                    pc_map = coll_cache.get('product_collections', {}) or {}
+                    target_cid = collection_id_arg
+                    def _in_target_coll(pid):
+                        ids = pc_map.get(str(pid), [])
+                        return any(str(x) == target_cid for x in ids)
+                    sorted_products = [p for p in sorted_products if _in_target_coll(p.get('product_id'))]
+                    collection_filter_status = 'applied'
 
         # Batch-fetch product details (only for qualified products)
         product_details = {}
@@ -2408,6 +2661,11 @@ def shopify_winners(store_id):
             'store': store.get('name', ''),
             'meta': meta,  # includes last_synced, status
             'fromCache': True,
+            'collectionFilter': {
+                'id': collection_id_arg or None,
+                'title': collection_filter_title,
+                'status': collection_filter_status,
+            },
         })
 
     except http_requests.exceptions.Timeout:
