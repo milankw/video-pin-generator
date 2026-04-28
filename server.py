@@ -2329,6 +2329,22 @@ def _run_collection_sync(store_id, domain, token):
                 state['progress'] = {'collections_done': idx + 1, 'collections_total': len(collections)}
                 _save_collection_cache(store_id, state)
 
+        # Recompute products_count from the actual mapping — Shopify's products_count
+        # field on collections is unreliable (often 0 in newer API versions).
+        from collections import Counter as _Counter
+        actual_counts = _Counter()
+        for _pid, _cids in product_collections.items():
+            for _cid in _cids:
+                actual_counts[_cid] += 1
+        for c in collections:
+            cid = c.get('id')
+            mapped = actual_counts.get(cid, 0)
+            # Use mapped count if Shopify's reported count is 0 or missing
+            if not c.get('products_count'):
+                c['products_count'] = mapped
+            # Also expose the authoritative count separately
+            c['mapped_products_count'] = mapped
+
         state['status'] = 'done'
         state['collections'] = collections
         state['product_collections'] = product_collections
@@ -2379,11 +2395,33 @@ def shopify_collections_get(store_id):
             'last_synced': cache.get('last_synced'),
         })
 
+    # Backfill products_count from the actual product->collection mapping.
+    # Shopify's reported products_count is unreliable (often 0 on newer API versions).
+    raw_collections = cache.get('collections', []) or []
+    pc_map = cache.get('product_collections', {}) or {}
+    actual_counts = {}
+    for _pid, _cids in pc_map.items():
+        for _cid in _cids:
+            actual_counts[_cid] = actual_counts.get(_cid, 0) + 1
+    enriched = []
+    needs_resave = False
+    for c in raw_collections:
+        cid = c.get('id')
+        mapped = actual_counts.get(cid, 0)
+        if not c.get('products_count') and mapped:
+            c['products_count'] = mapped
+            needs_resave = True
+        c['mapped_products_count'] = mapped
+        enriched.append(c)
+    if needs_resave:
+        cache['collections'] = enriched
+        try:
+            _save_collection_cache(store_id, cache)
+        except Exception:
+            pass  # not critical, will re-derive on next request
+
     # Sort by title for stable UI
-    collections = sorted(
-        cache.get('collections', []),
-        key=lambda c: (c.get('title') or '').lower()
-    )
+    collections = sorted(enriched, key=lambda c: (c.get('title') or '').lower())
     return jsonify({
         'success': True,
         'collections': collections,

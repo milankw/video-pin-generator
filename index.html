@@ -2816,9 +2816,13 @@ function _setCollSelectState(state, collections, selectedId) {
     if (syncBtn) { syncBtn.style.display = 'inline-flex'; syncBtn.textContent = 'Syncing…'; syncBtn.disabled = true; }
   } else if (state === 'ready') {
     html = '<option value="">All collections</option>';
-    const list = (collections || []).filter(c => (c.products_count || 0) > 0);
+    // Show every collection that actually has products mapped. Use the authoritative
+    // mapped count when available; fall back to Shopify's products_count.
+    const list = (collections || [])
+      .map(c => ({...c, count: (c.mapped_products_count != null ? c.mapped_products_count : (c.products_count || 0))}))
+      .filter(c => c.count > 0);
     for (const c of list) {
-      const label = `${c.title || '(untitled)'} (${c.products_count || 0})`;
+      const label = `${c.title || '(untitled)'} (${c.count})`;
       html += `<option value="${c.id}">${escHtml(label)}</option>`;
     }
     sel.disabled = false;
