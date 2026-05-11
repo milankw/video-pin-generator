@@ -3130,6 +3130,25 @@ def shopify_winners(store_id):
             for eb in enriched_breakdown:
                 eb['revenue'] = round(eb['revenue'], 2)
 
+            # Build a public product URL the frontend can link to.
+            # Shopify:  https://<domain>/products/<handle>
+            # Shoplazza: prefer cached line-item product_url (works even for deleted products),
+            #            else https://<shoplazzaDomain>/products/<handle>
+            product_url = ''
+            if platform == 'shoplazza':
+                cached_path = (p.get('product_url') or '').strip()
+                if cached_path:
+                    if cached_path.startswith('http'):
+                        product_url = cached_path
+                    else:
+                        # Shoplazza stores cached_path like '/products/some-handle'
+                        product_url = f'https://{domain}{cached_path}'
+                elif handle:
+                    product_url = f'https://{domain}/products/{handle}'
+            else:
+                if handle and domain:
+                    product_url = f'https://{domain}/products/{handle}'
+
             results.append({
                 'id': str(pid),
                 'name': p['title'],
@@ -3141,6 +3160,8 @@ def shopify_winners(store_id):
                 'variants': detail.get('variants', []),
                 'variantSales': enriched_breakdown,
                 'handle': handle,
+                'productUrl': product_url,
+                'platform': platform,
                 'productType': product_type,
                 'shopifyStatus': shopify_status,
                 'hasVideo': video_status == 'done',

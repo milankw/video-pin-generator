@@ -3102,10 +3102,20 @@ function renderProducts() {
     else if (shopStatus === 'archived') { shopBadgeClass = 'badge-archived'; shopBadgeLabel = 'Archived'; }
     const shopBadgeHtml = `<div class="product-card-shopify-status"><span class="badge-status ${shopBadgeClass}">${shopBadgeLabel}</span></div>`;
 
-    const storeDomain = store ? store.domain : '';
-    const productUrl = storeDomain && p.handle ? `https://${storeDomain}/products/${p.handle}` : '';
+    // Prefer backend-provided productUrl (handles Shopify + Shoplazza, including
+    // archived/deleted products via cached line-item product_url). Fall back to
+    // building one from store.domain + handle for older payloads.
+    let productUrl = p.productUrl || '';
+    if (!productUrl) {
+      const platform = (p.platform || (store && store.platform) || 'shopify').toLowerCase();
+      const storeDomain = platform === 'shoplazza'
+        ? (store && store.shoplazzaDomain) || ''
+        : (store && store.domain) || '';
+      if (storeDomain && p.handle) productUrl = `https://${storeDomain}/products/${p.handle}`;
+    }
+    const linkTitle = (p.platform === 'shoplazza' || (store && store.platform === 'shoplazza')) ? 'View on Shoplazza' : 'View on Shopify';
     const linkBtnHtml = productUrl
-      ? `<a href="${productUrl}" target="_blank" rel="noopener" class="product-card-link" onclick="event.stopPropagation();" title="View on Shopify">&#8599;</a>`
+      ? `<a href="${productUrl}" target="_blank" rel="noopener" class="product-card-link" onclick="event.stopPropagation();" title="${linkTitle}">&#8599;</a>`
       : '';
 
     // Build variant sales breakdown HTML
