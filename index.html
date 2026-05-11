@@ -2636,11 +2636,13 @@ async function loadStoreSelector() {
   const sel = document.getElementById('store-select');
   const current = sel.value;
   sel.innerHTML = '<option value="">Select a store...</option>';
-  // Only show connected stores in the Winners selector
-  stores.filter(s => s.shopifyStatus === 'connected').forEach(s => {
+  // Only show connected stores in the Winners selector (either Shopify OR Shoplazza)
+  stores.filter(s => s.shopifyStatus === 'connected' || s.shoplazzaStatus === 'connected').forEach(s => {
     const opt = document.createElement('option');
     opt.value = s.id;
-    opt.textContent = `${s.name} (${s.storeCategory || 'general'})`;
+    const platform = (s.platform || (s.shoplazzaStatus === 'connected' && s.shopifyStatus !== 'connected' ? 'shoplazza' : 'shopify')).toLowerCase();
+    const platformTag = platform === 'shoplazza' ? ' [Shoplazza]' : '';
+    opt.textContent = `${s.name} (${s.storeCategory || 'general'})${platformTag}`;
     sel.appendChild(opt);
   });
   if (current) sel.value = current;

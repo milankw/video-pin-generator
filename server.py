@@ -1120,6 +1120,7 @@ def sync_stores():
     raw_stores = source_data if isinstance(source_data, list) else source_data.get('stores', [])
     new_count = 0
     updated_count = 0
+    shoplazza_count = 0
     for s in raw_stores:
         store_id = s.get('id', '')
         if not store_id:
@@ -1127,16 +1128,44 @@ def sync_stores():
         # g-ads uses 'shopifyDomain', pinterest uses 'domain'
         domain = s.get('domain', '') or s.get('shopifyDomain', '')
         token = s.get('shopifyAccessToken', '')
-        if not domain or not token:
-            continue  # Skip stores without Shopify connection
+
+        # Shoplazza credentials (only present in Pinterest Autopilot source)
+        shoplazza_domain = s.get('shoplazzaDomain', '')
+        shoplazza_token = s.get('shoplazzaAccessToken', '')
+        explicit_platform = (s.get('platform') or '').strip().lower()
+
+        # Determine which platform this store should be tracked as.
+        # Priority: explicit platform field > shopify creds > shoplazza creds.
+        if explicit_platform == 'shoplazza' and shoplazza_domain and shoplazza_token:
+            platform = 'shoplazza'
+        elif domain and token:
+            platform = 'shopify'
+        elif shoplazza_domain and shoplazza_token:
+            platform = 'shoplazza'
+        else:
+            continue  # No usable credentials — skip
+
+        if platform == 'shoplazza':
+            shoplazza_count += 1
 
         if store_id in existing_by_id:
-            # Update existing store — refresh token/domain but keep prompts
+            # Update existing store — refresh creds but keep prompts
             existing = existing_by_id[store_id]
             existing['name'] = s.get('name', existing.get('name', ''))
-            existing['domain'] = domain
-            existing['shopifyAccessToken'] = token
-            existing['shopifyStatus'] = s.get('shopifyStatus', existing.get('shopifyStatus', ''))
+            existing['platform'] = platform
+            if platform == 'shopify':
+                existing['domain'] = domain
+                existing['shopifyAccessToken'] = token
+                existing['shopifyStatus'] = s.get('shopifyStatus', existing.get('shopifyStatus', ''))
+            else:  # shoplazza
+                existing['shoplazzaDomain'] = shoplazza_domain
+                existing['shoplazzaAccessToken'] = shoplazza_token
+                existing['shoplazzaStatus'] = s.get('shoplazzaStatus', existing.get('shoplazzaStatus', 'connected'))
+                # Also persist shopify creds if they happen to exist (some stores have both)
+                if domain and token:
+                    existing['domain'] = domain
+                    existing['shopifyAccessToken'] = token
+                    existing['shopifyStatus'] = s.get('shopifyStatus', existing.get('shopifyStatus', ''))
             existing['storeCategory'] = s.get('storeCategory', existing.get('storeCategory', 'default'))
             existing['productCount'] = s.get('products', s.get('productCount', existing.get('productCount')))
             updated_count += 1
@@ -1145,18 +1174,40 @@ def sync_stores():
             new_entry = {
                 'id': store_id,
                 'name': s.get('name', ''),
-                'domain': domain,
-                'shopifyAccessToken': token,
-                'shopifyStatus': s.get('shopifyStatus', ''),
+                'platform': platform,
                 'storeCategory': s.get('storeCategory', 'default'),
                 'productCount': s.get('products', s.get('productCount', None)),
             }
+            if platform == 'shopify':
+                new_entry['domain'] = domain
+                new_entry['shopifyAccessToken'] = token
+                new_entry['shopifyStatus'] = s.get('shopifyStatus', '')
+            else:  # shoplazza
+                new_entry['shoplazzaDomain'] = shoplazza_domain
+                new_entry['shoplazzaAccessToken'] = shoplazza_token
+                new_entry['shoplazzaStatus'] = s.get('shoplazzaStatus', 'connected')
+                # Also keep Shopify creds if present
+                if domain and token:
+                    new_entry['domain'] = domain
+                    new_entry['shopifyAccessToken'] = token
+                    new_entry['shopifyStatus'] = s.get('shopifyStatus', '')
             existing_by_id[store_id] = new_entry
             new_count += 1
 
+    # Backfill platform on any pre-existing store that's missing it (so older data is consistent)
+    for s in existing_by_id.values():
+        if not s.get('platform'):
+            if s.get('shoplazzaDomain') and s.get('shoplazzaAccessToken') and not s.get('shopifyAccessToken'):
+                s['platform'] = 'shoplazza'
+            else:
+                s['platform'] = 'shopify'
+
     merged = list(existing_by_id.values())
     _save_stores(merged)
-    connected_count = sum(1 for s in merged if s.get('shopifyStatus') == 'connected')
+    connected_count = sum(
+        1 for s in merged
+        if s.get('shopifyStatus') == 'connected' or s.get('shoplazzaStatus') == 'connected'
+    )
 
     # --- Import Gemini config (Pinterest only) ---
     gemini_imported = False
@@ -1183,6 +1234,7 @@ def sync_stores():
         'count': len(merged),
         'newCount': new_count,
         'updatedCount': updated_count,
+        'shoplazzaCount': shoplazza_count,
         'connectedCount': connected_count,
         'source': source_label,
         'sourcePath': source_path,
@@ -2059,6 +2111,182 @@ def _save_winner_meta(store_id, meta):
         json.dump(meta, f)
     os.replace(tmp, path)
 
+# ===== Platform dispatch =====
+# Each store has a 'platform' field set during /api/stores/sync.
+# Older stores without it default to 'shopify' for backwards compat.
+SHOPLAZZA_API_VERSION = '2025-06'
+
+def _get_store_platform(store):
+    """Return 'shopify' or 'shoplazza' for a store dict."""
+    p = (store.get('platform') or '').strip().lower()
+    if p in ('shopify', 'shoplazza'):
+        return p
+    # Backwards compat: infer from credentials
+    if store.get('shoplazzaDomain') and store.get('shoplazzaAccessToken') and not store.get('shopifyAccessToken'):
+        return 'shoplazza'
+    return 'shopify'
+
+def _get_store_credentials(store):
+    """Return (platform, domain, token) for whichever platform the store uses."""
+    platform = _get_store_platform(store)
+    if platform == 'shoplazza':
+        return platform, store.get('shoplazzaDomain', ''), store.get('shoplazzaAccessToken', '')
+    return platform, store.get('domain', ''), store.get('shopifyAccessToken', '')
+
+def _shoplazza_headers(token):
+    return {'access-token': token, 'Content-Type': 'application/json', 'accept': 'application/json'}
+
+def _shoplazza_get_with_retry(url, headers, params=None, timeout=30, max_retries=3):
+    """GET with 429 + transient-error handling for Shoplazza."""
+    last_resp = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = http_requests.get(url, headers=headers, params=params, timeout=timeout)
+        except Exception:
+            if attempt >= max_retries:
+                raise
+            time.sleep(2 ** attempt)
+            continue
+        last_resp = resp
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get('Retry-After', '2'))
+            time.sleep(retry_after)
+            continue
+        return resp
+    return last_resp
+
+
+def _run_shoplazza_winner_sync(store_id, domain, token):
+    """Background worker: scans ALL paid orders from a Shoplazza store and caches per-product sales.
+
+    Mirrors the Shopify version but uses cursor-based pagination and Shoplazza's response shape.
+    Saves into the same on-disk cache layout (data/winner_cache/<store_id>.json + _meta.json) so the
+    GET endpoint can read uniformly.
+    """
+    lock = _winner_sync_locks.setdefault(store_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return  # Already syncing
+
+    meta = {
+        'status': 'running',
+        'platform': 'shoplazza',
+        'pages_scanned': 0,
+        'total_orders': 0,
+        'total_products': 0,
+        'started_at': time.time(),
+        'last_synced': None,
+        'error': None,
+    }
+    _save_winner_meta(store_id, meta)
+
+    try:
+        headers = _shoplazza_headers(token)
+        base_url = f'https://{domain}/openapi/{SHOPLAZZA_API_VERSION}'
+        product_sales = {}
+        cursor = None
+        pages_fetched = 0
+        max_pages = 10000  # effectively unlimited
+
+        while pages_fetched < max_pages:
+            params = {'page_size': 250, 'financial_status': 'paid'}
+            if cursor:
+                params['cursor'] = cursor
+
+            resp = _shoplazza_get_with_retry(f'{base_url}/orders', headers, params=params, timeout=60)
+            if resp is None:
+                raise Exception('Shoplazza request failed (no response)')
+            if resp.status_code != 200:
+                raise Exception(f'Shoplazza orders {resp.status_code}: {resp.text[:200]}')
+
+            resp_data = resp.json()
+            # Shoplazza sometimes wraps responses under data
+            orders = resp_data.get('orders', []) or resp_data.get('data', {}).get('orders', [])
+            if not orders:
+                break
+
+            for order in orders:
+                for item in order.get('line_items', []):
+                    pid = item.get('product_id')
+                    if not pid:
+                        continue
+                    try:
+                        qty = int(item.get('quantity', 1) or 1)
+                    except:
+                        qty = 1
+                    try:
+                        price = float(item.get('price', '0') or '0')
+                    except:
+                        price = 0.0
+                    revenue = qty * price
+
+                    if pid not in product_sales:
+                        product_sales[pid] = {
+                            'product_id': pid,
+                            'title': item.get('title', '') or item.get('name', 'Unknown'),
+                            'quantity': 0,
+                            'revenue': 0.0,
+                            'variant_sales': {},
+                        }
+                    product_sales[pid]['quantity'] += qty
+                    product_sales[pid]['revenue'] += revenue
+
+                    vid = str(item.get('variant_id', '') or '')
+                    # Shoplazza line items expose variant info in different ways across stores;
+                    # try common fields, falling back to 'Default'.
+                    vtitle = (
+                        item.get('variant_title') or
+                        item.get('variant_name') or
+                        item.get('option_title') or
+                        'Default'
+                    )
+                    if vid not in product_sales[pid]['variant_sales']:
+                        product_sales[pid]['variant_sales'][vid] = {
+                            'variant_id': vid,
+                            'title': vtitle,
+                            'quantity': 0,
+                            'revenue': 0.0,
+                        }
+                    product_sales[pid]['variant_sales'][vid]['quantity'] += qty
+                    product_sales[pid]['variant_sales'][vid]['revenue'] += revenue
+
+            # Cursor pagination
+            next_cursor = resp_data.get('cursor', '') or resp_data.get('data', {}).get('cursor', '')
+            has_more = resp_data.get('has_more', False) or resp_data.get('data', {}).get('has_more', False)
+            pages_fetched += 1
+
+            # Periodic progress save every 10 pages
+            if pages_fetched % 10 == 0:
+                meta['pages_scanned'] = pages_fetched
+                meta['total_orders'] = sum(p['quantity'] for p in product_sales.values())
+                meta['total_products'] = len(product_sales)
+                _save_winner_meta(store_id, meta)
+                _save_winner_cache(store_id, product_sales)
+
+            if not has_more or not next_cursor:
+                break
+            cursor = next_cursor
+
+            # Shoplazza rate limit: 2 req/sec baseline
+            time.sleep(0.5)
+
+        # Final save
+        _save_winner_cache(store_id, product_sales)
+        meta['status'] = 'done'
+        meta['pages_scanned'] = pages_fetched
+        meta['total_orders'] = sum(p['quantity'] for p in product_sales.values())
+        meta['total_products'] = len(product_sales)
+        meta['last_synced'] = time.time()
+        meta['duration_sec'] = round(time.time() - meta['started_at'], 1)
+        _save_winner_meta(store_id, meta)
+
+    except Exception as e:
+        meta['status'] = 'error'
+        meta['error'] = str(e)
+        _save_winner_meta(store_id, meta)
+    finally:
+        lock.release()
+
+
 def _run_winner_sync(store_id, domain, token):
     """Background worker: scans ALL paid orders for a store and saves per-product sales to disk."""
     lock = _winner_sync_locks.setdefault(store_id, threading.Lock())
@@ -2239,6 +2467,132 @@ def _next_link(link_header):
             except:
                 return None
     return None
+
+def _run_shoplazza_collection_sync(store_id, domain, token):
+    """Background worker: fetches all Shoplazza collections + product->collection mapping via /collects.
+
+    Output shape matches the Shopify version so the GET endpoint and frontend treat both uniformly:
+      collections: [{id, title, handle, products_count, type}]
+      product_collections: {pid_str: [coll_id_str, ...]}
+    """
+    lock = _collection_sync_locks.setdefault(store_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return
+
+    state = {
+        'status': 'running',
+        'platform': 'shoplazza',
+        'started_at': time.time(),
+        'last_synced': None,
+        'error': None,
+        'collections': [],
+        'product_collections': {},
+    }
+    _save_collection_cache(store_id, state)
+
+    try:
+        headers = _shoplazza_headers(token)
+        base_url = f'https://{domain}/openapi/{SHOPLAZZA_API_VERSION}'
+
+        # 1) Fetch all collections (single endpoint, no smart/custom split)
+        collections = []
+        cursor = None
+        pages = 0
+        while pages < 200:
+            params = {'page_size': 100}
+            if cursor:
+                params['cursor'] = cursor
+            resp = _shoplazza_get_with_retry(f'{base_url}/collections', headers, params=params, timeout=30)
+            if resp is None or resp.status_code != 200:
+                raise Exception(f'Shoplazza /collections {getattr(resp, "status_code", "?")}: {getattr(resp, "text", "")[:200]}')
+            resp_data = resp.json()
+            items = resp_data.get('collections', []) or resp_data.get('data', {}).get('collections', [])
+            if not items:
+                break
+            for c in items:
+                collections.append({
+                    'id': str(c.get('id', '')),
+                    'title': c.get('title', ''),
+                    'handle': c.get('handle', ''),
+                    'products_count': 0,  # backfilled from /collects below
+                    'type': 'smart' if c.get('smart', False) else 'custom',
+                })
+            next_cursor = resp_data.get('cursor', '') or resp_data.get('data', {}).get('cursor', '')
+            has_more = resp_data.get('has_more', False) or resp_data.get('data', {}).get('has_more', False)
+            if not has_more or not next_cursor:
+                break
+            cursor = next_cursor
+            pages += 1
+            time.sleep(0.5)
+
+        # 2) For each collection, fetch its product IDs via /collects?collection_id=<id>
+        product_collections = {}
+        for idx, c in enumerate(collections):
+            cid = c['id']
+            if not cid:
+                continue
+            cursor = None
+            inner_pages = 0
+            while inner_pages < 200:
+                params = {'collection_id': cid, 'page_size': 250}
+                if cursor:
+                    params['cursor'] = cursor
+                resp = _shoplazza_get_with_retry(f'{base_url}/collects', headers, params=params, timeout=30)
+                if resp is None or resp.status_code != 200:
+                    break  # don't fail the whole sync on one bad collection
+                resp_data = resp.json()
+                collects = resp_data.get('collects', []) or resp_data.get('data', {}).get('collects', [])
+                if not collects:
+                    break
+                for col in collects:
+                    pid = col.get('product_id', '')
+                    if not pid:
+                        continue
+                    pid_str = str(pid)
+                    if pid_str not in product_collections:
+                        product_collections[pid_str] = []
+                    product_collections[pid_str].append(cid)
+                next_cursor = resp_data.get('cursor', '') or resp_data.get('data', {}).get('cursor', '')
+                has_more = resp_data.get('has_more', False) or resp_data.get('data', {}).get('has_more', False)
+                if not has_more or not next_cursor:
+                    break
+                cursor = next_cursor
+                inner_pages += 1
+                time.sleep(0.5)
+
+            # Save partial progress every 5 collections
+            if (idx + 1) % 5 == 0:
+                state['collections'] = collections
+                state['product_collections'] = product_collections
+                state['progress'] = {'collections_done': idx + 1, 'collections_total': len(collections)}
+                _save_collection_cache(store_id, state)
+
+        # Compute authoritative products_count from the mapping
+        from collections import Counter as _Counter
+        actual = _Counter()
+        for _pid, _cids in product_collections.items():
+            for _cid in _cids:
+                actual[_cid] += 1
+        for c in collections:
+            mapped = actual.get(c['id'], 0)
+            c['products_count'] = mapped
+            c['mapped_products_count'] = mapped
+
+        state['status'] = 'done'
+        state['collections'] = collections
+        state['product_collections'] = product_collections
+        state['last_synced'] = time.time()
+        state['progress'] = {'collections_done': len(collections), 'collections_total': len(collections)}
+        state['duration_sec'] = round(time.time() - state['started_at'], 1)
+        _save_collection_cache(store_id, state)
+
+    except Exception as e:
+        state['status'] = 'error'
+        state['error'] = str(e)
+        _save_collection_cache(store_id, state)
+    finally:
+        lock.release()
+
 
 def _run_collection_sync(store_id, domain, token):
     """Background worker: fetches all collections + product->collection mapping."""
@@ -2434,46 +2788,56 @@ def shopify_collections_get(store_id):
 @app.route('/api/shopify/collections/<store_id>/sync', methods=['POST'])
 @admin_required
 def shopify_collections_sync_start(store_id):
-    """Start background sync of Shopify collections + product->collection mapping."""
+    """Start background sync of collections + product->collection mapping.
+    Dispatches to Shopify or Shoplazza based on the store's platform field."""
     stores = _load_stores()
     store = next((s for s in stores if s['id'] == store_id), None)
     if not store:
         return jsonify({'success': False, 'error': 'Store not found'}), 404
-    domain = store.get('domain', '')
-    token = store.get('shopifyAccessToken', '')
+
+    platform, domain, token = _get_store_credentials(store)
     if not domain or not token:
-        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+        return jsonify({
+            'success': False,
+            'error': f'{platform.title()} not connected for this store'
+        }), 400
 
     cache = _load_collection_cache(store_id)
     if cache and cache.get('status') == 'running':
         return jsonify({'success': True, 'status': 'already_running'})
 
-    thread = threading.Thread(target=_run_collection_sync, args=(store_id, domain, token), daemon=True)
+    worker = _run_shoplazza_collection_sync if platform == 'shoplazza' else _run_collection_sync
+    thread = threading.Thread(target=worker, args=(store_id, domain, token), daemon=True)
     thread.start()
-    return jsonify({'success': True, 'status': 'started'})
+    return jsonify({'success': True, 'status': 'started', 'platform': platform})
 
 
 @app.route('/api/shopify/winners/<store_id>/sync', methods=['POST'])
 @admin_required
 def shopify_winners_sync_start(store_id):
-    """Start a background sync of ALL paid orders for this store."""
+    """Start a background sync of ALL paid orders for this store.
+    Dispatches to Shopify or Shoplazza based on the store's platform field."""
     stores = _load_stores()
     store = next((s for s in stores if s['id'] == store_id), None)
     if not store:
         return jsonify({'success': False, 'error': 'Store not found'}), 404
-    domain = store.get('domain', '')
-    token = store.get('shopifyAccessToken', '')
+
+    platform, domain, token = _get_store_credentials(store)
     if not domain or not token:
-        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+        return jsonify({
+            'success': False,
+            'error': f'{platform.title()} not connected for this store'
+        }), 400
 
     # Check if already running
     meta = _load_winner_meta(store_id)
     if meta.get('status') == 'running':
         return jsonify({'success': True, 'status': 'already_running', 'meta': meta})
 
-    thread = threading.Thread(target=_run_winner_sync, args=(store_id, domain, token), daemon=True)
+    worker = _run_shoplazza_winner_sync if platform == 'shoplazza' else _run_winner_sync
+    thread = threading.Thread(target=worker, args=(store_id, domain, token), daemon=True)
     thread.start()
-    return jsonify({'success': True, 'status': 'started'})
+    return jsonify({'success': True, 'status': 'started', 'platform': platform})
 
 
 @app.route('/api/shopify/winners/<store_id>/sync/status', methods=['GET'])
@@ -2497,10 +2861,9 @@ def shopify_winners(store_id):
     if not store:
         return jsonify({'success': False, 'error': 'Store not found'}), 404
 
-    domain = store.get('domain', '')
-    token = store.get('shopifyAccessToken', '')
+    platform, domain, token = _get_store_credentials(store)
     if not domain or not token:
-        return jsonify({'success': False, 'error': 'Shopify not connected'}), 400
+        return jsonify({'success': False, 'error': f'{platform.title()} not connected'}), 400
 
     threshold = int(request.args.get('threshold', 5))
     collection_id_arg = (request.args.get('collection_id') or '').strip()
@@ -2541,8 +2904,6 @@ def shopify_winners(store_id):
     # We have a cache — filter by threshold and return
     product_sales = cache
     pages_fetched = meta.get('pages_scanned', 0)
-    headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
-    base_url = f'https://{domain}/admin/api/2024-01'
 
     try:
         # Filter and sort
@@ -2574,43 +2935,87 @@ def shopify_winners(store_id):
                     sorted_products = [p for p in sorted_products if _in_target_coll(p.get('product_id'))]
                     collection_filter_status = 'applied'
 
-        # Batch-fetch product details (only for qualified products)
+        # Batch-fetch product details (only for qualified products) — platform-aware
         product_details = {}
         all_pids = [p['product_id'] for p in sorted_products]
-        for i in range(0, len(all_pids), 250):
-            batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
-            try:
-                pr = http_requests.get(
-                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,variants,product_type,status',
-                    headers=headers, timeout=30
-                )
-                if pr.status_code == 200:
-                    for prod in pr.json().get('products', []):
-                        pid = prod.get('id')
-                        if pid:
-                            imgs = prod.get('images', [])
-                            img_by_id = {img['id']: img.get('src', '') for img in imgs if img.get('id')}
-                            default_img = imgs[0].get('src', '') if imgs else ''
-                            variants = []
-                            seen_imgs = set()
-                            for v in prod.get('variants', []):
-                                v_img = img_by_id.get(v.get('image_id'), default_img)
-                                variants.append({
-                                    'id': str(v.get('id', '')),
-                                    'title': v.get('title', 'Default'),
-                                    'image': v_img
-                                })
-                                seen_imgs.add(v_img)
+
+        if platform == 'shopify':
+            headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+            base_url = f'https://{domain}/admin/api/2024-01'
+            for i in range(0, len(all_pids), 250):
+                batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
+                try:
+                    pr = http_requests.get(
+                        f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images,variants,product_type,status',
+                        headers=headers, timeout=30
+                    )
+                    if pr.status_code == 200:
+                        for prod in pr.json().get('products', []):
+                            pid = prod.get('id')
+                            if pid:
+                                imgs = prod.get('images', [])
+                                img_by_id = {img['id']: img.get('src', '') for img in imgs if img.get('id')}
+                                default_img = imgs[0].get('src', '') if imgs else ''
+                                variants = []
+                                seen_imgs = set()
+                                for v in prod.get('variants', []):
+                                    v_img = img_by_id.get(v.get('image_id'), default_img)
+                                    variants.append({
+                                        'id': str(v.get('id', '')),
+                                        'title': v.get('title', 'Default'),
+                                        'image': v_img
+                                    })
+                                    seen_imgs.add(v_img)
+                                product_details[pid] = {
+                                    'handle': prod.get('handle', ''),
+                                    'image': default_img,
+                                    'variants': variants if len(seen_imgs) > 1 else [],
+                                    'product_type': prod.get('product_type', ''),
+                                    'status': prod.get('status', 'unknown')
+                                }
+                    time.sleep(0.3)
+                except:
+                    pass
+        else:
+            # Shoplazza product-details enrichment
+            headers = _shoplazza_headers(token)
+            base_url = f'https://{domain}/openapi/{SHOPLAZZA_API_VERSION}'
+            for i in range(0, len(all_pids), 250):
+                batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
+                try:
+                    pr = _shoplazza_get_with_retry(
+                        f'{base_url}/products',
+                        headers,
+                        params={'ids': batch_ids, 'limit': 250},
+                        timeout=30,
+                    )
+                    if pr is not None and pr.status_code == 200:
+                        body = pr.json() or {}
+                        # Shoplazza response shape varies: top-level 'products' or under 'data.products'
+                        prods = body.get('products')
+                        if prods is None and isinstance(body.get('data'), dict):
+                            prods = body['data'].get('products', [])
+                        prods = prods or []
+                        for prod in prods:
+                            pid = prod.get('id')
+                            if not pid:
+                                continue
+                            imgs = prod.get('images', []) or []
+                            default_img = ''
+                            if imgs:
+                                first = imgs[0] or {}
+                                default_img = first.get('src') or first.get('url') or ''
                             product_details[pid] = {
-                                'handle': prod.get('handle', ''),
+                                'handle': prod.get('handle', '') or prod.get('seo_handle', ''),
                                 'image': default_img,
-                                'variants': variants if len(seen_imgs) > 1 else [],
-                                'product_type': prod.get('product_type', ''),
-                                'status': prod.get('status', 'unknown')
+                                # Shoplazza has no variant->image mapping, so leave empty
+                                'variants': [],
+                                'product_type': prod.get('product_type', '') or prod.get('category', ''),
+                                'status': (prod.get('status') or prod.get('published_status') or 'unknown'),
                             }
-                time.sleep(0.3)
-            except:
-                pass
+                    time.sleep(0.5)
+                except Exception:
+                    pass
 
         # Check which products already have video jobs
         all_jobs = _load_all_jobs()
