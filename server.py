@@ -1054,14 +1054,18 @@ def get_stores():
     # Strip tokens from response
     safe = []
     for s in stores:
+        platform = _get_store_platform(s)
         safe.append({
             'id': s.get('id', ''),
             'name': s.get('name', ''),
             'domain': s.get('domain', ''),
             'shopifyStatus': s.get('shopifyStatus', ''),
+            'shoplazzaStatus': s.get('shoplazzaStatus', ''),
+            'shoplazzaDomain': s.get('shoplazzaDomain', ''),
+            'platform': platform,
             'storeCategory': s.get('storeCategory', ''),
             'productCount': s.get('productCount', None),
-            'hasToken': bool(s.get('shopifyAccessToken', '')),
+            'hasToken': bool(s.get('shopifyAccessToken', '') or s.get('shoplazzaAccessToken', '')),
             'promptCount': len(s.get('prompts', [])),
             'platforms': s.get('platforms', [])
         })

@@ -2545,16 +2545,19 @@ async function loadStoresTable() {
   const allStores = data.stores;
   stores = allStores;
 
+  // A store counts as connected if EITHER Shopify or Shoplazza is connected.
+  const isStoreConnected = (s) => s.shopifyStatus === 'connected' || s.shoplazzaStatus === 'connected';
+
   // Update badge
   const badge = document.getElementById('stores-badge');
   if (allStores.length > 0) {
-    const connected = allStores.filter(s => s.shopifyStatus === 'connected').length;
+    const connected = allStores.filter(isStoreConnected).length;
     badge.textContent = connected;
     badge.style.display = 'inline-flex';
   }
 
   // Update count
-  const connected = allStores.filter(s => s.shopifyStatus === 'connected').length;
+  const connected = allStores.filter(isStoreConnected).length;
   document.getElementById('stores-count').textContent = allStores.length > 0 ? `${connected} connected, ${allStores.length} total` : '';
 
   if (allStores.length === 0) {
@@ -2571,13 +2574,15 @@ async function loadStoresTable() {
 
   allStores.forEach(s => {
     const tr = document.createElement('tr');
-    const isConnected = s.shopifyStatus === 'connected';
+    const platform = (s.platform || (s.shoplazzaStatus === 'connected' && s.shopifyStatus !== 'connected' ? 'shoplazza' : 'shopify')).toLowerCase();
+    const isConnected = isStoreConnected(s);
     const dotClass = isConnected ? 'green' : 'red';
+    const platformLabel = platform === 'shoplazza' ? ' (Shoplazza)' : '';
     const statusBadge = isConnected
-      ? '<span class="badge-status badge-connected">Connected</span>'
-      : '<span class="badge-status badge-disconnected">Disconnected</span>';
+      ? `<span class="badge-status badge-connected">Connected${platformLabel}</span>`
+      : `<span class="badge-status badge-disconnected">Disconnected${platformLabel}</span>`;
 
-    const domain = s.domain || '';
+    const domain = platform === 'shoplazza' ? (s.shoplazzaDomain || '') : (s.domain || '');
     const truncDomain = domain.length > 30 ? domain.substring(0, 30) + '...' : domain;
     const category = s.storeCategory || 'default';
     const productCount = s.productCount != null ? s.productCount : '—';
