@@ -2202,14 +2202,16 @@ def _run_shoplazza_winner_sync(store_id, domain, token):
             if resp.status_code != 200:
                 raise Exception(f'Shoplazza orders {resp.status_code}: {resp.text[:200]}')
 
-            resp_data = resp.json()
-            # Shoplazza sometimes wraps responses under data
-            orders = resp_data.get('orders', []) or resp_data.get('data', {}).get('orders', [])
+            resp_data = resp.json() or {}
+            # Shoplazza response shape: { code, data: { orders, cursor, pre_cursor } }
+            # Some endpoints / versions return data at the top level; support both.
+            data_block = resp_data.get('data') if isinstance(resp_data.get('data'), dict) else resp_data
+            orders = data_block.get('orders') or resp_data.get('orders') or []
             if not orders:
                 break
 
             for order in orders:
-                for item in order.get('line_items', []):
+                for item in (order.get('line_items') or order.get('items') or []):
                     pid = item.get('product_id')
                     if not pid:
                         continue
@@ -2223,20 +2225,48 @@ def _run_shoplazza_winner_sync(store_id, domain, token):
                         price = 0.0
                     revenue = qty * price
 
+                    # Product title — Shoplazza uses 'product_title' on line items
+                    li_product_title = (
+                        item.get('product_title') or
+                        item.get('title') or
+                        item.get('name') or
+                        ''
+                    )
+
+                    # Capture line-item image as fallback for products that may later
+                    # be deleted from the store (so cards can still render).
+                    li_image = ''
+                    img_obj = item.get('image')
+                    if isinstance(img_obj, dict):
+                        li_image = img_obj.get('src', '') or img_obj.get('url', '')
+                    elif isinstance(img_obj, str):
+                        li_image = img_obj
+                    # Normalize protocol-relative URLs (//img.staticdj.com/...)
+                    if li_image and li_image.startswith('//'):
+                        li_image = 'https:' + li_image
+
                     if pid not in product_sales:
                         product_sales[pid] = {
                             'product_id': pid,
-                            'title': item.get('title', '') or item.get('name', 'Unknown'),
+                            'title': li_product_title or 'Unknown',
                             'quantity': 0,
                             'revenue': 0.0,
                             'variant_sales': {},
+                            'fallback_image': li_image,
+                            'product_url': item.get('product_url', ''),
                         }
+                    else:
+                        # Backfill / improve title if we now have a better one
+                        if (not product_sales[pid].get('title') or product_sales[pid]['title'] == 'Unknown') and li_product_title:
+                            product_sales[pid]['title'] = li_product_title
+                        # Backfill image if missing
+                        if not product_sales[pid].get('fallback_image') and li_image:
+                            product_sales[pid]['fallback_image'] = li_image
                     product_sales[pid]['quantity'] += qty
                     product_sales[pid]['revenue'] += revenue
 
                     vid = str(item.get('variant_id', '') or '')
-                    # Shoplazza line items expose variant info in different ways across stores;
-                    # try common fields, falling back to 'Default'.
+                    # Shoplazza line items expose variant info as variant_title; fall back gracefully.
                     vtitle = (
                         item.get('variant_title') or
                         item.get('variant_name') or
@@ -2249,13 +2279,16 @@ def _run_shoplazza_winner_sync(store_id, domain, token):
                             'title': vtitle,
                             'quantity': 0,
                             'revenue': 0.0,
+                            'image': li_image,
                         }
                     product_sales[pid]['variant_sales'][vid]['quantity'] += qty
                     product_sales[pid]['variant_sales'][vid]['revenue'] += revenue
+                    if not product_sales[pid]['variant_sales'][vid].get('image') and li_image:
+                        product_sales[pid]['variant_sales'][vid]['image'] = li_image
 
-            # Cursor pagination
-            next_cursor = resp_data.get('cursor', '') or resp_data.get('data', {}).get('cursor', '')
-            has_more = resp_data.get('has_more', False) or resp_data.get('data', {}).get('has_more', False)
+            # Cursor pagination (under data.* in modern Shoplazza API)
+            next_cursor = data_block.get('cursor') or resp_data.get('cursor') or ''
+            has_more = bool(data_block.get('has_more') if data_block.get('has_more') is not None else resp_data.get('has_more', False))
             pages_fetched += 1
 
             # Periodic progress save every 10 pages
@@ -2981,25 +3014,26 @@ def shopify_winners(store_id):
                 except:
                     pass
         else:
-            # Shoplazza product-details enrichment
+            # Shoplazza product-details enrichment.
+            # Note: cached product IDs come from past orders and may no longer exist
+            # in the live store (deleted/unpublished products). For those we fall back
+            # to the line-item image and title we cached during order sync.
             headers = _shoplazza_headers(token)
             base_url = f'https://{domain}/openapi/{SHOPLAZZA_API_VERSION}'
-            for i in range(0, len(all_pids), 250):
-                batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
+            for i in range(0, len(all_pids), 100):  # smaller batches to avoid URL-length limits
+                batch_ids = ','.join(str(pid) for pid in all_pids[i:i+100])
                 try:
                     pr = _shoplazza_get_with_retry(
                         f'{base_url}/products',
                         headers,
-                        params={'ids': batch_ids, 'limit': 250},
+                        params={'ids': batch_ids, 'page_size': 100},
                         timeout=30,
                     )
                     if pr is not None and pr.status_code == 200:
                         body = pr.json() or {}
-                        # Shoplazza response shape varies: top-level 'products' or under 'data.products'
-                        prods = body.get('products')
-                        if prods is None and isinstance(body.get('data'), dict):
-                            prods = body['data'].get('products', [])
-                        prods = prods or []
+                        # Shoplazza response: {code, data: {products: [...]}} — fall back to top-level for safety.
+                        data_block = body.get('data') if isinstance(body.get('data'), dict) else body
+                        prods = data_block.get('products') or body.get('products') or []
                         for prod in prods:
                             pid = prod.get('id')
                             if not pid:
@@ -3009,13 +3043,17 @@ def shopify_winners(store_id):
                             if imgs:
                                 first = imgs[0] or {}
                                 default_img = first.get('src') or first.get('url') or ''
+                            # Normalize protocol-relative URLs (//img.staticdj.com/...)
+                            if default_img and default_img.startswith('//'):
+                                default_img = 'https:' + default_img
                             product_details[pid] = {
                                 'handle': prod.get('handle', '') or prod.get('seo_handle', ''),
                                 'image': default_img,
                                 # Shoplazza has no variant->image mapping, so leave empty
                                 'variants': [],
                                 'product_type': prod.get('product_type', '') or prod.get('category', ''),
-                                'status': (prod.get('status') or prod.get('published_status') or 'unknown'),
+                                'status': (prod.get('status') or ('active' if prod.get('published') else 'unknown')),
+                                'title': prod.get('title', ''),
                             }
                     time.sleep(0.5)
                 except Exception:
@@ -3050,9 +3088,17 @@ def shopify_winners(store_id):
             if detail is None:
                 detail = {}
             handle = detail.get('handle', '')
-            image_url = detail.get('image', '')
+            # Image: prefer live product image, fall back to cached line-item image (for deleted products)
+            image_url = detail.get('image', '') or p.get('fallback_image', '')
+            if image_url and image_url.startswith('//'):
+                image_url = 'https:' + image_url
             product_type = detail.get('product_type', '')
-            shopify_status = detail.get('status', 'unknown')
+            # If we got a live product, it's still active. If not found, mark 'archived'
+            # (it existed at order time but isn't in the live store anymore).
+            if detail:
+                shopify_status = detail.get('status', 'unknown')
+            else:
+                shopify_status = 'archived' if platform == 'shoplazza' else 'unknown'
             video_status = product_video_status.get(str(pid), 'none')
 
             detail_variants = detail.get('variants', [])
@@ -3071,7 +3117,11 @@ def shopify_winners(store_id):
                 colour_sales[colour]['quantity'] += vb['quantity']
                 colour_sales[colour]['revenue'] += vb['revenue']
                 if not colour_sales[colour]['image']:
-                    colour_sales[colour]['image'] = vid_to_img.get(vb.get('variant_id', ''), '')
+                    # Prefer Shopify variant->image map; fall back to Shoplazza cached line-item image.
+                    variant_image = vid_to_img.get(vb.get('variant_id', ''), '') or vb.get('image', '')
+                    if variant_image and variant_image.startswith('//'):
+                        variant_image = 'https:' + variant_image
+                    colour_sales[colour]['image'] = variant_image
 
             enriched_breakdown = sorted(
                 colour_sales.values(),
