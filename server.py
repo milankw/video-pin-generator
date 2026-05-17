@@ -5036,7 +5036,8 @@ def _etsy_init_db():
                 CREATE INDEX IF NOT EXISTS idx_listings_shop ON etsy_listings(shop_id);
                 CREATE INDEX IF NOT EXISTS idx_listings_winner_shop ON etsy_listings(shop_id, is_winner);
                 CREATE INDEX IF NOT EXISTS idx_shops_winner ON etsy_shops(is_winner);
-                CREATE INDEX IF NOT EXISTS idx_kw_source ON etsy_discovered_keywords(source, last_used_ts);
+                CREATE INDEX IF NOT EXISTS idx_kw_source ON etsy_discovered_keywords(source, last_scanned);
+                CREATE INDEX IF NOT EXISTS idx_kw_enabled ON etsy_discovered_keywords(enabled, source);
             """)
             conn.commit()
         finally:
