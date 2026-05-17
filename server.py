@@ -4855,8 +4855,868 @@ def _cleanup_dir(videos_dir, max_age_days):
     if deleted:
         log.info(f'Cleaned up {deleted} video files older than {max_age_days} days')
 
+# =============================================================================
+# ===== ETSY JEWELRY SCANNER (tab) ============================================
+# =============================================================================
+# Self-contained module: SQLite store, sync Etsy client (requests), scanner with
+# self-expanding keyword + shop discovery, background thread, HTTP routes.
+# All paths/routes prefixed with /api/etsy. DB lives at data/etsy.db.
+# =============================================================================
+import sqlite3
+import csv
+import io
+from collections import Counter
+
+ETSY_DB_PATH = os.path.join(DATA_DIR, 'etsy.db')
+ETSY_SETTINGS_PATH = os.path.join(DATA_DIR, 'etsy_settings.json')
+ETSY_API_BASE = 'https://openapi.etsy.com/v3/application'
+_etsy_db_lock = threading.Lock()
+_etsy_scanner_thread = None
+_etsy_scanner_state = {
+    'running': False,         # True while a sweep is mid-flight
+    'last_sweep_at': 0,
+    'next_sweep_at': 0,
+    'started_at': 0,           # when the bg thread started
+}
+
+ETSY_DEFAULT_SETTINGS = {
+    'apiKey': '',
+    'minShopSales': 500,
+    'maxShopAgeMonths': 24,
+    'minListingReviews': 50,
+    'minReviewVelocity': 10.0,
+    'minListingFavorites': 200,
+    'scanIntervalSeconds': 10800,   # 3h
+    'dailyRequestBudget': 8000,
+    'requestsPerSecond': 5.0,
+    'jewelryTaxonomyId': 1,         # Etsy taxonomy: Jewelry root
+    'seedKeywords': [
+        'personalized necklace', 'name necklace', 'birthstone ring', 'stacking ring',
+        'minimalist necklace', 'initial necklace', 'gold hoop earrings', 'pearl earrings',
+        'tennis bracelet', 'charm bracelet', 'engagement ring', 'wedding band',
+        'couples ring', 'promise ring', 'signet ring', 'huggie earrings',
+        'drop earrings', 'layered necklace', 'anklet', 'zodiac necklace',
+        'moon necklace', 'evil eye necklace', 'cross necklace', 'pendant necklace',
+        'cuff bracelet',
+    ],
+    'maxKeywordsPerSweep': 60,
+    'maxPagesPerKeyword': 2,
+}
+
+
+def _etsy_load_settings():
+    try:
+        if os.path.exists(ETSY_SETTINGS_PATH):
+            with open(ETSY_SETTINGS_PATH, 'r') as f:
+                data = json.load(f)
+            merged = dict(ETSY_DEFAULT_SETTINGS)
+            merged.update({k: v for k, v in data.items() if v is not None})
+            return merged
+    except Exception:
+        log.exception('Failed to load etsy_settings.json; using defaults')
+    return dict(ETSY_DEFAULT_SETTINGS)
+
+
+def _etsy_save_settings(settings):
+    # Coerce types so frontend strings don't break the loop later.
+    typed = dict(ETSY_DEFAULT_SETTINGS)
+    typed.update(settings or {})
+    int_fields = ['minShopSales', 'maxShopAgeMonths', 'minListingReviews',
+                  'minListingFavorites', 'scanIntervalSeconds', 'dailyRequestBudget',
+                  'jewelryTaxonomyId', 'maxKeywordsPerSweep', 'maxPagesPerKeyword']
+    float_fields = ['minReviewVelocity', 'requestsPerSecond']
+    for k in int_fields:
+        try: typed[k] = int(typed.get(k) or 0)
+        except: typed[k] = ETSY_DEFAULT_SETTINGS[k]
+    for k in float_fields:
+        try: typed[k] = float(typed.get(k) or 0.0)
+        except: typed[k] = ETSY_DEFAULT_SETTINGS[k]
+    typed['apiKey'] = (typed.get('apiKey') or '').strip()
+    if isinstance(typed.get('seedKeywords'), str):
+        typed['seedKeywords'] = [s.strip() for s in typed['seedKeywords'].splitlines() if s.strip()]
+    typed['seedKeywords'] = [str(s).strip() for s in (typed.get('seedKeywords') or []) if str(s).strip()]
+    tmp = ETSY_SETTINGS_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(typed, f, indent=2)
+    os.replace(tmp, ETSY_SETTINGS_PATH)
+    return typed
+
+
+# ---------- Etsy DB layer ----------
+_ETSY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS etsy_shops (
+    shop_id INTEGER PRIMARY KEY,
+    shop_name TEXT,
+    url TEXT,
+    icon_url TEXT,
+    country TEXT,
+    transaction_sold_count INTEGER,
+    review_count INTEGER,
+    review_average REAL,
+    listing_active_count INTEGER,
+    opened_ts INTEGER,
+    age_months REAL,
+    sales_per_month REAL,
+    first_seen INTEGER DEFAULT (strftime('%s','now')),
+    last_updated INTEGER DEFAULT (strftime('%s','now')),
+    is_winner INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS etsy_listings (
+    listing_id INTEGER PRIMARY KEY,
+    shop_id INTEGER,
+    title TEXT,
+    description TEXT,
+    url TEXT,
+    price REAL,
+    currency TEXT,
+    num_favorers INTEGER,
+    views INTEGER,
+    quantity INTEGER,
+    tags TEXT,
+    materials TEXT,
+    image_url TEXT,
+    image_urls TEXT,
+    taxonomy_id INTEGER,
+    listing_reviews INTEGER DEFAULT 0,
+    review_velocity REAL DEFAULT 0,
+    score REAL DEFAULT 0,
+    is_winner INTEGER DEFAULT 0,
+    keyword TEXT,
+    first_seen INTEGER DEFAULT (strftime('%s','now')),
+    last_updated INTEGER DEFAULT (strftime('%s','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_etsy_listings_score ON etsy_listings(score DESC);
+CREATE INDEX IF NOT EXISTS idx_etsy_listings_winner ON etsy_listings(is_winner);
+CREATE INDEX IF NOT EXISTS idx_etsy_listings_shop ON etsy_listings(shop_id);
+
+CREATE TABLE IF NOT EXISTS etsy_scan_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at INTEGER,
+    finished_at INTEGER,
+    keyword TEXT,
+    source TEXT,             -- 'seed' | 'discovered' | 'shop' | 'manual'
+    listings_seen INTEGER DEFAULT 0,
+    shops_seen INTEGER DEFAULT 0,
+    winners_found INTEGER DEFAULT 0,
+    api_calls INTEGER DEFAULT 0,
+    status TEXT,
+    error TEXT
+);
+CREATE TABLE IF NOT EXISTS etsy_api_usage (
+    day TEXT PRIMARY KEY,
+    calls INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS etsy_discovered_keywords (
+    keyword TEXT PRIMARY KEY,
+    source TEXT,             -- 'tag' | 'title-bigram' | 'seed' | 'manual'
+    occurrences INTEGER DEFAULT 1,
+    winners_yielded INTEGER DEFAULT 0,
+    last_scanned INTEGER,
+    first_seen INTEGER DEFAULT (strftime('%s','now')),
+    enabled INTEGER DEFAULT 1
+);
+"""
+
+def _etsy_conn():
+    conn = sqlite3.connect(ETSY_DB_PATH, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    return conn
+
+def _etsy_init_db():
+    with _etsy_db_lock:
+        conn = _etsy_conn()
+        try:
+            conn.executescript(_ETSY_SCHEMA)
+            conn.commit()
+        finally:
+            conn.close()
+
+class _EtsyCursor:
+    def __enter__(self):
+        _etsy_db_lock.acquire()
+        self.conn = _etsy_conn()
+        return self.conn
+    def __exit__(self, *a):
+        try:
+            self.conn.commit()
+            self.conn.close()
+        finally:
+            _etsy_db_lock.release()
+
+def _etsy_today_usage():
+    with _EtsyCursor() as c:
+        r = c.execute("SELECT calls FROM etsy_api_usage WHERE day=date('now')").fetchone()
+        return r['calls'] if r else 0
+
+def _etsy_bump_usage(n=1):
+    with _EtsyCursor() as c:
+        c.execute("""INSERT INTO etsy_api_usage (day, calls) VALUES (date('now'), :n)
+                     ON CONFLICT(day) DO UPDATE SET calls = calls + :n""", {'n': n})
+
+def _etsy_upsert_shop(s):
+    with _EtsyCursor() as c:
+        c.execute("""
+            INSERT INTO etsy_shops (shop_id, shop_name, url, icon_url, country,
+                transaction_sold_count, review_count, review_average, listing_active_count,
+                opened_ts, age_months, sales_per_month, is_winner, last_updated)
+            VALUES (:shop_id,:shop_name,:url,:icon_url,:country,
+                :transaction_sold_count,:review_count,:review_average,:listing_active_count,
+                :opened_ts,:age_months,:sales_per_month,:is_winner,strftime('%s','now'))
+            ON CONFLICT(shop_id) DO UPDATE SET
+                shop_name=excluded.shop_name,
+                transaction_sold_count=excluded.transaction_sold_count,
+                review_count=excluded.review_count,
+                review_average=excluded.review_average,
+                listing_active_count=excluded.listing_active_count,
+                age_months=excluded.age_months,
+                sales_per_month=excluded.sales_per_month,
+                is_winner=excluded.is_winner,
+                last_updated=strftime('%s','now')
+        """, s)
+
+def _etsy_upsert_listing(l):
+    with _EtsyCursor() as c:
+        c.execute("""
+            INSERT INTO etsy_listings (listing_id, shop_id, title, description, url, price, currency,
+                num_favorers, views, quantity, tags, materials, image_url, image_urls,
+                taxonomy_id, listing_reviews, review_velocity, score, is_winner, keyword, last_updated)
+            VALUES (:listing_id,:shop_id,:title,:description,:url,:price,:currency,
+                :num_favorers,:views,:quantity,:tags,:materials,:image_url,:image_urls,
+                :taxonomy_id,:listing_reviews,:review_velocity,:score,:is_winner,:keyword,
+                strftime('%s','now'))
+            ON CONFLICT(listing_id) DO UPDATE SET
+                title=excluded.title,
+                price=excluded.price,
+                num_favorers=excluded.num_favorers,
+                views=excluded.views,
+                quantity=excluded.quantity,
+                listing_reviews=excluded.listing_reviews,
+                review_velocity=excluded.review_velocity,
+                score=excluded.score,
+                is_winner=excluded.is_winner,
+                last_updated=strftime('%s','now')
+        """, l)
+
+def _etsy_record_run(**kw):
+    with _EtsyCursor() as c:
+        cols = ','.join(kw.keys())
+        ph = ','.join(f':{k}' for k in kw.keys())
+        cur = c.execute(f"INSERT INTO etsy_scan_runs ({cols}) VALUES ({ph})", kw)
+        return cur.lastrowid
+
+def _etsy_finish_run(run_id, **kw):
+    if not kw: return
+    with _EtsyCursor() as c:
+        sets = ','.join(f"{k}=:{k}" for k in kw.keys())
+        kw['id'] = run_id
+        c.execute(f"UPDATE etsy_scan_runs SET {sets} WHERE id=:id", kw)
+
+def _etsy_add_keyword(keyword, source='discovered', inc_occurrences=True):
+    keyword = (keyword or '').strip().lower()
+    if not keyword or len(keyword) < 3 or len(keyword) > 60:
+        return
+    with _EtsyCursor() as c:
+        c.execute("""
+            INSERT INTO etsy_discovered_keywords (keyword, source, occurrences)
+            VALUES (?,?,1)
+            ON CONFLICT(keyword) DO UPDATE SET occurrences = occurrences + ?
+        """, (keyword, source, 1 if inc_occurrences else 0))
+
+def _etsy_pick_keywords(max_n):
+    """Return a prioritized list of keywords to scan this sweep:
+    seed keywords first, then top discovered ones (most occurrences, fewer recent scans)."""
+    settings = _etsy_load_settings()
+    seeds = settings.get('seedKeywords') or []
+    # ensure seeds exist in the discovered table for tracking
+    for kw in seeds:
+        _etsy_add_keyword(kw, source='seed', inc_occurrences=False)
+    with _EtsyCursor() as c:
+        rows = c.execute("""
+            SELECT keyword FROM etsy_discovered_keywords
+            WHERE enabled = 1
+            ORDER BY
+              CASE WHEN source='seed' THEN 0 ELSE 1 END,
+              CASE WHEN last_scanned IS NULL THEN 0 ELSE last_scanned END ASC,
+              winners_yielded DESC,
+              occurrences DESC
+            LIMIT ?
+        """, (max_n,)).fetchall()
+    return [r['keyword'] for r in rows]
+
+def _etsy_mark_keyword_scanned(keyword, winners_added=0):
+    with _EtsyCursor() as c:
+        c.execute("""UPDATE etsy_discovered_keywords
+                     SET last_scanned = strftime('%s','now'),
+                         winners_yielded = winners_yielded + ?
+                     WHERE keyword = ?""", (int(winners_added), keyword))
+
+def _etsy_winner_shop_ids(limit=200):
+    with _EtsyCursor() as c:
+        rows = c.execute("""SELECT shop_id FROM etsy_shops WHERE is_winner=1
+                            ORDER BY last_updated DESC LIMIT ?""", (limit,)).fetchall()
+    return [r['shop_id'] for r in rows]
+
+def _etsy_stats():
+    with _EtsyCursor() as c:
+        out = {
+            'total_listings': c.execute('SELECT COUNT(*) n FROM etsy_listings').fetchone()['n'],
+            'total_shops': c.execute('SELECT COUNT(*) n FROM etsy_shops').fetchone()['n'],
+            'winners': c.execute('SELECT COUNT(*) n FROM etsy_listings WHERE is_winner=1').fetchone()['n'],
+            'winner_shops': c.execute('SELECT COUNT(*) n FROM etsy_shops WHERE is_winner=1').fetchone()['n'],
+            'keywords_known': c.execute('SELECT COUNT(*) n FROM etsy_discovered_keywords').fetchone()['n'],
+            'keywords_discovered': c.execute("SELECT COUNT(*) n FROM etsy_discovered_keywords WHERE source!='seed'").fetchone()['n'],
+            'api_today': _etsy_today_usage(),
+        }
+        r = c.execute('SELECT * FROM etsy_scan_runs ORDER BY id DESC LIMIT 1').fetchone()
+        out['last_run'] = dict(r) if r else None
+    return out
+
+def _etsy_winners(limit=200, offset=0, sort='score', search=''):
+    allowed = {'score','review_velocity','num_favorers','listing_reviews','price','last_updated'}
+    if sort not in allowed: sort = 'score'
+    with _EtsyCursor() as c:
+        q = """SELECT l.*, s.shop_name, s.url AS shop_url, s.transaction_sold_count,
+                      s.review_count AS shop_reviews, s.age_months, s.sales_per_month, s.country,
+                      s.icon_url AS shop_icon
+               FROM etsy_listings l LEFT JOIN etsy_shops s ON l.shop_id = s.shop_id
+               WHERE l.is_winner = 1"""
+        params = []
+        if search:
+            q += " AND (l.title LIKE ? OR l.tags LIKE ? OR s.shop_name LIKE ?)"
+            pat = f"%{search}%"
+            params.extend([pat, pat, pat])
+        q += f" ORDER BY l.{sort} DESC LIMIT ? OFFSET ?"
+        params.extend([int(limit), int(offset)])
+        return [dict(r) for r in c.execute(q, params).fetchall()]
+
+def _etsy_winner_shops(limit=100):
+    with _EtsyCursor() as c:
+        rows = c.execute("""
+            SELECT s.*, COUNT(l.listing_id) AS winning_listings, MAX(l.score) AS top_score
+            FROM etsy_shops s LEFT JOIN etsy_listings l
+              ON l.shop_id = s.shop_id AND l.is_winner = 1
+            WHERE s.is_winner = 1
+            GROUP BY s.shop_id
+            ORDER BY top_score DESC LIMIT ?
+        """, (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
+def _etsy_recent_runs(limit=30):
+    with _EtsyCursor() as c:
+        rows = c.execute('SELECT * FROM etsy_scan_runs ORDER BY id DESC LIMIT ?', (int(limit),)).fetchall()
+    return [dict(r) for r in rows]
+
+def _etsy_get_listing(listing_id):
+    with _EtsyCursor() as c:
+        r = c.execute("""
+            SELECT l.*, s.shop_name, s.url AS shop_url, s.transaction_sold_count,
+                   s.review_count AS shop_reviews, s.review_average AS shop_review_avg,
+                   s.age_months, s.sales_per_month, s.country, s.icon_url AS shop_icon
+            FROM etsy_listings l LEFT JOIN etsy_shops s ON l.shop_id = s.shop_id
+            WHERE l.listing_id = ?
+        """, (int(listing_id),)).fetchone()
+        return dict(r) if r else None
+
+def _etsy_recent_discovered_keywords(limit=50):
+    with _EtsyCursor() as c:
+        rows = c.execute("""SELECT keyword, source, occurrences, winners_yielded, last_scanned, first_seen
+                            FROM etsy_discovered_keywords
+                            ORDER BY first_seen DESC LIMIT ?""", (int(limit),)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- Etsy sync HTTP client ----------
+_etsy_last_request_ts = [0.0]
+
+def _etsy_request(path, params=None, retries=3):
+    settings = _etsy_load_settings()
+    api_key = (settings.get('apiKey') or '').strip()
+    if not api_key:
+        raise RuntimeError('Etsy API key not set')
+    if _etsy_today_usage() >= int(settings.get('dailyRequestBudget') or 8000):
+        log.warning('Etsy daily budget reached; pausing')
+        return None
+    # Rate-limit (synchronous): enforce min interval between calls
+    rps = float(settings.get('requestsPerSecond') or 5.0)
+    min_interval = 1.0 / max(0.1, rps)
+    elapsed = time.time() - _etsy_last_request_ts[0]
+    if elapsed < min_interval:
+        time.sleep(min_interval - elapsed)
+    url = f'{ETSY_API_BASE}{path}'
+    headers = {'x-api-key': api_key, 'User-Agent': 'VideoPin-EtsyScanner/1.0'}
+    for attempt in range(retries):
+        try:
+            _etsy_last_request_ts[0] = time.time()
+            r = http_requests.get(url, params=params, headers=headers, timeout=30)
+            _etsy_bump_usage(1)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code == 404:
+                return None
+            if r.status_code == 429:
+                time.sleep(2 ** attempt)
+                continue
+            if r.status_code >= 500:
+                time.sleep(2 ** attempt)
+                continue
+            log.error('Etsy %s -> %s: %s', path, r.status_code, r.text[:200])
+            return None
+        except http_requests.exceptions.RequestException as e:
+            log.warning('Etsy network error %s on %s, retrying', e, path)
+            time.sleep(2 ** attempt)
+    return None
+
+def _etsy_find_listings(keyword, taxonomy_id=None, limit=100, offset=0):
+    params = {
+        'keywords': keyword, 'limit': limit, 'offset': offset,
+        'sort_on': 'score', 'sort_order': 'descending', 'includes': 'Shop,Images',
+    }
+    if taxonomy_id:
+        params['taxonomy_id'] = taxonomy_id
+    return _etsy_request('/listings/active', params)
+
+def _etsy_get_shop(shop_id):
+    return _etsy_request(f'/shops/{shop_id}')
+
+def _etsy_get_shop_listings(shop_id, limit=50, offset=0):
+    return _etsy_request(f'/shops/{shop_id}/listings/active',
+                         {'limit': limit, 'offset': offset, 'includes': 'Images'})
+
+def _etsy_get_listing_reviews(listing_id, limit=1):
+    return _etsy_request(f'/listings/{listing_id}/reviews', {'limit': limit})
+
+
+# ---------- Scanner: scoring + normalization ----------
+def _etsy_months_since(ts):
+    if not ts: return 9999.0
+    return max(0.0, (time.time() - int(ts)) / (60 * 60 * 24 * 30.44))
+
+def _etsy_score(listing_reviews, review_velocity, num_favorers,
+                shop_sales_per_month, shop_age_months):
+    recency = max(0.1, 24.0 / max(1.0, shop_age_months)) if shop_age_months < 36 else 0.5
+    base = (listing_reviews * 1.0 + review_velocity * 25.0 +
+            num_favorers * 0.05 + shop_sales_per_month * 0.5)
+    return round(base * recency, 2)
+
+def _etsy_is_winner(listing_reviews, review_velocity, num_favorers,
+                   shop_sales, shop_age_months, s):
+    return (
+        shop_sales >= s['minShopSales']
+        and shop_age_months <= s['maxShopAgeMonths']
+        and listing_reviews >= s['minListingReviews']
+        and review_velocity >= s['minReviewVelocity']
+        and num_favorers >= s['minListingFavorites']
+    )
+
+def _etsy_norm_shop(shop):
+    opened = shop.get('create_date') or shop.get('created_tsz')
+    age = _etsy_months_since(opened)
+    sold = int(shop.get('transaction_sold_count') or 0)
+    spm = sold / max(1.0, age) if age else 0.0
+    return {
+        'shop_id': shop['shop_id'],
+        'shop_name': shop.get('shop_name'),
+        'url': shop.get('url'),
+        'icon_url': shop.get('icon_url_fullxfull'),
+        'country': shop.get('country_iso') or shop.get('origin_country_iso'),
+        'transaction_sold_count': sold,
+        'review_count': int(shop.get('review_count') or 0),
+        'review_average': float(shop.get('review_average') or 0),
+        'listing_active_count': int(shop.get('listing_active_count') or 0),
+        'opened_ts': opened,
+        'age_months': round(age, 1),
+        'sales_per_month': round(spm, 2),
+        'is_winner': 0,
+    }
+
+def _etsy_norm_listing(raw, shop_id, keyword):
+    price = raw.get('price') or {}
+    if isinstance(price, dict):
+        amount = price.get('amount', 0)
+        divisor = price.get('divisor', 100) or 100
+        price_val = amount / divisor if amount else 0.0
+        currency = price.get('currency_code', '')
+    else:
+        price_val = float(price or 0)
+        currency = ''
+    images = raw.get('images') or []
+    image_urls = [img.get('url_fullxfull') for img in images if img.get('url_fullxfull')]
+    return {
+        'listing_id': raw['listing_id'],
+        'shop_id': shop_id,
+        'title': raw.get('title', ''),
+        'description': (raw.get('description') or '')[:2000],
+        'url': raw.get('url', ''),
+        'price': round(price_val, 2),
+        'currency': currency,
+        'num_favorers': int(raw.get('num_favorers') or 0),
+        'views': int(raw.get('views') or 0),
+        'quantity': int(raw.get('quantity') or 0),
+        'tags': json.dumps(raw.get('tags') or []),
+        'materials': json.dumps(raw.get('materials') or []),
+        'image_url': image_urls[0] if image_urls else '',
+        'image_urls': json.dumps(image_urls),
+        'taxonomy_id': raw.get('taxonomy_id'),
+        'listing_reviews': 0,
+        'review_velocity': 0,
+        'score': 0,
+        'is_winner': 0,
+        'keyword': keyword,
+    }
+
+_ETSY_STOPWORDS = {
+    'the','a','an','and','or','for','with','to','of','in','on','at','by','from','her',
+    'his','your','my','our','their','this','that','these','those','is','are','be',
+    'gift','gifts','set','sets','custom','personalized','handmade','vintage','unique',
+    'beautiful','perfect','best','new','sale','women','men','girls','boys','kids',
+}
+
+def _etsy_extract_keywords_from_listing(raw):
+    """Extract candidate keywords from a winning listing's tags + title bigrams."""
+    out = []
+    for tag in (raw.get('tags') or [])[:8]:
+        t = (tag or '').strip().lower()
+        if 2 <= len(t.split()) <= 4 and len(t) >= 4:
+            out.append((t, 'tag'))
+    title = (raw.get('title') or '').lower()
+    words = re.findall(r"[a-z][a-z'\-]{2,}", title)
+    words = [w for w in words if w not in _ETSY_STOPWORDS]
+    for i in range(len(words) - 1):
+        bg = f"{words[i]} {words[i+1]}"
+        if len(bg) >= 6 and not any(w in _ETSY_STOPWORDS for w in bg.split()):
+            out.append((bg, 'title-bigram'))
+    return out
+
+def _etsy_review_metrics(listing_id, shop_age_months):
+    data = _etsy_get_listing_reviews(listing_id, limit=1)
+    if not data: return 0, 0.0
+    total = int(data.get('count') or 0)
+    if total <= 0: return 0, 0.0
+    months = max(1.0, min(shop_age_months, 60.0))
+    return total, round(total / months, 2)
+
+def _etsy_scan_one(keyword, source, settings):
+    """Scan one keyword. Returns (winners_count, candidate_keywords_added)."""
+    run_id = _etsy_record_run(
+        started_at=int(time.time()),
+        keyword=keyword, source=source, status='running')
+    listings_seen = shops_seen = winners_found = 0
+    api_before = _etsy_today_usage()
+    err = None
+    new_keywords = []
+    try:
+        shop_cache = {}
+        for page in range(int(settings.get('maxPagesPerKeyword') or 2)):
+            data = _etsy_find_listings(
+                keyword,
+                taxonomy_id=int(settings.get('jewelryTaxonomyId') or 0) or None,
+                limit=100, offset=page * 100,
+            )
+            if not data: break
+            results = data.get('results') or []
+            if not results: break
+            for raw in results:
+                listings_seen += 1
+                shop_obj = raw.get('shop')
+                if not shop_obj: continue
+                sid = shop_obj['shop_id']
+                if sid not in shop_cache:
+                    shop_cache[sid] = _etsy_norm_shop(shop_obj)
+                    shops_seen += 1
+                shop = shop_cache[sid]
+                if shop['transaction_sold_count'] < settings['minShopSales']: continue
+                if shop['age_months'] > settings['maxShopAgeMonths']: continue
+                listing = _etsy_norm_listing(raw, sid, keyword)
+                if listing['num_favorers'] < settings['minListingFavorites']: continue
+                # Enrich with review counts (1 extra API call per listing)
+                rcount, rvel = _etsy_review_metrics(listing['listing_id'], shop['age_months'])
+                listing['listing_reviews'] = rcount
+                listing['review_velocity'] = rvel
+                listing['score'] = _etsy_score(rcount, rvel, listing['num_favorers'],
+                                               shop['sales_per_month'], shop['age_months'])
+                winner = _etsy_is_winner(rcount, rvel, listing['num_favorers'],
+                                         shop['transaction_sold_count'], shop['age_months'], settings)
+                listing['is_winner'] = 1 if winner else 0
+                if winner:
+                    shop['is_winner'] = 1
+                    winners_found += 1
+                    # Self-expanding discovery: learn from winners
+                    for kw, src in _etsy_extract_keywords_from_listing(raw):
+                        _etsy_add_keyword(kw, source=src)
+                        new_keywords.append(kw)
+                _etsy_upsert_shop(shop)
+                _etsy_upsert_listing(listing)
+            for s in shop_cache.values():
+                _etsy_upsert_shop(s)
+        status = 'ok'
+    except Exception as e:
+        log.exception('Etsy scan failed for %s', keyword)
+        err = str(e); status = 'error'
+    finally:
+        api_calls = _etsy_today_usage() - api_before
+        _etsy_finish_run(run_id,
+            finished_at=int(time.time()),
+            listings_seen=listings_seen, shops_seen=shops_seen,
+            winners_found=winners_found, api_calls=api_calls,
+            status=status, error=err)
+    _etsy_mark_keyword_scanned(keyword, winners_added=winners_found)
+    return winners_found, new_keywords
+
+def _etsy_scan_shop_listings(shop_id, settings):
+    """Re-scan a known winning shop's listings to catch new winners (shop-level discovery)."""
+    run_id = _etsy_record_run(
+        started_at=int(time.time()),
+        keyword=f'shop:{shop_id}', source='shop', status='running')
+    listings_seen = winners_found = 0
+    api_before = _etsy_today_usage()
+    err = None
+    try:
+        shop_raw = _etsy_get_shop(shop_id)
+        if not shop_raw: return 0
+        shop = _etsy_norm_shop(shop_raw)
+        data = _etsy_get_shop_listings(shop_id, limit=50)
+        if not data: return 0
+        for raw in (data.get('results') or []):
+            listings_seen += 1
+            listing = _etsy_norm_listing(raw, shop_id, f'shop:{shop_id}')
+            if listing['num_favorers'] < settings['minListingFavorites']: continue
+            rcount, rvel = _etsy_review_metrics(listing['listing_id'], shop['age_months'])
+            listing['listing_reviews'] = rcount
+            listing['review_velocity'] = rvel
+            listing['score'] = _etsy_score(rcount, rvel, listing['num_favorers'],
+                                           shop['sales_per_month'], shop['age_months'])
+            winner = _etsy_is_winner(rcount, rvel, listing['num_favorers'],
+                                     shop['transaction_sold_count'], shop['age_months'], settings)
+            listing['is_winner'] = 1 if winner else 0
+            if winner:
+                shop['is_winner'] = 1
+                winners_found += 1
+                for kw, src in _etsy_extract_keywords_from_listing(raw):
+                    _etsy_add_keyword(kw, source=src)
+            _etsy_upsert_listing(listing)
+        _etsy_upsert_shop(shop)
+        status = 'ok'
+    except Exception as e:
+        log.exception('Etsy shop rescan failed: %s', shop_id)
+        err = str(e); status = 'error'
+    finally:
+        api_calls = _etsy_today_usage() - api_before
+        _etsy_finish_run(run_id,
+            finished_at=int(time.time()),
+            listings_seen=listings_seen, shops_seen=1,
+            winners_found=winners_found, api_calls=api_calls,
+            status=status, error=err)
+    return winners_found
+
+def _etsy_full_sweep():
+    """One full sweep: pick keywords (seed + discovered), then revisit top winning shops."""
+    if _etsy_scanner_state['running']:
+        log.info('Etsy sweep already in progress, skipping')
+        return
+    _etsy_scanner_state['running'] = True
+    started = time.time()
+    try:
+        settings = _etsy_load_settings()
+        if not settings.get('apiKey'):
+            log.warning('Etsy sweep skipped: no API key')
+            return
+        max_kw = int(settings.get('maxKeywordsPerSweep') or 60)
+        budget = int(settings.get('dailyRequestBudget') or 8000)
+        keywords = _etsy_pick_keywords(max_kw)
+        log.info('Etsy sweep starting: %d keywords queued', len(keywords))
+        for kw in keywords:
+            if _etsy_today_usage() >= budget:
+                log.warning('Etsy daily budget hit; stopping sweep'); break
+            try:
+                _etsy_scan_one(kw, source=('seed' if kw in (settings.get('seedKeywords') or []) else 'discovered'), settings=settings)
+            except Exception:
+                log.exception('Etsy keyword failed: %s', kw)
+            time.sleep(1.0)
+        # Shop-level discovery: revisit a few winning shops for new listings
+        if _etsy_today_usage() < budget:
+            for sid in _etsy_winner_shop_ids(limit=20):
+                if _etsy_today_usage() >= budget: break
+                try:
+                    _etsy_scan_shop_listings(sid, settings)
+                except Exception:
+                    log.exception('Etsy shop rescan failed: %s', sid)
+                time.sleep(1.0)
+        log.info('Etsy sweep complete in %.1fs', time.time() - started)
+    finally:
+        _etsy_scanner_state['running'] = False
+        _etsy_scanner_state['last_sweep_at'] = int(time.time())
+        try:
+            settings = _etsy_load_settings()
+            _etsy_scanner_state['next_sweep_at'] = _etsy_scanner_state['last_sweep_at'] + int(settings.get('scanIntervalSeconds') or 10800)
+        except Exception:
+            pass
+
+def _etsy_scanner_loop():
+    log.info('Etsy scanner background loop started')
+    _etsy_scanner_state['started_at'] = int(time.time())
+    # Small startup delay to let Flask finish booting
+    time.sleep(5)
+    while True:
+        try:
+            settings = _etsy_load_settings()
+            if settings.get('apiKey'):
+                _etsy_full_sweep()
+            else:
+                log.info('Etsy scanner idle: no API key configured')
+        except Exception:
+            log.exception('Etsy scanner iteration crashed')
+        interval = int((_etsy_load_settings() or {}).get('scanIntervalSeconds') or 10800)
+        _etsy_scanner_state['next_sweep_at'] = int(time.time()) + interval
+        time.sleep(max(60, interval))
+
+def _etsy_ensure_scanner_thread():
+    global _etsy_scanner_thread
+    if _etsy_scanner_thread and _etsy_scanner_thread.is_alive():
+        return
+    _etsy_init_db()
+    _etsy_scanner_thread = threading.Thread(target=_etsy_scanner_loop, daemon=True, name='etsy-scanner')
+    _etsy_scanner_thread.start()
+
+# ---------- HTTP routes ----------
+@app.route('/api/etsy/health', methods=['GET'])
+@login_required
+def etsy_health():
+    settings = _etsy_load_settings()
+    return jsonify({
+        'success': True,
+        'has_key': bool(settings.get('apiKey')),
+        'scanner_running': _etsy_scanner_state['running'],
+        'last_sweep_at': _etsy_scanner_state.get('last_sweep_at') or 0,
+        'next_sweep_at': _etsy_scanner_state.get('next_sweep_at') or 0,
+        'api_today': _etsy_today_usage(),
+        'daily_budget': int(settings.get('dailyRequestBudget') or 8000),
+    })
+
+@app.route('/api/etsy/stats', methods=['GET'])
+@login_required
+def etsy_stats_route():
+    s = _etsy_stats()
+    s.update({
+        'scanner_running': _etsy_scanner_state['running'],
+        'last_sweep_at': _etsy_scanner_state.get('last_sweep_at') or 0,
+        'next_sweep_at': _etsy_scanner_state.get('next_sweep_at') or 0,
+    })
+    return jsonify({'success': True, 'stats': s})
+
+@app.route('/api/etsy/settings', methods=['GET'])
+@login_required
+def etsy_get_settings():
+    s = _etsy_load_settings()
+    # Mask the key in the response
+    key = s.get('apiKey') or ''
+    s_safe = dict(s)
+    s_safe['apiKey'] = ''
+    s_safe['hasApiKey'] = bool(key)
+    s_safe['apiKeyPreview'] = (key[:4] + '...' + key[-4:]) if len(key) >= 10 else ('set' if key else '')
+    return jsonify({'success': True, 'settings': s_safe})
+
+@app.route('/api/etsy/settings', methods=['POST'])
+@login_required
+def etsy_post_settings():
+    body = request.get_json(silent=True) or {}
+    current = _etsy_load_settings()
+    # Only overwrite apiKey if a non-empty one was provided (allows partial save)
+    new_key = (body.get('apiKey') or '').strip()
+    merged = dict(current)
+    for k, v in body.items():
+        if k == 'apiKey':
+            if new_key:
+                merged['apiKey'] = new_key
+        else:
+            merged[k] = v
+    saved = _etsy_save_settings(merged)
+    # Kick the scanner if a key was just configured for the first time
+    _etsy_ensure_scanner_thread()
+    return jsonify({'success': True, 'savedKeys': sorted(body.keys()), 'hasApiKey': bool(saved.get('apiKey'))})
+
+@app.route('/api/etsy/winners', methods=['GET'])
+@login_required
+def etsy_winners_route():
+    limit = int(request.args.get('limit', 200))
+    sort = request.args.get('sort', 'score')
+    q = (request.args.get('q') or '').strip()
+    rows = _etsy_winners(limit=limit, sort=sort, search=q)
+    # Parse JSON-encoded fields for the frontend
+    for r in rows:
+        for fld in ('tags', 'materials', 'image_urls'):
+            try:
+                r[fld] = json.loads(r.get(fld) or '[]')
+            except Exception:
+                r[fld] = []
+    return jsonify({'success': True, 'winners': rows, 'count': len(rows)})
+
+@app.route('/api/etsy/shops', methods=['GET'])
+@login_required
+def etsy_shops_route():
+    limit = int(request.args.get('limit', 100))
+    return jsonify({'success': True, 'shops': _etsy_winner_shops(limit=limit)})
+
+@app.route('/api/etsy/runs', methods=['GET'])
+@login_required
+def etsy_runs_route():
+    limit = int(request.args.get('limit', 30))
+    return jsonify({'success': True, 'runs': _etsy_recent_runs(limit=limit)})
+
+@app.route('/api/etsy/keywords', methods=['GET'])
+@login_required
+def etsy_keywords_route():
+    limit = int(request.args.get('limit', 100))
+    return jsonify({'success': True, 'keywords': _etsy_recent_discovered_keywords(limit=limit)})
+
+@app.route('/api/etsy/listing/<int:listing_id>', methods=['GET'])
+@login_required
+def etsy_listing_route(listing_id):
+    row = _etsy_get_listing(listing_id)
+    if not row:
+        return jsonify({'success': False, 'error': 'Listing not found'}), 404
+    for fld in ('tags', 'materials', 'image_urls'):
+        try:
+            row[fld] = json.loads(row.get(fld) or '[]')
+        except Exception:
+            row[fld] = []
+    return jsonify({'success': True, 'listing': row})
+
+@app.route('/api/etsy/export.csv', methods=['GET'])
+@login_required
+def etsy_export_csv():
+    rows = _etsy_winners(limit=10000)
+    headers = ['score','title','price','currency','num_favorers','listing_reviews',
+               'review_velocity','shop_name','transaction_sold_count','age_months',
+               'sales_per_month','country','url','shop_url','image_url','keyword']
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(headers)
+    for r in rows:
+        w.writerow([r.get(h, '') if r.get(h) is not None else '' for h in headers])
+    resp = make_response(buf.getvalue())
+    resp.headers['Content-Type'] = 'text/csv'
+    resp.headers['Content-Disposition'] = 'attachment; filename=etsy_winners.csv'
+    return resp
+
+@app.route('/api/etsy/scan-now', methods=['POST'])
+@login_required
+def etsy_scan_now():
+    settings = _etsy_load_settings()
+    if not settings.get('apiKey'):
+        return jsonify({'success': False, 'error': 'Etsy API key not configured'}), 400
+    if _etsy_scanner_state['running']:
+        return jsonify({'success': True, 'status': 'already_running'})
+    t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')
+    t.start()
+    return jsonify({'success': True, 'status': 'started'})
+
+# ===== End Etsy Jewelry Scanner section ======================================
+
 # ===== Main =====
 if __name__ == '__main__':
     _cleanup_old_videos(5)
     _ensure_worker()
+    _etsy_ensure_scanner_thread()
     app.run(host='0.0.0.0', port=5110, debug=False)

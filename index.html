@@ -617,6 +617,150 @@ textarea { resize: vertical; min-height: 80px; }
   margin-top: 2px;
 }
 
+/* ===== Etsy tab ===== */
+.etsy-stat {
+  background: var(--gray-50, #f9fafb);
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.etsy-stat-val {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--gray-900);
+  line-height: 1.2;
+}
+.etsy-stat-lbl {
+  font-size: 11px;
+  color: var(--gray-500);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.etsy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.etsy-card {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+.etsy-card:hover {
+  box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+  transform: translateY(-2px);
+}
+.etsy-card-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--gray-100, #f3f4f6);
+  display: block;
+}
+.etsy-card-body {
+  padding: 10px 12px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.etsy-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gray-900);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.3;
+  min-height: 34px;
+}
+.etsy-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 11px;
+  color: var(--gray-500);
+}
+.etsy-card-meta b { color: var(--gray-700); font-weight: 600; }
+.etsy-card-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gray-900);
+}
+.etsy-card-shop {
+  font-size: 11px;
+  color: var(--gray-600);
+  border-top: 1px solid var(--gray-100, #f3f4f6);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+.etsy-card-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--gray-100, #f3f4f6);
+}
+.etsy-card-actions a {
+  flex: 1;
+  text-align: center;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-decoration: none;
+  border: 1px solid var(--gray-200);
+  color: var(--gray-700);
+  background: #fff;
+}
+.etsy-card-actions a:hover { background: var(--gray-50, #f9fafb); }
+.etsy-card-score {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0,0,0,0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.etsy-card-img-wrap { position: relative; }
+.etsy-run-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--gray-100, #f3f4f6);
+}
+.etsy-run-row:last-child { border-bottom: none; }
+.etsy-kw-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--gray-100, #f3f4f6);
+}
+.etsy-kw-row:last-child { border-bottom: none; }
+.etsy-kw-src {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: var(--gray-100, #f3f4f6);
+  color: var(--gray-600);
+}
+.etsy-kw-src.seed { background: #dbeafe; color: #1e40af; }
+.etsy-kw-src.tag { background: #dcfce7; color: #166534; }
+.etsy-kw-src.title-bigram { background: #fef3c7; color: #92400e; }
+
 /* ===== Winners sync banner ===== */
 .winners-sync-banner {
   background: #fff;
@@ -1418,6 +1562,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="studio">Studio</div>
   <div class="tab" data-tab="collections">Collections</div>
   <div class="tab" data-tab="analytics">Analytics</div>
+  <div class="tab" data-tab="etsy">Etsy Winners <span class="badge badge-purple" id="etsy-badge" style="display:none">0</span></div>
 </div>
 
 <!-- Content -->
@@ -1923,6 +2068,173 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
   </div>
 
+  <!-- ===== ETSY TAB ===== -->
+  <div class="tab-panel" id="panel-etsy">
+
+    <!-- Status banner -->
+    <div id="etsy-status-banner" class="alert" style="display:none;margin-bottom:16px;"></div>
+
+    <!-- Stats row -->
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>Etsy Jewelry Scanner</span>
+        <span style="display:flex;gap:8px;align-items:center;">
+          <span id="etsy-running-indicator" style="font-size:12px;color:var(--gray-400);">Idle</span>
+          <button class="btn btn-primary btn-sm" id="etsy-scan-now-btn" onclick="etsyScanNow()">Scan Now</button>
+          <button class="btn btn-secondary btn-sm" onclick="etsyExportCsv()">Export CSV</button>
+        </span>
+      </div>
+      <div class="card-desc">Finds breakout jewelry listings from young shops with high review velocity. Discovers new keywords from winning listings each sweep.</div>
+      <div id="etsy-stats-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:12px;">
+        <div class="etsy-stat" data-k="winners">
+          <div class="etsy-stat-val" id="etsy-stat-winners">--</div>
+          <div class="etsy-stat-lbl">Winners</div>
+        </div>
+        <div class="etsy-stat" data-k="shops">
+          <div class="etsy-stat-val" id="etsy-stat-shops">--</div>
+          <div class="etsy-stat-lbl">Winner Shops</div>
+        </div>
+        <div class="etsy-stat" data-k="keywords">
+          <div class="etsy-stat-val" id="etsy-stat-keywords">--</div>
+          <div class="etsy-stat-lbl">Keywords Discovered</div>
+        </div>
+        <div class="etsy-stat" data-k="api">
+          <div class="etsy-stat-val" id="etsy-stat-api">--</div>
+          <div class="etsy-stat-lbl">API Today / Budget</div>
+        </div>
+        <div class="etsy-stat" data-k="last">
+          <div class="etsy-stat-val" id="etsy-stat-last" style="font-size:14px;">--</div>
+          <div class="etsy-stat-lbl">Last Sweep</div>
+        </div>
+        <div class="etsy-stat" data-k="next">
+          <div class="etsy-stat-val" id="etsy-stat-next" style="font-size:14px;">--</div>
+          <div class="etsy-stat-lbl">Next Sweep</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toolbar / Filters -->
+    <div class="card" style="padding:12px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <input type="text" id="etsy-search" placeholder="Search title, shop, keyword..." style="flex:1;min-width:200px;" oninput="etsyDebouncedReload()">
+        <select id="etsy-sort" onchange="etsyLoadWinners()">
+          <option value="score">Sort: Score</option>
+          <option value="velocity">Sort: Review velocity</option>
+          <option value="favorites">Sort: Favorites</option>
+          <option value="reviews">Sort: Reviews</option>
+          <option value="price_low">Sort: Price (low &rarr; high)</option>
+          <option value="price_high">Sort: Price (high &rarr; low)</option>
+        </select>
+        <select id="etsy-limit" onchange="etsyLoadWinners()">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="etsyLoadWinners()">Refresh</button>
+      </div>
+    </div>
+
+    <!-- Winners grid -->
+    <div id="etsy-winners-loading" style="display:none;padding:24px;text-align:center;color:var(--gray-400);">Loading winners...</div>
+    <div id="etsy-winners-empty" class="empty-state" style="display:none;">
+      <div class="empty-state-icon">&#128142;</div>
+      <div class="empty-state-text">No winners yet</div>
+      <div class="empty-state-sub">Save your Etsy API key in Settings below, then click Scan Now.</div>
+    </div>
+    <div id="etsy-winners-grid" class="etsy-grid"></div>
+
+    <!-- Two-column: scan history + discovered keywords -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+      <div class="card">
+        <div class="card-title">Recent Sweeps</div>
+        <div id="etsy-runs-list" style="font-size:13px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Discovered Keywords</div>
+        <div class="card-desc">Newest first. "seed" = manual; "tag"/"title-bigram" = discovered from winning listings.</div>
+        <div id="etsy-keywords-list" style="font-size:13px;max-height:380px;overflow-y:auto;"></div>
+      </div>
+    </div>
+
+    <!-- Settings panel -->
+    <div class="card" style="margin-top:16px;">
+      <div class="card-title">Etsy Settings</div>
+      <div class="card-desc">Saving an API key will start the background sweep automatically.</div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Etsy API Key (keystring)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="password" id="etsy-api-key" placeholder="Leave blank to keep current" autocomplete="off">
+            <button class="btn btn-primary" onclick="etsySaveSettings()">Save</button>
+          </div>
+          <div class="form-hint" id="etsy-key-hint">Current: not set</div>
+        </div>
+        <div class="form-group">
+          <label>Sweep Interval (seconds)</label>
+          <input type="number" id="etsy-scan-interval" min="600" step="60">
+          <div class="form-hint">Default 10800 = every 3 hours.</div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Min Shop Sales</label>
+          <input type="number" id="etsy-min-shop-sales" min="0">
+        </div>
+        <div class="form-group">
+          <label>Max Shop Age (months)</label>
+          <input type="number" id="etsy-max-shop-age" min="1">
+        </div>
+        <div class="form-group">
+          <label>Min Listing Reviews</label>
+          <input type="number" id="etsy-min-listing-reviews" min="0">
+        </div>
+        <div class="form-group">
+          <label>Min Review Velocity / mo</label>
+          <input type="number" id="etsy-min-velocity" min="0" step="0.1">
+        </div>
+        <div class="form-group">
+          <label>Min Favorites</label>
+          <input type="number" id="etsy-min-favorites" min="0">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label>Daily API Budget</label>
+          <input type="number" id="etsy-daily-budget" min="100">
+        </div>
+        <div class="form-group">
+          <label>Requests / second</label>
+          <input type="number" id="etsy-rps" min="0.5" step="0.5">
+        </div>
+        <div class="form-group">
+          <label>Max Keywords / Sweep</label>
+          <input type="number" id="etsy-max-keywords" min="1">
+        </div>
+        <div class="form-group">
+          <label>Max Pages / Keyword</label>
+          <input type="number" id="etsy-max-pages" min="1" max="10">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Seed Keywords (one per line)</label>
+        <textarea id="etsy-seed-keywords" rows="6" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+        <div class="form-hint">The scanner expands beyond these by harvesting tags and title bigrams from each winning listing.</div>
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="etsyLoadSettings()">Reload</button>
+        <button class="btn btn-primary" onclick="etsySaveSettings()">Save Settings</button>
+      </div>
+    </div>
+
+  </div>
+  <!-- ===== END ETSY TAB ===== -->
+
 </div>
 
 <!-- Toast container -->
@@ -2091,6 +2403,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       _analyticsLoaded = false;
       loadAnalytics();
     }
+    if (tab.dataset.tab === 'etsy') { etsyOnTabOpen(); }
   });
 });
 
@@ -5453,6 +5766,322 @@ function collExportCSV() {
   URL.revokeObjectURL(url);
   toast('CSV exported');
 }
+
+// =====================================================================
+// ===== ETSY JEWELRY SCANNER TAB =====================================
+// =====================================================================
+let _etsyStatsTimer = null;
+let _etsyWinnersTimer = null;
+let _etsySearchTimer = null;
+let _etsyLoaded = false;
+
+function etsyDebouncedReload() {
+  clearTimeout(_etsySearchTimer);
+  _etsySearchTimer = setTimeout(() => etsyLoadWinners(), 350);
+}
+
+function etsyEscape(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+function etsyFmtDate(s) {
+  if (!s) return '--';
+  try {
+    const d = new Date(s.includes('Z') || s.includes('+') ? s : s + 'Z');
+    if (isNaN(d.getTime())) return s;
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 0) {
+      const ahead = Math.abs(diff);
+      if (ahead < 60) return 'in <1m';
+      if (ahead < 3600) return 'in ' + Math.round(ahead/60) + 'm';
+      if (ahead < 86400) return 'in ' + Math.round(ahead/3600) + 'h';
+      return 'in ' + Math.round(ahead/86400) + 'd';
+    }
+    if (diff < 60) return Math.round(diff) + 's ago';
+    if (diff < 3600) return Math.round(diff/60) + 'm ago';
+    if (diff < 86400) return Math.round(diff/3600) + 'h ago';
+    return Math.round(diff/86400) + 'd ago';
+  } catch(e) { return s; }
+}
+
+function etsyOnTabOpen() {
+  if (!_etsyLoaded) {
+    _etsyLoaded = true;
+    etsyLoadSettings();
+  }
+  etsyLoadStats();
+  etsyLoadWinners();
+  etsyLoadRuns();
+  etsyLoadKeywords();
+  etsyStartStatsPolling();
+}
+
+function etsyStartStatsPolling() {
+  if (_etsyStatsTimer) return;
+  _etsyStatsTimer = setInterval(() => {
+    const panel = document.getElementById('panel-etsy');
+    if (panel && panel.classList.contains('active')) {
+      etsyLoadStats();
+    } else {
+      clearInterval(_etsyStatsTimer);
+      _etsyStatsTimer = null;
+    }
+  }, 10000);
+}
+
+async function etsyLoadStats() {
+  try {
+    const data = await api('/api/etsy/stats');
+    if (!data) return;
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setText('etsy-stat-winners', data.winners ?? 0);
+    setText('etsy-stat-shops', data.shops ?? 0);
+    setText('etsy-stat-keywords', data.keywords ?? 0);
+    setText('etsy-stat-api', (data.api_today ?? 0) + ' / ' + (data.daily_budget ?? 0));
+    setText('etsy-stat-last', etsyFmtDate(data.last_run && data.last_run.finished_at));
+    setText('etsy-stat-next', etsyFmtDate(data.next_sweep));
+    // Update badge
+    const badge = document.getElementById('etsy-badge');
+    if (badge) {
+      const n = data.winners ?? 0;
+      if (n > 0) { badge.textContent = n; badge.style.display = ''; }
+      else { badge.style.display = 'none'; }
+    }
+    // Update running indicator
+    const indicator = document.getElementById('etsy-running-indicator');
+    const btn = document.getElementById('etsy-scan-now-btn');
+    if (data.scanner_running) {
+      if (indicator) { indicator.textContent = '\u25CF Scanning...'; indicator.style.color = '#16a34a'; }
+      if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+    } else {
+      if (indicator) { indicator.textContent = 'Idle'; indicator.style.color = 'var(--gray-400)'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; }
+    }
+    // Show banner if no API key
+    const banner = document.getElementById('etsy-status-banner');
+    if (banner) {
+      if (!data.has_api_key) {
+        banner.className = 'alert alert-warning';
+        banner.style.display = 'block';
+        banner.textContent = 'Etsy API key not set. Scroll down to Etsy Settings and paste your keystring to start the scanner.';
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+  } catch(e) { console.error('etsyLoadStats', e); }
+}
+
+async function etsyLoadSettings() {
+  try {
+    const s = await api('/api/etsy/settings');
+    if (!s) return;
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; };
+    setVal('etsy-min-shop-sales', s.minShopSales);
+    setVal('etsy-max-shop-age', s.maxShopAgeMonths);
+    setVal('etsy-min-listing-reviews', s.minListingReviews);
+    setVal('etsy-min-velocity', s.minReviewVelocity);
+    setVal('etsy-min-favorites', s.minListingFavorites);
+    setVal('etsy-scan-interval', s.scanIntervalSeconds);
+    setVal('etsy-daily-budget', s.dailyRequestBudget);
+    setVal('etsy-rps', s.requestsPerSecond);
+    setVal('etsy-max-keywords', s.maxKeywordsPerSweep);
+    setVal('etsy-max-pages', s.maxPagesPerKeyword);
+    const kwBox = document.getElementById('etsy-seed-keywords');
+    if (kwBox && Array.isArray(s.seedKeywords)) kwBox.value = s.seedKeywords.join('\n');
+    const hint = document.getElementById('etsy-key-hint');
+    if (hint) {
+      if (s.hasApiKey) {
+        hint.textContent = 'Current: ' + (s.apiKeyPreview || 'set');
+        hint.style.color = '#16a34a';
+      } else {
+        hint.textContent = 'Current: not set';
+        hint.style.color = 'var(--gray-500)';
+      }
+    }
+  } catch(e) { console.error('etsyLoadSettings', e); }
+}
+
+async function etsySaveSettings() {
+  try {
+    const getNum = (id) => {
+      const el = document.getElementById(id);
+      if (!el || el.value === '') return undefined;
+      const n = parseFloat(el.value);
+      return isNaN(n) ? undefined : n;
+    };
+    const apiKeyEl = document.getElementById('etsy-api-key');
+    const apiKey = apiKeyEl ? apiKeyEl.value.trim() : '';
+    const seedKwRaw = document.getElementById('etsy-seed-keywords').value || '';
+    const seedKeywords = seedKwRaw.split('\n').map(x => x.trim()).filter(Boolean);
+    const body = {
+      apiKey: apiKey,
+      minShopSales: getNum('etsy-min-shop-sales'),
+      maxShopAgeMonths: getNum('etsy-max-shop-age'),
+      minListingReviews: getNum('etsy-min-listing-reviews'),
+      minReviewVelocity: getNum('etsy-min-velocity'),
+      minListingFavorites: getNum('etsy-min-favorites'),
+      scanIntervalSeconds: getNum('etsy-scan-interval'),
+      dailyRequestBudget: getNum('etsy-daily-budget'),
+      requestsPerSecond: getNum('etsy-rps'),
+      maxKeywordsPerSweep: getNum('etsy-max-keywords'),
+      maxPagesPerKeyword: getNum('etsy-max-pages'),
+      seedKeywords: seedKeywords
+    };
+    // Strip undefined so server doesn't overwrite
+    Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
+    const res = await api('/api/etsy/settings', 'POST', body);
+    if (res && res.ok) {
+      toast('Etsy settings saved' + (apiKey ? ' \u2014 scanner starting' : ''), 'success');
+      if (apiKeyEl) apiKeyEl.value = '';
+      etsyLoadSettings();
+      etsyLoadStats();
+    } else {
+      toast('Save failed: ' + (res && res.error ? res.error : 'unknown error'), 'error');
+    }
+  } catch(e) {
+    console.error('etsySaveSettings', e);
+    toast('Save failed', 'error');
+  }
+}
+
+async function etsyLoadWinners() {
+  const grid = document.getElementById('etsy-winners-grid');
+  const loading = document.getElementById('etsy-winners-loading');
+  const empty = document.getElementById('etsy-winners-empty');
+  if (loading) loading.style.display = 'block';
+  if (empty) empty.style.display = 'none';
+  try {
+    const sort = document.getElementById('etsy-sort').value;
+    const limit = document.getElementById('etsy-limit').value;
+    const q = (document.getElementById('etsy-search').value || '').trim();
+    const params = new URLSearchParams({sort, limit});
+    if (q) params.set('q', q);
+    const data = await api('/api/etsy/winners?' + params.toString());
+    if (loading) loading.style.display = 'none';
+    const items = (data && data.winners) || [];
+    if (!items.length) {
+      if (grid) grid.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (grid) grid.innerHTML = items.map(etsyRenderCard).join('');
+  } catch(e) {
+    console.error('etsyLoadWinners', e);
+    if (loading) loading.style.display = 'none';
+    if (grid) grid.innerHTML = '<div style="padding:20px;color:var(--danger,#dc2626);">Failed to load winners.</div>';
+  }
+}
+
+function etsyRenderCard(w) {
+  const img = (w.image_urls && w.image_urls[0]) || w.image_url || '';
+  const price = (w.price !== null && w.price !== undefined && w.price !== '') ? (w.currency || '') + ' ' + Number(w.price).toFixed(2) : '';
+  const score = (w.score !== null && w.score !== undefined) ? Math.round(w.score) : null;
+  const sales = w.transaction_sold_count || 0;
+  const ageM = w.age_months !== null && w.age_months !== undefined ? w.age_months : null;
+  const ageStr = ageM === null ? '?' : (ageM < 12 ? ageM + 'mo' : (ageM/12).toFixed(1) + 'y');
+  const velocity = w.review_velocity !== null && w.review_velocity !== undefined ? Number(w.review_velocity).toFixed(1) : '0';
+  return `<div class="etsy-card">
+    <div class="etsy-card-img-wrap">
+      ${img ? `<img class="etsy-card-img" src="${etsyEscape(img)}" alt="" loading="lazy" onerror="this.style.display='none'">` : `<div class="etsy-card-img"></div>`}
+      ${score !== null ? `<div class="etsy-card-score">${score}</div>` : ''}
+    </div>
+    <div class="etsy-card-body">
+      <div class="etsy-card-title" title="${etsyEscape(w.title || '')}">${etsyEscape(w.title || '(untitled)')}</div>
+      <div class="etsy-card-price">${etsyEscape(price)}</div>
+      <div class="etsy-card-meta">
+        <span>&#11088; <b>${etsyEscape(w.listing_reviews || 0)}</b> rev</span>
+        <span>&#128293; <b>${etsyEscape(velocity)}</b>/mo</span>
+        <span>&#10084;&#65039; <b>${etsyEscape(w.num_favorers || 0)}</b></span>
+      </div>
+      <div class="etsy-card-meta">
+        <span>kw: <b>${etsyEscape(w.keyword || '--')}</b></span>
+      </div>
+      <div class="etsy-card-shop">
+        <b>${etsyEscape(w.shop_name || 'Unknown shop')}</b>
+        &middot; ${etsyEscape(sales)} sales &middot; ${etsyEscape(ageStr)} old
+      </div>
+    </div>
+    <div class="etsy-card-actions">
+      <a href="${etsyEscape(w.url || '#')}" target="_blank" rel="noopener">View Listing</a>
+      <a href="${etsyEscape(w.shop_url || '#')}" target="_blank" rel="noopener">View Shop</a>
+    </div>
+  </div>`;
+}
+
+async function etsyLoadRuns() {
+  try {
+    const data = await api('/api/etsy/runs?limit=10');
+    const container = document.getElementById('etsy-runs-list');
+    if (!container) return;
+    const runs = (data && data.runs) || [];
+    if (!runs.length) { container.innerHTML = '<div style="color:var(--gray-500);padding:8px 0;">No sweeps yet.</div>'; return; }
+    container.innerHTML = runs.map(r => {
+      const status = r.status || '?';
+      const color = status === 'success' ? '#16a34a' : (status === 'error' ? '#dc2626' : 'var(--gray-500)');
+      return `<div class="etsy-run-row">
+        <div>
+          <div><b style="color:${color}">${etsyEscape(status)}</b> &middot; ${etsyEscape(r.keywords_scanned || 0)} kws, ${etsyEscape(r.listings_seen || 0)} listings</div>
+          <div style="color:var(--gray-500);font-size:11px;">${etsyEscape(r.new_winners || 0)} new winners &middot; ${etsyEscape(r.api_calls || 0)} API calls</div>
+          ${r.error ? `<div style="color:#dc2626;font-size:11px;">${etsyEscape(r.error)}</div>` : ''}
+        </div>
+        <div style="color:var(--gray-500);font-size:11px;text-align:right;white-space:nowrap;">
+          ${etsyEscape(etsyFmtDate(r.finished_at || r.started_at))}
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error('etsyLoadRuns', e); }
+}
+
+async function etsyLoadKeywords() {
+  try {
+    const data = await api('/api/etsy/keywords?limit=200');
+    const container = document.getElementById('etsy-keywords-list');
+    if (!container) return;
+    const kws = (data && data.keywords) || [];
+    if (!kws.length) { container.innerHTML = '<div style="color:var(--gray-500);padding:8px 0;">No keywords yet.</div>'; return; }
+    container.innerHTML = kws.map(k => {
+      const src = (k.source || 'seed').toLowerCase();
+      return `<div class="etsy-kw-row">
+        <div style="flex:1;min-width:0;">
+          <span class="etsy-kw-src ${etsyEscape(src)}">${etsyEscape(src)}</span>
+          <b>${etsyEscape(k.keyword)}</b>
+        </div>
+        <div style="color:var(--gray-500);font-size:11px;white-space:nowrap;">
+          ${etsyEscape(k.occurrences || 0)}x &middot; ${etsyEscape(k.winners_yielded || 0)} won
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error('etsyLoadKeywords', e); }
+}
+
+async function etsyScanNow() {
+  const btn = document.getElementById('etsy-scan-now-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/etsy/scan-now', 'POST', {});
+    if (res && res.ok) {
+      toast('Sweep started', 'success');
+      setTimeout(() => { etsyLoadStats(); etsyLoadRuns(); }, 1500);
+    } else if (res && res.already_running) {
+      toast('A sweep is already running', 'info');
+    } else {
+      toast('Failed: ' + (res && res.error ? res.error : 'unknown'), 'error');
+      if (btn) btn.disabled = false;
+    }
+  } catch(e) {
+    console.error('etsyScanNow', e);
+    toast('Failed to start sweep', 'error');
+    if (btn) btn.disabled = false;
+  }
+}
+
+function etsyExportCsv() {
+  window.location.href = '/api/etsy/export.csv';
+}
+// ===== END ETSY TAB =====
 </script>
 </body>
 </html>
