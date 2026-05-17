@@ -4881,14 +4881,14 @@ _etsy_scanner_state = {
 
 ETSY_DEFAULT_SETTINGS = {
     'apiKey': '',
-    'minShopSales': 500,
-    'maxShopAgeMonths': 24,
-    'minListingReviews': 50,
-    'minReviewVelocity': 10.0,
-    'minListingFavorites': 200,
+    'minShopSales': 0,            # No shop-sales cutoff: capture vendor diversity
+    'maxShopAgeMonths': 240,      # Effectively off; UI filters by review threshold
+    'minListingReviews': 500,     # Single primary criterion: 500+ reviews = winner
+    'minReviewVelocity': 0.0,     # Off; reviews count is the strict gate
+    'minListingFavorites': 0,     # Off; reviews count is the strict gate
     'scanIntervalSeconds': 10800,   # 3h
-    'dailyRequestBudget': 8000,
-    'requestsPerSecond': 5.0,
+    'dailyRequestBudget': 4500,   # Etsy limit is 5000 QPD, leave 10% headroom
+    'requestsPerSecond': 4.5,     # Etsy limit is 5 QPS, leave headroom
     'jewelryTaxonomyId': 1,         # Etsy taxonomy: Jewelry root
     'seedKeywords': [
         'personalized necklace', 'name necklace', 'birthstone ring', 'stacking ring',
@@ -5029,6 +5029,15 @@ def _etsy_init_db():
         conn = _etsy_conn()
         try:
             conn.executescript(_ETSY_SCHEMA)
+            # Performance indexes (safe to run repeatedly)
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_listings_winner ON etsy_listings(is_winner, score DESC);
+                CREATE INDEX IF NOT EXISTS idx_listings_winner_reviews ON etsy_listings(is_winner, listing_reviews DESC);
+                CREATE INDEX IF NOT EXISTS idx_listings_shop ON etsy_listings(shop_id);
+                CREATE INDEX IF NOT EXISTS idx_listings_winner_shop ON etsy_listings(shop_id, is_winner);
+                CREATE INDEX IF NOT EXISTS idx_shops_winner ON etsy_shops(is_winner);
+                CREATE INDEX IF NOT EXISTS idx_kw_source ON etsy_discovered_keywords(source, last_used_ts);
+            """)
             conn.commit()
         finally:
             conn.close()
@@ -5112,6 +5121,11 @@ def _etsy_finish_run(run_id, **kw):
         sets = ','.join(f"{k}=:{k}" for k in kw.keys())
         kw['id'] = run_id
         c.execute(f"UPDATE etsy_scan_runs SET {sets} WHERE id=:id", kw)
+    # Always invalidate caches after a sweep finishes so UI sees fresh data
+    try:
+        _etsy_invalidate_caches()
+    except Exception:
+        pass
 
 def _etsy_add_keyword(keyword, source='discovered', inc_occurrences=True):
     keyword = (keyword or '').strip().lower()
@@ -5158,7 +5172,16 @@ def _etsy_winner_shop_ids(limit=200):
                             ORDER BY last_updated DESC LIMIT ?""", (limit,)).fetchall()
     return [r['shop_id'] for r in rows]
 
+# Simple in-process cache so polling the tab stays cheap
+_etsy_stats_cache = {'data': None, 'ts': 0}
+_etsy_winners_cache = {}  # key -> {'data': [...], 'ts': ...}
+_ETSY_STATS_TTL = 15  # seconds
+_ETSY_WINNERS_TTL = 20
+
 def _etsy_stats():
+    now = time.time()
+    if _etsy_stats_cache['data'] and (now - _etsy_stats_cache['ts'] < _ETSY_STATS_TTL):
+        return dict(_etsy_stats_cache['data'])
     with _EtsyCursor() as c:
         out = {
             'total_listings': c.execute('SELECT COUNT(*) n FROM etsy_listings').fetchone()['n'],
@@ -5171,25 +5194,71 @@ def _etsy_stats():
         }
         r = c.execute('SELECT * FROM etsy_scan_runs ORDER BY id DESC LIMIT 1').fetchone()
         out['last_run'] = dict(r) if r else None
-    return out
+        # Top vendors snapshot (shops with the most winners) - useful & cheap
+        top = c.execute("""
+            SELECT s.shop_id, s.shop_name, s.url AS shop_url,
+                   COUNT(l.listing_id) AS winners_count,
+                   s.transaction_sold_count AS shop_sales
+            FROM etsy_listings l
+            JOIN etsy_shops s ON l.shop_id = s.shop_id
+            WHERE l.is_winner = 1
+            GROUP BY s.shop_id
+            ORDER BY winners_count DESC
+            LIMIT 10
+        """).fetchall()
+        out['top_vendors'] = [dict(r) for r in top]
+    _etsy_stats_cache['data'] = out
+    _etsy_stats_cache['ts'] = now
+    return dict(out)
 
-def _etsy_winners(limit=200, offset=0, sort='score', search=''):
+def _etsy_invalidate_caches():
+    _etsy_stats_cache['data'] = None
+    _etsy_stats_cache['ts'] = 0
+    _etsy_winners_cache.clear()
+
+def _etsy_winners(limit=200, offset=0, sort='score', search='', min_reviews=0, shop_id=None):
     allowed = {'score','review_velocity','num_favorers','listing_reviews','price','last_updated'}
     if sort not in allowed: sort = 'score'
+    cache_key = f"{limit}|{offset}|{sort}|{search}|{min_reviews}|{shop_id}"
+    now = time.time()
+    cached = _etsy_winners_cache.get(cache_key)
+    if cached and (now - cached['ts'] < _ETSY_WINNERS_TTL):
+        return list(cached['data'])
     with _EtsyCursor() as c:
+        # First compute per-shop winner counts + top listing per shop (by reviews) for bestseller flag
+        shop_stats = {}
+        for r in c.execute("""
+            SELECT shop_id, COUNT(*) AS n, MAX(listing_reviews) AS top_reviews
+            FROM etsy_listings WHERE is_winner = 1 GROUP BY shop_id
+        """).fetchall():
+            shop_stats[r['shop_id']] = {'n': r['n'], 'top_reviews': r['top_reviews']}
         q = """SELECT l.*, s.shop_name, s.url AS shop_url, s.transaction_sold_count,
                       s.review_count AS shop_reviews, s.age_months, s.sales_per_month, s.country,
                       s.icon_url AS shop_icon
                FROM etsy_listings l LEFT JOIN etsy_shops s ON l.shop_id = s.shop_id
                WHERE l.is_winner = 1"""
         params = []
+        if min_reviews and int(min_reviews) > 0:
+            q += " AND l.listing_reviews >= ?"
+            params.append(int(min_reviews))
+        if shop_id:
+            q += " AND l.shop_id = ?"
+            params.append(int(shop_id))
         if search:
             q += " AND (l.title LIKE ? OR l.tags LIKE ? OR s.shop_name LIKE ?)"
             pat = f"%{search}%"
             params.extend([pat, pat, pat])
         q += f" ORDER BY l.{sort} DESC LIMIT ? OFFSET ?"
         params.extend([int(limit), int(offset)])
-        return [dict(r) for r in c.execute(q, params).fetchall()]
+        rows = [dict(r) for r in c.execute(q, params).fetchall()]
+        # Annotate each row with shop_winner_count and is_shop_bestseller
+        for r in rows:
+            sid = r.get('shop_id')
+            st = shop_stats.get(sid, {'n': 0, 'top_reviews': 0})
+            r['shop_winner_count'] = st['n']
+            r['is_shop_bestseller'] = bool(r.get('listing_reviews') and st['top_reviews'] and r['listing_reviews'] == st['top_reviews'])
+    _etsy_winners_cache[cache_key] = {'data': rows, 'ts': now}
+    return list(rows)
 
 def _etsy_winner_shops(limit=100):
     with _EtsyCursor() as c:
@@ -5598,12 +5667,32 @@ def etsy_health():
 @login_required
 def etsy_stats_route():
     s = _etsy_stats()
-    s.update({
+    settings = _etsy_load_settings()
+    last_sweep_at = _etsy_scanner_state.get('last_sweep_at') or 0
+    next_sweep_at = _etsy_scanner_state.get('next_sweep_at') or 0
+    # Convert epoch seconds to ISO for the frontend's etsyFmtDate helper
+    def _iso(ts):
+        if not ts: return None
+        try: return datetime.datetime.utcfromtimestamp(int(ts)).isoformat() + 'Z'
+        except: return None
+    # Frontend reads these field names directly (flat)
+    flat = {
+        'success': True,
+        'has_api_key': bool(settings.get('apiKey')),
         'scanner_running': _etsy_scanner_state['running'],
-        'last_sweep_at': _etsy_scanner_state.get('last_sweep_at') or 0,
-        'next_sweep_at': _etsy_scanner_state.get('next_sweep_at') or 0,
-    })
-    return jsonify({'success': True, 'stats': s})
+        'winners': s.get('winners', 0),
+        'shops': s.get('winner_shops', 0),
+        'keywords': s.get('keywords_known', 0),
+        'keywords_discovered': s.get('keywords_discovered', 0),
+        'total_listings': s.get('total_listings', 0),
+        'api_today': s.get('api_today', 0),
+        'daily_budget': int(settings.get('dailyRequestBudget') or 4500),
+        'last_run': s.get('last_run'),
+        'next_sweep': _iso(next_sweep_at),
+        'last_sweep': _iso(last_sweep_at),
+        'top_vendors': s.get('top_vendors', []),
+    }
+    return jsonify(flat)
 
 @app.route('/api/etsy/settings', methods=['GET'])
 @login_required
@@ -5615,7 +5704,8 @@ def etsy_get_settings():
     s_safe['apiKey'] = ''
     s_safe['hasApiKey'] = bool(key)
     s_safe['apiKeyPreview'] = (key[:4] + '...' + key[-4:]) if len(key) >= 10 else ('set' if key else '')
-    return jsonify({'success': True, 'settings': s_safe})
+    # Return flat (frontend reads fields directly)
+    return jsonify(s_safe)
 
 @app.route('/api/etsy/settings', methods=['POST'])
 @login_required
@@ -5632,17 +5722,30 @@ def etsy_post_settings():
         else:
             merged[k] = v
     saved = _etsy_save_settings(merged)
-    # Kick the scanner if a key was just configured for the first time
     _etsy_ensure_scanner_thread()
-    return jsonify({'success': True, 'savedKeys': sorted(body.keys()), 'hasApiKey': bool(saved.get('apiKey'))})
+    # Frontend reads `ok`
+    return jsonify({'ok': True, 'success': True, 'savedKeys': sorted(body.keys()), 'hasApiKey': bool(saved.get('apiKey'))})
 
 @app.route('/api/etsy/winners', methods=['GET'])
 @login_required
 def etsy_winners_route():
     limit = int(request.args.get('limit', 200))
-    sort = request.args.get('sort', 'score')
+    # Frontend sends sort values: score, velocity, favorites, reviews, price_low, price_high
+    raw_sort = (request.args.get('sort') or 'score').lower()
+    sort_map = {
+        'score': 'score', 'velocity': 'review_velocity', 'favorites': 'num_favorers',
+        'reviews': 'listing_reviews', 'price_low': 'price', 'price_high': 'price',
+        'recent': 'last_updated',
+    }
+    sort = sort_map.get(raw_sort, 'score')
     q = (request.args.get('q') or '').strip()
-    rows = _etsy_winners(limit=limit, sort=sort, search=q)
+    min_reviews = int(request.args.get('min_reviews') or 0)
+    shop_id = request.args.get('shop_id')
+    shop_id = int(shop_id) if (shop_id and shop_id.isdigit()) else None
+    rows = _etsy_winners(limit=limit, sort=sort, search=q, min_reviews=min_reviews, shop_id=shop_id)
+    # Reverse for price_low (ascending)
+    if raw_sort == 'price_low':
+        rows = sorted(rows, key=lambda r: (r.get('price') is None, r.get('price') or 0))
     # Parse JSON-encoded fields for the frontend
     for r in rows:
         for fld in ('tags', 'materials', 'image_urls'):
@@ -5656,7 +5759,8 @@ def etsy_winners_route():
 @login_required
 def etsy_shops_route():
     limit = int(request.args.get('limit', 100))
-    return jsonify({'success': True, 'shops': _etsy_winner_shops(limit=limit)})
+    shops = _etsy_winner_shops(limit=limit)
+    return jsonify({'success': True, 'shops': shops})
 
 @app.route('/api/etsy/runs', methods=['GET'])
 @login_required
@@ -5705,12 +5809,12 @@ def etsy_export_csv():
 def etsy_scan_now():
     settings = _etsy_load_settings()
     if not settings.get('apiKey'):
-        return jsonify({'success': False, 'error': 'Etsy API key not configured'}), 400
+        return jsonify({'ok': False, 'success': False, 'error': 'Etsy API key not configured. Save it first.'}), 400
     if _etsy_scanner_state['running']:
-        return jsonify({'success': True, 'status': 'already_running'})
+        return jsonify({'ok': True, 'success': True, 'already_running': True, 'status': 'already_running'})
     t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')
     t.start()
-    return jsonify({'success': True, 'status': 'started'})
+    return jsonify({'ok': True, 'success': True, 'status': 'started'})
 
 # ===== End Etsy Jewelry Scanner section ======================================
 
