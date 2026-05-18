@@ -5022,6 +5022,7 @@ def _etsy_conn():
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute('PRAGMA busy_timeout=10000')
     return conn
 
 def _etsy_init_db():
@@ -5044,16 +5045,22 @@ def _etsy_init_db():
             conn.close()
 
 class _EtsyCursor:
+    # WAL mode lets readers proceed while a writer is active. We no longer
+    # hold a Python-level lock for the lifetime of the connection (which was
+    # causing /api/etsy/stats and /api/etsy/winners to hang for minutes
+    # while the scanner thread was busy doing HTTP work).
     def __enter__(self):
-        _etsy_db_lock.acquire()
         self.conn = _etsy_conn()
         return self.conn
     def __exit__(self, *a):
         try:
             self.conn.commit()
+        except Exception:
+            pass
+        try:
             self.conn.close()
-        finally:
-            _etsy_db_lock.release()
+        except Exception:
+            pass
 
 def _etsy_today_usage():
     with _EtsyCursor() as c:
