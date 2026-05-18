@@ -2196,6 +2196,8 @@ textarea { resize: vertical; min-height: 80px; }
       </div>
       <div class="etsy-headbar-actions">
         <button class="btn btn-primary btn-sm" id="etsy-scan-now-btn" onclick="etsyScanNow()">Scan Now</button>
+        <button class="btn btn-danger btn-sm" id="etsy-stop-btn" onclick="etsyStopScan()" style="display:none;">Stop</button>
+        <button class="btn btn-secondary btn-sm" id="etsy-pause-btn" onclick="etsyPauseToggle()">Pause auto-scan</button>
         <button class="btn btn-secondary btn-sm" onclick="etsyExportCsv()">Export CSV</button>
         <button class="btn btn-secondary btn-sm" onclick="etsyToggleSettings()" title="Settings">&#9881;</button>
       </div>
@@ -2246,58 +2248,65 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
     <div id="etsy-winners-grid" class="etsy-grid"></div>
 
-    <!-- Collapsible settings panel -->
+    <!-- Collapsible settings panel (simplified) -->
     <div class="card" id="etsy-settings-card" style="display:none;margin-top:16px;">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;">
         <span>Etsy Settings</span>
         <button class="btn btn-secondary btn-sm" onclick="etsyToggleSettings()">Close</button>
       </div>
-      <div class="card-desc">Saving an API key starts the background sweep automatically. Etsy limit: 5 QPS / 5000 calls per day.</div>
+      <div class="card-desc">Two steps: paste your Etsy keystring, then click Connect to Etsy.</div>
 
-      <div class="form-row">
-        <div class="form-group" style="flex:2;">
-          <label>Etsy API Key (keystring)</label>
-          <input type="password" id="etsy-api-key" placeholder="Leave blank to keep current" autocomplete="off">
-          <div class="form-hint" id="etsy-key-hint">Current: not set</div>
+      <!-- STEP 1: API Key -->
+      <div style="margin:14px 0;">
+        <label style="display:block;font-weight:600;margin-bottom:6px;">1. Etsy API key (keystring)</label>
+        <div style="display:flex;gap:8px;align-items:flex-start;">
+          <input type="password" id="etsy-api-key" placeholder="Leave blank to keep current" autocomplete="off" style="flex:1;">
+          <button class="btn btn-primary" onclick="etsySaveSettings()">Save</button>
         </div>
-        <div class="form-group" style="flex:2;">
-          <label>Etsy Shared Secret (optional but recommended)</label>
-          <input type="password" id="etsy-shared-secret" placeholder="Leave blank to keep current" autocomplete="off">
-          <div class="form-hint" id="etsy-secret-hint">Current: not set</div>
-        </div>
-        <div class="form-group" style="flex:0 0 auto;align-self:flex-end;">
-          <button class="btn btn-primary" onclick="etsySaveSettings()">Save credentials</button>
-        </div>
+        <div class="form-hint" id="etsy-key-hint" style="margin-top:4px;">Current: not set</div>
+        <input type="password" id="etsy-shared-secret" style="display:none;" autocomplete="off">
+        <div id="etsy-secret-hint" style="display:none;"></div>
       </div>
 
-      <div class="alert alert-info" style="margin:8px 0 14px;">
-        <b>Step 2: Authorise the app</b><br>
-        Etsy's API requires a one-time OAuth connection after you save the keystring.
-        Make sure your Etsy developer app has this exact <b>Callback URL</b> registered:
-        <code id="etsy-redirect-uri" style="background:#fff;padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px;">—</code>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+      <!-- STEP 2: Connect -->
+      <div class="alert alert-info" style="margin:14px 0;">
+        <label style="display:block;font-weight:600;margin-bottom:6px;">2. Connect to Etsy (one-time OAuth)</label>
+        <div style="font-size:13px;color:var(--gray-700);margin-bottom:8px;">
+          Make sure this Callback URL is registered on your Etsy app at
+          <a href="https://www.etsy.com/developers/your-apps" target="_blank">etsy.com/developers/your-apps</a>:<br>
+          <code id="etsy-redirect-uri" style="background:#fff;padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px;">—</code>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <button class="btn btn-primary" id="etsy-connect-btn" onclick="etsyConnect()">Connect to Etsy</button>
           <button class="btn btn-secondary" id="etsy-disconnect-btn" onclick="etsyDisconnect()" style="display:none;">Disconnect</button>
           <span id="etsy-oauth-status" style="color:var(--gray-600);">Not connected</span>
         </div>
       </div>
 
-      <div class="form-row">
-        <div class="form-group">
-          <label>Min Reviews to count as Winner</label>
-          <input type="number" id="etsy-min-listing-reviews" min="50">
-          <div class="form-hint">Default 500. Lower = more results but slower sweeps.</div>
+      <!-- STEP 3: How the scanner runs (only 2 things matter) -->
+      <div style="margin:14px 0;">
+        <label style="display:block;font-weight:600;margin-bottom:6px;">3. Scanner behaviour</label>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Min reviews for a winner</label>
+            <input type="number" id="etsy-min-listing-reviews" min="50">
+            <div class="form-hint">Default 500. Lower = more results.</div>
+          </div>
+          <div class="form-group">
+            <label>Sweep every (hours)</label>
+            <input type="number" id="etsy-scan-interval-hours" min="1" step="1" value="3">
+            <div class="form-hint">Default 3 hours.</div>
+          </div>
         </div>
-        <div class="form-group">
-          <label>Sweep Interval (sec)</label>
-          <input type="number" id="etsy-scan-interval" min="600" step="60">
-          <div class="form-hint">Default 10800 = 3h.</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+          <button class="btn btn-primary" onclick="etsySaveSettings()">Save</button>
         </div>
       </div>
 
-      <details>
-        <summary style="cursor:pointer;padding:8px 0;color:var(--gray-600);font-size:13px;">Advanced thresholds &amp; rate limits</summary>
-        <div class="form-row">
+      <!-- ADVANCED: collapsed, only opens on click -->
+      <details style="margin-top:18px;border-top:1px solid var(--gray-200);padding-top:10px;">
+        <summary style="cursor:pointer;color:var(--gray-600);font-size:13px;">Advanced (rarely needed)</summary>
+        <div class="form-row" style="margin-top:10px;">
           <div class="form-group">
             <label>Min Shop Sales</label>
             <input type="number" id="etsy-min-shop-sales" min="0">
@@ -2338,12 +2347,12 @@ textarea { resize: vertical; min-height: 80px; }
           <textarea id="etsy-seed-keywords" rows="6" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
           <div class="form-hint">The scanner expands beyond these by collecting tags and title bigrams from each winning listing.</div>
         </div>
+        <input type="number" id="etsy-scan-interval" style="display:none;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
+          <button class="btn btn-secondary" onclick="etsyLoadSettings()">Reload</button>
+          <button class="btn btn-primary" onclick="etsySaveSettings()">Save Advanced</button>
+        </div>
       </details>
-
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
-        <button class="btn btn-secondary" onclick="etsyLoadSettings()">Reload</button>
-        <button class="btn btn-primary" onclick="etsySaveSettings()">Save Settings</button>
-      </div>
     </div>
 
   </div>
@@ -5968,15 +5977,29 @@ async function etsyLoadStats() {
       if (n > 0) { badge.textContent = n > 999 ? Math.floor(n/1000) + 'k' : n; badge.style.display = ''; }
       else { badge.style.display = 'none'; }
     }
-    // Running indicator
+    // Running indicator + Stop/Pause button visibility
     const indicator = document.getElementById('etsy-running-indicator');
-    const btn = document.getElementById('etsy-scan-now-btn');
+    const scanBtn = document.getElementById('etsy-scan-now-btn');
+    const stopBtn = document.getElementById('etsy-stop-btn');
+    const pauseBtn = document.getElementById('etsy-pause-btn');
+    const stopReq = !!data.stop_requested;
     if (data.scanner_running) {
-      if (indicator) { indicator.textContent = '\u25CF Scanning'; indicator.className = 'etsy-status-running'; }
-      if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+      if (indicator) {
+        indicator.textContent = stopReq ? '\u25CF Stopping\u2026' : '\u25CF Scanning';
+        indicator.className = 'etsy-status-running';
+      }
+      if (scanBtn) { scanBtn.disabled = true; scanBtn.textContent = 'Scanning\u2026'; }
+      if (stopBtn) { stopBtn.style.display = 'inline-block'; stopBtn.disabled = stopReq; stopBtn.textContent = stopReq ? 'Stopping\u2026' : 'Stop'; }
     } else {
-      if (indicator) { indicator.textContent = 'Idle'; indicator.className = 'etsy-status-idle'; }
-      if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; }
+      if (indicator) {
+        indicator.textContent = data.scanner_paused ? 'Paused' : 'Idle';
+        indicator.className = 'etsy-status-idle';
+      }
+      if (scanBtn) { scanBtn.disabled = false; scanBtn.textContent = 'Scan Now'; }
+      if (stopBtn) { stopBtn.style.display = 'none'; }
+    }
+    if (pauseBtn) {
+      pauseBtn.textContent = data.scanner_paused ? 'Resume auto-scan' : 'Pause auto-scan';
     }
     // Status banner (priority: auth error > no key > waiting for scan > hidden)
     const banner = document.getElementById('etsy-status-banner');
@@ -6055,6 +6078,11 @@ async function etsyLoadSettings() {
     setVal('etsy-min-velocity', s.minReviewVelocity);
     setVal('etsy-min-favorites', s.minListingFavorites);
     setVal('etsy-scan-interval', s.scanIntervalSeconds);
+    // Convert seconds -> hours for the friendly input
+    const hoursEl = document.getElementById('etsy-scan-interval-hours');
+    if (hoursEl && s.scanIntervalSeconds) {
+      hoursEl.value = Math.max(1, Math.round(Number(s.scanIntervalSeconds) / 3600));
+    }
     setVal('etsy-daily-budget', s.dailyRequestBudget);
     setVal('etsy-rps', s.requestsPerSecond);
     setVal('etsy-max-keywords', s.maxKeywordsPerSweep);
@@ -6107,7 +6135,11 @@ async function etsySaveSettings() {
       minListingReviews: getNum('etsy-min-listing-reviews'),
       minReviewVelocity: getNum('etsy-min-velocity'),
       minListingFavorites: getNum('etsy-min-favorites'),
-      scanIntervalSeconds: getNum('etsy-scan-interval'),
+      scanIntervalSeconds: (function(){
+        const h = parseFloat((document.getElementById('etsy-scan-interval-hours') || {}).value);
+        if (!isNaN(h) && h >= 1) return Math.round(h * 3600);
+        return getNum('etsy-scan-interval');
+      })(),
       dailyRequestBudget: getNum('etsy-daily-budget'),
       requestsPerSecond: getNum('etsy-rps'),
       maxKeywordsPerSweep: getNum('etsy-max-keywords'),
@@ -6286,6 +6318,38 @@ async function etsyDisconnect() {
     etsyLoadOauthStatus();
     etsyLoadStats();
   } catch(e) { console.error('etsyDisconnect', e); }
+}
+
+async function etsyStopScan() {
+  const btn = document.getElementById('etsy-stop-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping\u2026'; }
+  try {
+    await api('/api/etsy/stop-scan', 'POST', {});
+    toast('Stop requested \u2014 will finish current request and halt.', 'success');
+    etsyLoadStats();
+  } catch(e) {
+    console.error('etsyStopScan', e);
+    toast('Could not stop', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Stop'; }
+  }
+}
+
+async function etsyPauseToggle() {
+  const btn = document.getElementById('etsy-pause-btn');
+  // Toggle based on current label
+  const isPaused = btn && btn.textContent.indexOf('Resume') >= 0;
+  const next = !isPaused;
+  if (btn) { btn.disabled = true; }
+  try {
+    await api('/api/etsy/pause-scanner', 'POST', {paused: next});
+    toast(next ? 'Auto-scan paused' : 'Auto-scan resumed', 'success');
+    etsyLoadStats();
+  } catch(e) {
+    console.error('etsyPauseToggle', e);
+    toast('Could not toggle pause', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; }
+  }
 }
 // ===== END ETSY TAB =====
 </script>

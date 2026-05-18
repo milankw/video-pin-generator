@@ -4884,6 +4884,8 @@ _etsy_scanner_state = {
     'last_sweep_at': 0,
     'next_sweep_at': 0,
     'started_at': 0,           # when the bg thread started
+    'stop_requested': False,   # set by /api/etsy/stop-scan to abort current sweep
+    'paused': False,           # if True, scanner_loop skips sweeps entirely
 }
 
 ETSY_DEFAULT_SETTINGS = {
@@ -5772,6 +5774,8 @@ def _etsy_full_sweep():
         keywords = _etsy_pick_keywords(max_kw)
         log.info('Etsy sweep starting: %d keywords queued', len(keywords))
         for kw in keywords:
+            if _etsy_scanner_state.get('stop_requested'):
+                log.info('Etsy sweep aborted by stop request'); break
             if _etsy_today_usage() >= budget:
                 log.warning('Etsy daily budget hit; stopping sweep'); break
             try:
@@ -5780,8 +5784,10 @@ def _etsy_full_sweep():
                 log.exception('Etsy keyword failed: %s', kw)
             time.sleep(1.0)
         # Shop-level discovery: revisit a few winning shops for new listings
-        if _etsy_today_usage() < budget:
+        if not _etsy_scanner_state.get('stop_requested') and _etsy_today_usage() < budget:
             for sid in _etsy_winner_shop_ids(limit=20):
+                if _etsy_scanner_state.get('stop_requested'):
+                    log.info('Etsy shop rescan aborted by stop request'); break
                 if _etsy_today_usage() >= budget: break
                 try:
                     _etsy_scan_shop_listings(sid, settings)
@@ -5791,6 +5797,7 @@ def _etsy_full_sweep():
         log.info('Etsy sweep complete in %.1fs', time.time() - started)
     finally:
         _etsy_scanner_state['running'] = False
+        _etsy_scanner_state['stop_requested'] = False
         _etsy_scanner_state['last_sweep_at'] = int(time.time())
         try:
             settings = _etsy_load_settings()
@@ -5805,11 +5812,14 @@ def _etsy_scanner_loop():
     time.sleep(5)
     while True:
         try:
-            settings = _etsy_load_settings()
-            if settings.get('apiKey'):
-                _etsy_full_sweep()
+            if _etsy_scanner_state.get('paused'):
+                log.info('Etsy scanner paused; sleeping')
             else:
-                log.info('Etsy scanner idle: no API key configured')
+                settings = _etsy_load_settings()
+                if settings.get('apiKey'):
+                    _etsy_full_sweep()
+                else:
+                    log.info('Etsy scanner idle: no API key configured')
         except Exception:
             log.exception('Etsy scanner iteration crashed')
         interval = int((_etsy_load_settings() or {}).get('scanIntervalSeconds') or 10800)
@@ -5860,6 +5870,8 @@ def etsy_stats_route():
         'has_shared_secret': bool(settings.get('sharedSecret')),
         'oauth_connected': _etsy_is_connected(),
         'scanner_running': _etsy_scanner_state['running'],
+        'scanner_paused': bool(_etsy_scanner_state.get('paused')),
+        'stop_requested': bool(_etsy_scanner_state.get('stop_requested')),
         'winners': s.get('winners', 0),
         'shops': s.get('winner_shops', 0),
         'keywords': s.get('keywords_known', 0),
@@ -6015,6 +6027,25 @@ def etsy_scan_now():
     t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')
     t.start()
     return jsonify({'ok': True, 'success': True, 'status': 'started'})
+
+@app.route('/api/etsy/stop-scan', methods=['POST'])
+@login_required
+def etsy_stop_scan():
+    """Abort the in-flight sweep (best-effort: respected between keywords/shops)."""
+    was_running = bool(_etsy_scanner_state.get('running'))
+    _etsy_scanner_state['stop_requested'] = True
+    return jsonify({'ok': True, 'success': True, 'was_running': was_running})
+
+@app.route('/api/etsy/pause-scanner', methods=['POST'])
+@login_required
+def etsy_pause_scanner():
+    """Pause the recurring background scanner (current sweep still finishes)."""
+    body = request.get_json(silent=True) or {}
+    paused = bool(body.get('paused', True))
+    _etsy_scanner_state['paused'] = paused
+    if paused:
+        _etsy_scanner_state['stop_requested'] = True   # also abort an in-flight sweep
+    return jsonify({'ok': True, 'success': True, 'paused': paused})
 
 @app.route('/api/etsy/oauth/start', methods=['POST'])
 @login_required
