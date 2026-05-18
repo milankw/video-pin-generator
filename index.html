@@ -2261,12 +2261,24 @@ textarea { resize: vertical; min-height: 80px; }
           <div class="form-hint" id="etsy-key-hint">Current: not set</div>
         </div>
         <div class="form-group" style="flex:2;">
-          <label>Etsy Shared Secret</label>
+          <label>Etsy Shared Secret (optional but recommended)</label>
           <input type="password" id="etsy-shared-secret" placeholder="Leave blank to keep current" autocomplete="off">
           <div class="form-hint" id="etsy-secret-hint">Current: not set</div>
         </div>
         <div class="form-group" style="flex:0 0 auto;align-self:flex-end;">
           <button class="btn btn-primary" onclick="etsySaveSettings()">Save credentials</button>
+        </div>
+      </div>
+
+      <div class="alert alert-info" style="margin:8px 0 14px;">
+        <b>Step 2: Authorise the app</b><br>
+        Etsy's API requires a one-time OAuth connection after you save the keystring.
+        Make sure your Etsy developer app has this exact <b>Callback URL</b> registered:
+        <code id="etsy-redirect-uri" style="background:#fff;padding:2px 6px;border-radius:4px;display:inline-block;margin-top:4px;">—</code>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap;">
+          <button class="btn btn-primary" id="etsy-connect-btn" onclick="etsyConnect()">Connect to Etsy</button>
+          <button class="btn btn-secondary" id="etsy-disconnect-btn" onclick="etsyDisconnect()" style="display:none;">Disconnect</button>
+          <span id="etsy-oauth-status" style="color:var(--gray-600);">Not connected</span>
         </div>
       </div>
 
@@ -5913,6 +5925,7 @@ function etsyOnTabOpen() {
   if (!_etsyLoaded) {
     _etsyLoaded = true;
     etsyLoadSettings();
+    etsyLoadOauthStatus();
   }
   etsyLoadStats();
   etsyLoadWinners();
@@ -5973,13 +5986,17 @@ async function etsyLoadStats() {
         banner.style.display = 'block';
         const msg = data.auth_error || 'Etsy rejected the request';
         const status = data.auth_status || '';
-        const needsSecret = /shared secret|incorrect shared secret/i.test(msg);
+        const notConnected = /not connected/i.test(msg);
         banner.innerHTML = '<b>Etsy auth failed' + (status ? ' (HTTP ' + status + ')' : '') + ':</b> '
           + etsyEscape(msg)
-          + (needsSecret
-              ? '<br>Open <b>&#9881; Settings</b> and paste your <b>Shared Secret</b> from the Etsy developer dashboard.'
-              : '<br>This usually means the key is still <i>Pending Personal Approval</i> at Etsy. Scanner will retry after Etsy approves it.')
-          + ' Calls paused for 30 min to protect your daily quota.';
+          + (notConnected
+              ? '<br>Open <b>&#9881; Settings</b> and click <b>Connect to Etsy</b> to authorise.'
+              : '<br>Re-connect from Settings if this persists.')
+          + ' Calls paused to protect your daily quota.';
+      } else if (!data.oauth_connected && data.has_api_key) {
+        banner.className = 'alert alert-warning';
+        banner.style.display = 'block';
+        banner.innerHTML = '<b>Not connected to Etsy.</b> Click the &#9881; gear icon, then <b>Connect to Etsy</b> to authorise the scanner.';
       } else if (!data.has_api_key) {
         banner.className = 'alert alert-warning';
         banner.style.display = 'block';
@@ -6104,6 +6121,7 @@ async function etsySaveSettings() {
       if (apiKeyEl) apiKeyEl.value = '';
       if (secretEl) secretEl.value = '';
       etsyLoadSettings();
+      etsyLoadOauthStatus();
       etsyLoadStats();
     } else {
       toast('Save failed: ' + (res && res.error ? res.error : 'unknown error'), 'error');
@@ -6215,6 +6233,59 @@ async function etsyScanNow() {
 
 function etsyExportCsv() {
   window.location.href = '/api/etsy/export.csv';
+}
+
+// ----- OAuth helpers -----
+async function etsyLoadOauthStatus() {
+  try {
+    const res = await fetch('/api/etsy/oauth/status').then(r => r.json());
+    const label = document.getElementById('etsy-oauth-status');
+    const connectBtn = document.getElementById('etsy-connect-btn');
+    const disconnectBtn = document.getElementById('etsy-disconnect-btn');
+    const uriEl = document.getElementById('etsy-redirect-uri');
+    if (uriEl && res.suggested_redirect_uri) uriEl.textContent = res.suggested_redirect_uri;
+    if (res.connected) {
+      if (label) {
+        label.innerHTML = '<span style="color:#16a34a;font-weight:600;">\u2713 Connected</span>'
+          + (res.expires_at ? '<span style="color:var(--gray-500);font-size:12px;margin-left:8px;">token expires ' + res.expires_at + '</span>' : '');
+      }
+      if (connectBtn) connectBtn.textContent = 'Reconnect';
+      if (disconnectBtn) disconnectBtn.style.display = 'inline-block';
+    } else {
+      if (label) label.textContent = 'Not connected';
+      if (connectBtn) connectBtn.textContent = 'Connect to Etsy';
+      if (disconnectBtn) disconnectBtn.style.display = 'none';
+    }
+  } catch(e) { console.error('etsyLoadOauthStatus', e); }
+}
+
+async function etsyConnect() {
+  const btn = document.getElementById('etsy-connect-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Opening Etsy\u2026'; }
+  try {
+    const res = await api('/api/etsy/oauth/start', 'POST', {});
+    if (res && res.authorize_url) {
+      // Open Etsy in the same tab so the callback returns the user here.
+      window.location.href = res.authorize_url;
+    } else {
+      toast('Could not start OAuth: ' + ((res && res.error) || 'unknown'), 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Connect to Etsy'; }
+    }
+  } catch(e) {
+    console.error('etsyConnect', e);
+    toast('Could not start OAuth', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Connect to Etsy'; }
+  }
+}
+
+async function etsyDisconnect() {
+  if (!confirm('Disconnect from Etsy? The scanner will stop until you reconnect.')) return;
+  try {
+    await api('/api/etsy/oauth/disconnect', 'POST', {});
+    toast('Disconnected', 'success');
+    etsyLoadOauthStatus();
+    etsyLoadStats();
+  } catch(e) { console.error('etsyDisconnect', e); }
 }
 // ===== END ETSY TAB =====
 </script>

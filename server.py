@@ -4870,6 +4870,13 @@ from collections import Counter
 ETSY_DB_PATH = os.path.join(DATA_DIR, 'etsy.db')
 ETSY_SETTINGS_PATH = os.path.join(DATA_DIR, 'etsy_settings.json')
 ETSY_API_BASE = 'https://openapi.etsy.com/v3/application'
+ETSY_TOKEN_URL = 'https://api.etsy.com/v3/public/oauth/token'
+ETSY_OAUTH_AUTHORIZE_URL = 'https://www.etsy.com/oauth/connect'
+ETSY_OAUTH_TOKENS_PATH = os.path.join(DATA_DIR, 'etsy_oauth_tokens.json')
+ETSY_OAUTH_PENDING_PATH = os.path.join(DATA_DIR, 'etsy_oauth_pending.json')
+# Minimal scope — we only need an authenticated identity; listing/shop search
+# endpoints are public-readable as long as a valid bearer token is present.
+ETSY_OAUTH_SCOPE = 'email_r'
 _etsy_db_lock = threading.Lock()
 _etsy_scanner_thread = None
 _etsy_scanner_state = {
@@ -5318,6 +5325,128 @@ def _etsy_clear_auth_block():
     _etsy_auth_block['message'] = ''
     _etsy_auth_block['status'] = 0
 
+# ---------- Etsy OAuth 2.0 (PKCE) ----------
+# Etsy v3 data endpoints require an OAuth 2.0 bearer token. We store the
+# access + refresh tokens on disk and auto-refresh when the access token
+# is within 60s of expiry. The keystring (apiKey) is sent as x-api-key on
+# every request alongside the bearer token — Etsy requires both.
+_etsy_token_lock = threading.Lock()
+
+def _etsy_load_tokens():
+    try:
+        if os.path.exists(ETSY_OAUTH_TOKENS_PATH):
+            with open(ETSY_OAUTH_TOKENS_PATH, 'r') as f:
+                return json.load(f) or {}
+    except Exception as e:
+        log.warning('etsy: failed to read oauth tokens: %s', e)
+    return {}
+
+def _etsy_save_tokens(tokens):
+    tmp = ETSY_OAUTH_TOKENS_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(tokens, f)
+    os.replace(tmp, ETSY_OAUTH_TOKENS_PATH)
+
+def _etsy_clear_tokens():
+    try:
+        if os.path.exists(ETSY_OAUTH_TOKENS_PATH):
+            os.remove(ETSY_OAUTH_TOKENS_PATH)
+    except Exception:
+        pass
+
+def _etsy_pkce_pair():
+    # RFC 7636: code_verifier is 43-128 chars, code_challenge is base64url(sha256(verifier))
+    import base64, hashlib, secrets
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode('ascii').rstrip('=')
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode('ascii')).digest()).decode('ascii').rstrip('=')
+    return verifier, challenge
+
+def _etsy_save_pending(state, verifier, redirect_uri):
+    tmp = ETSY_OAUTH_PENDING_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'state': state, 'code_verifier': verifier, 'redirect_uri': redirect_uri, 'created_at': time.time()}, f)
+    os.replace(tmp, ETSY_OAUTH_PENDING_PATH)
+
+def _etsy_load_pending():
+    try:
+        if os.path.exists(ETSY_OAUTH_PENDING_PATH):
+            with open(ETSY_OAUTH_PENDING_PATH, 'r') as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+def _etsy_clear_pending():
+    try:
+        if os.path.exists(ETSY_OAUTH_PENDING_PATH):
+            os.remove(ETSY_OAUTH_PENDING_PATH)
+    except Exception:
+        pass
+
+def _etsy_exchange_code(client_id, code, code_verifier, redirect_uri):
+    """Exchange auth code for access + refresh tokens."""
+    body = {
+        'grant_type': 'authorization_code',
+        'client_id': client_id,
+        'redirect_uri': redirect_uri,
+        'code': code,
+        'code_verifier': code_verifier,
+    }
+    r = http_requests.post(ETSY_TOKEN_URL, data=body, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f'token exchange failed {r.status_code}: {r.text[:300]}')
+    payload = r.json()
+    payload['obtained_at'] = time.time()
+    payload['expires_at'] = time.time() + int(payload.get('expires_in') or 3600)
+    _etsy_save_tokens(payload)
+    return payload
+
+def _etsy_refresh_token():
+    """Refresh the access token using the saved refresh token."""
+    settings = _etsy_load_settings()
+    client_id = (settings.get('apiKey') or '').strip()
+    if not client_id:
+        raise RuntimeError('apiKey not set')
+    tokens = _etsy_load_tokens()
+    refresh = (tokens.get('refresh_token') or '').strip()
+    if not refresh:
+        raise RuntimeError('no refresh_token saved — reconnect Etsy')
+    body = {
+        'grant_type': 'refresh_token',
+        'client_id': client_id,
+        'refresh_token': refresh,
+    }
+    r = http_requests.post(ETSY_TOKEN_URL, data=body, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f'token refresh failed {r.status_code}: {r.text[:300]}')
+    payload = r.json()
+    # Etsy returns a new refresh_token; persist both.
+    payload['obtained_at'] = time.time()
+    payload['expires_at'] = time.time() + int(payload.get('expires_in') or 3600)
+    if 'refresh_token' not in payload and refresh:
+        payload['refresh_token'] = refresh
+    _etsy_save_tokens(payload)
+    return payload
+
+def _etsy_get_access_token():
+    """Return a valid access token, refreshing if needed. None if not connected."""
+    with _etsy_token_lock:
+        tokens = _etsy_load_tokens()
+        if not tokens.get('access_token'):
+            return None
+        # 60s safety margin
+        if float(tokens.get('expires_at') or 0) > time.time() + 60:
+            return tokens.get('access_token')
+        try:
+            refreshed = _etsy_refresh_token()
+            return refreshed.get('access_token')
+        except Exception as e:
+            log.error('etsy: token refresh failed: %s', e)
+            return None
+
+def _etsy_is_connected():
+    return bool(_etsy_load_tokens().get('access_token'))
+
 def _etsy_request(path, params=None, retries=3):
     settings = _etsy_load_settings()
     api_key = (settings.get('apiKey') or '').strip()
@@ -5338,11 +5467,16 @@ def _etsy_request(path, params=None, retries=3):
         time.sleep(min_interval - elapsed)
     url = f'{ETSY_API_BASE}{path}'
     headers = {'x-api-key': api_key, 'User-Agent': 'VideoPin-EtsyScanner/1.0'}
-    # Etsy v3 application-key endpoints sometimes require the shared secret
-    # alongside the key. Send it if the user has saved one.
-    shared_secret = (settings.get('sharedSecret') or '').strip()
-    if shared_secret:
-        headers['x-shared-secret'] = shared_secret
+    # Etsy v3 requires a Bearer access token from OAuth on most data endpoints.
+    access_token = _etsy_get_access_token()
+    if access_token:
+        headers['Authorization'] = f'Bearer {access_token}'
+    else:
+        # Not connected — trip the breaker and bail. Don't burn quota.
+        _etsy_auth_block['until'] = time.time() + 3600
+        _etsy_auth_block['status'] = 0
+        _etsy_auth_block['message'] = 'Not connected to Etsy. Click "Connect to Etsy" in Settings to authorize.'
+        return None
     for attempt in range(retries):
         try:
             _etsy_last_request_ts[0] = time.time()
@@ -5724,6 +5858,7 @@ def etsy_stats_route():
         'success': True,
         'has_api_key': bool(settings.get('apiKey')),
         'has_shared_secret': bool(settings.get('sharedSecret')),
+        'oauth_connected': _etsy_is_connected(),
         'scanner_running': _etsy_scanner_state['running'],
         'winners': s.get('winners', 0),
         'shops': s.get('winner_shops', 0),
@@ -5880,6 +6015,102 @@ def etsy_scan_now():
     t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')
     t.start()
     return jsonify({'ok': True, 'success': True, 'status': 'started'})
+
+@app.route('/api/etsy/oauth/start', methods=['POST'])
+@login_required
+def etsy_oauth_start():
+    """Generate authorization URL with PKCE and persist verifier+state."""
+    settings = _etsy_load_settings()
+    client_id = (settings.get('apiKey') or '').strip()
+    if not client_id:
+        return jsonify({'ok': False, 'success': False, 'error': 'Save your Etsy keystring first.'}), 400
+    # Build redirect URI from request host so it matches whatever the user
+    # registered on the Etsy developer dashboard (e.g. https://video-pin.xyz/api/etsy/oauth/callback)
+    body = request.get_json(silent=True) or {}
+    override = (body.get('redirectUri') or '').strip()
+    if override:
+        redirect_uri = override
+    else:
+        # request.url_root may be http on the internal port; force https
+        host = request.host
+        redirect_uri = f'https://{host}/api/etsy/oauth/callback'
+    verifier, challenge = _etsy_pkce_pair()
+    import secrets
+    state = secrets.token_urlsafe(24)
+    _etsy_save_pending(state, verifier, redirect_uri)
+    from urllib.parse import urlencode
+    params = {
+        'response_type': 'code',
+        'client_id': client_id,
+        'redirect_uri': redirect_uri,
+        'scope': ETSY_OAUTH_SCOPE,
+        'state': state,
+        'code_challenge': challenge,
+        'code_challenge_method': 'S256',
+    }
+    authorize_url = f'{ETSY_OAUTH_AUTHORIZE_URL}?{urlencode(params)}'
+    return jsonify({
+        'ok': True, 'success': True,
+        'authorize_url': authorize_url,
+        'redirect_uri': redirect_uri,
+    })
+
+@app.route('/api/etsy/oauth/callback', methods=['GET'])
+def etsy_oauth_callback():
+    """Etsy redirects here after the user approves. Exchange code for tokens."""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    err = request.args.get('error')
+    if err:
+        return f'<h2>Etsy returned error: {err}</h2><p>{request.args.get("error_description","")}</p><p><a href="/">Back to app</a></p>', 400
+    if not code or not state:
+        return '<h2>Missing code/state in callback.</h2>', 400
+    pending = _etsy_load_pending()
+    if pending.get('state') != state:
+        return '<h2>State mismatch (CSRF protection).</h2><p>Restart the connect flow from the app.</p>', 400
+    if time.time() - float(pending.get('created_at') or 0) > 900:
+        _etsy_clear_pending()
+        return '<h2>Authorization expired.</h2><p>Restart the connect flow.</p>', 400
+    settings = _etsy_load_settings()
+    client_id = (settings.get('apiKey') or '').strip()
+    try:
+        _etsy_exchange_code(client_id, code, pending['code_verifier'], pending['redirect_uri'])
+    except Exception as e:
+        log.exception('etsy oauth exchange failed')
+        return f'<h2>Token exchange failed</h2><pre>{str(e)[:500]}</pre><p><a href="/">Back to app</a></p>', 500
+    finally:
+        _etsy_clear_pending()
+    _etsy_clear_auth_block()
+    _etsy_ensure_scanner_thread()
+    return '''<!doctype html><html><head><title>Etsy connected</title>
+<style>body{font-family:system-ui,Arial,sans-serif;background:#f8fafc;padding:40px;color:#0f172a;text-align:center}
+.card{background:white;max-width:520px;margin:0 auto;padding:32px;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
+h1{color:#16a34a}a{color:#0ea5e9}</style></head>
+<body><div class="card"><h1>✅ Etsy connected</h1>
+<p>Your scanner is now authorised and will start sweeping for 500+ review jewelry winners.</p>
+<p><a href="/#etsy">Back to the app</a></p>
+<script>setTimeout(function(){window.location="/#etsy"},2500);</script></div></body></html>'''
+
+@app.route('/api/etsy/oauth/disconnect', methods=['POST'])
+@login_required
+def etsy_oauth_disconnect():
+    _etsy_clear_tokens()
+    _etsy_clear_pending()
+    return jsonify({'ok': True, 'success': True})
+
+@app.route('/api/etsy/oauth/status', methods=['GET'])
+@login_required
+def etsy_oauth_status():
+    tokens = _etsy_load_tokens()
+    connected = bool(tokens.get('access_token'))
+    expires_at = float(tokens.get('expires_at') or 0) if connected else 0
+    return jsonify({
+        'success': True,
+        'connected': connected,
+        'expires_at': datetime.datetime.utcfromtimestamp(int(expires_at)).isoformat() + 'Z' if expires_at else None,
+        'has_refresh_token': bool(tokens.get('refresh_token')),
+        'suggested_redirect_uri': f'https://{request.host}/api/etsy/oauth/callback',
+    })
 
 # ===== End Etsy Jewelry Scanner section ======================================
 
