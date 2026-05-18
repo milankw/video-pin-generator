@@ -4881,6 +4881,7 @@ _etsy_scanner_state = {
 
 ETSY_DEFAULT_SETTINGS = {
     'apiKey': '',
+    'sharedSecret': '',           # Etsy v3 may require this alongside x-api-key
     'minShopSales': 0,            # No shop-sales cutoff: capture vendor diversity
     'maxShopAgeMonths': 240,      # Effectively off; UI filters by review threshold
     'minListingReviews': 500,     # Single primary criterion: 500+ reviews = winner
@@ -4932,6 +4933,7 @@ def _etsy_save_settings(settings):
         try: typed[k] = float(typed.get(k) or 0.0)
         except: typed[k] = ETSY_DEFAULT_SETTINGS[k]
     typed['apiKey'] = (typed.get('apiKey') or '').strip()
+    typed['sharedSecret'] = (typed.get('sharedSecret') or '').strip()
     if isinstance(typed.get('seedKeywords'), str):
         typed['seedKeywords'] = [s.strip() for s in typed['seedKeywords'].splitlines() if s.strip()]
     typed['seedKeywords'] = [str(s).strip() for s in (typed.get('seedKeywords') or []) if str(s).strip()]
@@ -5306,12 +5308,25 @@ def _etsy_recent_discovered_keywords(limit=50):
 
 # ---------- Etsy sync HTTP client ----------
 _etsy_last_request_ts = [0.0]
+# Auth circuit-breaker: if Etsy returns 401/403 repeatedly, stop hammering.
+# Cleared when settings are saved (key/secret may have changed) or when an
+# operator hits scan-now (to retry after Etsy approves the key).
+_etsy_auth_block = {'until': 0.0, 'message': '', 'status': 0}
+
+def _etsy_clear_auth_block():
+    _etsy_auth_block['until'] = 0.0
+    _etsy_auth_block['message'] = ''
+    _etsy_auth_block['status'] = 0
 
 def _etsy_request(path, params=None, retries=3):
     settings = _etsy_load_settings()
     api_key = (settings.get('apiKey') or '').strip()
     if not api_key:
         raise RuntimeError('Etsy API key not set')
+    # Honour auth circuit-breaker — do NOT call Etsy while we know the
+    # credentials are bad. Avoids burning daily quota on guaranteed-failures.
+    if _etsy_auth_block['until'] > time.time():
+        return None
     if _etsy_today_usage() >= int(settings.get('dailyRequestBudget') or 8000):
         log.warning('Etsy daily budget reached; pausing')
         return None
@@ -5323,12 +5338,18 @@ def _etsy_request(path, params=None, retries=3):
         time.sleep(min_interval - elapsed)
     url = f'{ETSY_API_BASE}{path}'
     headers = {'x-api-key': api_key, 'User-Agent': 'VideoPin-EtsyScanner/1.0'}
+    # Etsy v3 application-key endpoints sometimes require the shared secret
+    # alongside the key. Send it if the user has saved one.
+    shared_secret = (settings.get('sharedSecret') or '').strip()
+    if shared_secret:
+        headers['x-shared-secret'] = shared_secret
     for attempt in range(retries):
         try:
             _etsy_last_request_ts[0] = time.time()
             r = http_requests.get(url, params=params, headers=headers, timeout=30)
             _etsy_bump_usage(1)
             if r.status_code == 200:
+                _etsy_clear_auth_block()
                 return r.json()
             if r.status_code == 404:
                 return None
@@ -5338,6 +5359,19 @@ def _etsy_request(path, params=None, retries=3):
             if r.status_code >= 500:
                 time.sleep(2 ** attempt)
                 continue
+            if r.status_code in (401, 403):
+                # Auth problem — trip the breaker for 30 minutes so we don't
+                # burn through the daily budget while waiting for Etsy approval
+                # or a corrected secret. Operator can clear by saving settings
+                # or hitting Scan Now.
+                _etsy_auth_block['until'] = time.time() + 1800
+                _etsy_auth_block['status'] = r.status_code
+                try:
+                    _etsy_auth_block['message'] = (r.json() or {}).get('error', r.text[:200])
+                except Exception:
+                    _etsy_auth_block['message'] = r.text[:200]
+                log.error('Etsy %s -> %s (auth-block 30min): %s', path, r.status_code, _etsy_auth_block['message'])
+                return None
             log.error('Etsy %s -> %s: %s', path, r.status_code, r.text[:200])
             return None
         except http_requests.exceptions.RequestException as e:
@@ -5683,10 +5717,13 @@ def etsy_stats_route():
         if not ts: return None
         try: return datetime.datetime.utcfromtimestamp(int(ts)).isoformat() + 'Z'
         except: return None
-    # Frontend reads these field names directly (flat)
+    # Surface auth-block state to the UI so the user sees why nothing scans
+    now_ts = time.time()
+    auth_blocked = _etsy_auth_block['until'] > now_ts
     flat = {
         'success': True,
         'has_api_key': bool(settings.get('apiKey')),
+        'has_shared_secret': bool(settings.get('sharedSecret')),
         'scanner_running': _etsy_scanner_state['running'],
         'winners': s.get('winners', 0),
         'shops': s.get('winner_shops', 0),
@@ -5699,6 +5736,10 @@ def etsy_stats_route():
         'next_sweep': _iso(next_sweep_at),
         'last_sweep': _iso(last_sweep_at),
         'top_vendors': s.get('top_vendors', []),
+        'auth_blocked': auth_blocked,
+        'auth_error': _etsy_auth_block['message'] if auth_blocked else '',
+        'auth_status': _etsy_auth_block['status'] if auth_blocked else 0,
+        'auth_block_until': _iso(_etsy_auth_block['until']) if auth_blocked else None,
     }
     return jsonify(flat)
 
@@ -5712,7 +5753,10 @@ def etsy_get_settings():
     s_safe['apiKey'] = ''
     s_safe['hasApiKey'] = bool(key)
     s_safe['apiKeyPreview'] = (key[:4] + '...' + key[-4:]) if len(key) >= 10 else ('set' if key else '')
-    # Return flat (frontend reads fields directly)
+    secret = s.get('sharedSecret') or ''
+    s_safe['sharedSecret'] = ''
+    s_safe['hasSharedSecret'] = bool(secret)
+    s_safe['sharedSecretPreview'] = (secret[:4] + '...' + secret[-4:]) if len(secret) >= 10 else ('set' if secret else '')
     return jsonify(s_safe)
 
 @app.route('/api/etsy/settings', methods=['POST'])
@@ -5720,19 +5764,29 @@ def etsy_get_settings():
 def etsy_post_settings():
     body = request.get_json(silent=True) or {}
     current = _etsy_load_settings()
-    # Only overwrite apiKey if a non-empty one was provided (allows partial save)
+    # Only overwrite secrets if a non-empty value was provided (allows partial save)
     new_key = (body.get('apiKey') or '').strip()
+    new_secret = (body.get('sharedSecret') or '').strip() if 'sharedSecret' in body else None
     merged = dict(current)
     for k, v in body.items():
         if k == 'apiKey':
             if new_key:
                 merged['apiKey'] = new_key
+        elif k == 'sharedSecret':
+            if new_secret:
+                merged['sharedSecret'] = new_secret
         else:
             merged[k] = v
     saved = _etsy_save_settings(merged)
+    # Credentials may have changed — give the scanner a fresh chance.
+    _etsy_clear_auth_block()
     _etsy_ensure_scanner_thread()
-    # Frontend reads `ok`
-    return jsonify({'ok': True, 'success': True, 'savedKeys': sorted(body.keys()), 'hasApiKey': bool(saved.get('apiKey'))})
+    return jsonify({
+        'ok': True, 'success': True,
+        'savedKeys': sorted(body.keys()),
+        'hasApiKey': bool(saved.get('apiKey')),
+        'hasSharedSecret': bool(saved.get('sharedSecret')),
+    })
 
 @app.route('/api/etsy/winners', methods=['GET'])
 @login_required
@@ -5818,6 +5872,9 @@ def etsy_scan_now():
     settings = _etsy_load_settings()
     if not settings.get('apiKey'):
         return jsonify({'ok': False, 'success': False, 'error': 'Etsy API key not configured. Save it first.'}), 400
+    # Manual trigger clears the auth circuit-breaker so the user can retry
+    # after Etsy approves the key or after correcting the shared secret.
+    _etsy_clear_auth_block()
     if _etsy_scanner_state['running']:
         return jsonify({'ok': True, 'success': True, 'already_running': True, 'status': 'already_running'})
     t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')

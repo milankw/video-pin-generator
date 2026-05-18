@@ -2257,12 +2257,20 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="form-row">
         <div class="form-group" style="flex:2;">
           <label>Etsy API Key (keystring)</label>
-          <div style="display:flex;gap:8px;">
-            <input type="password" id="etsy-api-key" placeholder="Leave blank to keep current" autocomplete="off">
-            <button class="btn btn-primary" onclick="etsySaveSettings()">Save</button>
-          </div>
+          <input type="password" id="etsy-api-key" placeholder="Leave blank to keep current" autocomplete="off">
           <div class="form-hint" id="etsy-key-hint">Current: not set</div>
         </div>
+        <div class="form-group" style="flex:2;">
+          <label>Etsy Shared Secret</label>
+          <input type="password" id="etsy-shared-secret" placeholder="Leave blank to keep current" autocomplete="off">
+          <div class="form-hint" id="etsy-secret-hint">Current: not set</div>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;align-self:flex-end;">
+          <button class="btn btn-primary" onclick="etsySaveSettings()">Save credentials</button>
+        </div>
+      </div>
+
+      <div class="form-row">
         <div class="form-group">
           <label>Min Reviews to count as Winner</label>
           <input type="number" id="etsy-min-listing-reviews" min="50">
@@ -5957,10 +5965,22 @@ async function etsyLoadStats() {
       if (indicator) { indicator.textContent = 'Idle'; indicator.className = 'etsy-status-idle'; }
       if (btn) { btn.disabled = false; btn.textContent = 'Scan Now'; }
     }
-    // API key status banner
+    // Status banner (priority: auth error > no key > waiting for scan > hidden)
     const banner = document.getElementById('etsy-status-banner');
     if (banner) {
-      if (!data.has_api_key) {
+      if (data.auth_blocked) {
+        banner.className = 'alert alert-error';
+        banner.style.display = 'block';
+        const msg = data.auth_error || 'Etsy rejected the request';
+        const status = data.auth_status || '';
+        const needsSecret = /shared secret|incorrect shared secret/i.test(msg);
+        banner.innerHTML = '<b>Etsy auth failed' + (status ? ' (HTTP ' + status + ')' : '') + ':</b> '
+          + etsyEscape(msg)
+          + (needsSecret
+              ? '<br>Open <b>&#9881; Settings</b> and paste your <b>Shared Secret</b> from the Etsy developer dashboard.'
+              : '<br>This usually means the key is still <i>Pending Personal Approval</i> at Etsy. Scanner will retry after Etsy approves it.')
+          + ' Calls paused for 30 min to protect your daily quota.';
+      } else if (!data.has_api_key) {
         banner.className = 'alert alert-warning';
         banner.style.display = 'block';
         banner.innerHTML = '<b>No API key set.</b> Click the &#9881; gear icon to paste your Etsy keystring. The scanner starts automatically once saved.';
@@ -6034,6 +6054,16 @@ async function etsyLoadSettings() {
         hint.style.color = 'var(--gray-500)';
       }
     }
+    const secretHint = document.getElementById('etsy-secret-hint');
+    if (secretHint) {
+      if (s.hasSharedSecret) {
+        secretHint.textContent = 'Current: ' + (s.sharedSecretPreview || 'set') + ' \u2713';
+        secretHint.style.color = '#16a34a';
+      } else {
+        secretHint.textContent = 'Current: not set';
+        secretHint.style.color = 'var(--gray-500)';
+      }
+    }
   } catch(e) { console.error('etsyLoadSettings', e); }
 }
 
@@ -6047,11 +6077,14 @@ async function etsySaveSettings() {
     };
     const apiKeyEl = document.getElementById('etsy-api-key');
     const apiKey = apiKeyEl ? apiKeyEl.value.trim() : '';
+    const secretEl = document.getElementById('etsy-shared-secret');
+    const sharedSecret = secretEl ? secretEl.value.trim() : '';
     const kwBox = document.getElementById('etsy-seed-keywords');
     const seedKwRaw = (kwBox && kwBox.value) || '';
     const seedKeywords = seedKwRaw.split('\n').map(x => x.trim()).filter(Boolean);
     const body = {
       apiKey: apiKey,
+      sharedSecret: sharedSecret,
       minShopSales: getNum('etsy-min-shop-sales'),
       maxShopAgeMonths: getNum('etsy-max-shop-age'),
       minListingReviews: getNum('etsy-min-listing-reviews'),
@@ -6067,8 +6100,9 @@ async function etsySaveSettings() {
     Object.keys(body).forEach(k => body[k] === undefined && delete body[k]);
     const res = await api('/api/etsy/settings', 'POST', body);
     if (res && (res.ok || res.success)) {
-      toast('Etsy settings saved' + (apiKey ? ' \u2014 scanner ready' : ''), 'success');
+      toast('Etsy settings saved' + (apiKey || sharedSecret ? ' \u2014 scanner ready' : ''), 'success');
       if (apiKeyEl) apiKeyEl.value = '';
+      if (secretEl) secretEl.value = '';
       etsyLoadSettings();
       etsyLoadStats();
     } else {
