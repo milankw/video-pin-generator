@@ -5468,7 +5468,13 @@ def _etsy_request(path, params=None, retries=3):
     if elapsed < min_interval:
         time.sleep(min_interval - elapsed)
     url = f'{ETSY_API_BASE}{path}'
-    headers = {'x-api-key': api_key, 'User-Agent': 'VideoPin-EtsyScanner/1.0'}
+    # Etsy v3 wants the keystring (and optionally the shared secret) in x-api-key.
+    # When a shared secret is configured, Etsy requires the format
+    #   x-api-key: <keystring>:<shared_secret>
+    # (separate x-shared-secret header is rejected with 403).
+    shared_secret = (settings.get('sharedSecret') or '').strip()
+    api_key_header = f'{api_key}:{shared_secret}' if shared_secret else api_key
+    headers = {'x-api-key': api_key_header, 'User-Agent': 'VideoPin-EtsyScanner/1.0'}
     # Etsy v3 requires a Bearer access token from OAuth on most data endpoints.
     access_token = _etsy_get_access_token()
     if access_token:
