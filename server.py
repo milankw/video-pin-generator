@@ -5522,9 +5522,11 @@ def _etsy_request(path, params=None, retries=3):
     return None
 
 def _etsy_find_listings(keyword, taxonomy_id=None, limit=100, offset=0):
+    # NOTE: Etsy v3 /listings/active silently ignores `includes`. Shop & images must
+    # be fetched separately (and lazily) — see _etsy_get_shop_cached / _etsy_get_listing_images.
     params = {
         'keywords': keyword, 'limit': limit, 'offset': offset,
-        'sort_on': 'score', 'sort_order': 'descending', 'includes': 'Shop,Images',
+        'sort_on': 'score', 'sort_order': 'descending',
     }
     if taxonomy_id:
         params['taxonomy_id'] = taxonomy_id
@@ -5533,12 +5535,30 @@ def _etsy_find_listings(keyword, taxonomy_id=None, limit=100, offset=0):
 def _etsy_get_shop(shop_id):
     return _etsy_request(f'/shops/{shop_id}')
 
-def _etsy_get_shop_listings(shop_id, limit=50, offset=0):
-    return _etsy_request(f'/shops/{shop_id}/listings/active',
-                         {'limit': limit, 'offset': offset, 'includes': 'Images'})
+# Process-wide shop cache: shop stats change slowly so a 24h TTL is safe.
+# Eliminates the most common API duplication (same shop returned by many keyword searches).
+_ETSY_SHOP_CACHE = {}
+_ETSY_SHOP_CACHE_TTL_SEC = 24 * 60 * 60
 
-def _etsy_get_listing_reviews(listing_id, limit=1):
-    return _etsy_request(f'/listings/{listing_id}/reviews', {'limit': limit})
+def _etsy_get_shop_cached(shop_id):
+    """Fetch shop data with in-process TTL cache. Returns raw shop dict (or None)."""
+    now = time.time()
+    entry = _ETSY_SHOP_CACHE.get(shop_id)
+    if entry and (now - entry[0]) < _ETSY_SHOP_CACHE_TTL_SEC:
+        return entry[1]
+    raw = _etsy_get_shop(shop_id)
+    if raw:
+        _ETSY_SHOP_CACHE[shop_id] = (now, raw)
+    return raw
+
+def _etsy_get_listing_images(listing_id):
+    """Fetch images for a single listing. Called lazily only for winner candidates."""
+    return _etsy_request(f'/listings/{listing_id}/images', {})
+
+def _etsy_get_shop_listings(shop_id, limit=50, offset=0):
+    # `includes=Images` is also ignored here; images fetched lazily.
+    return _etsy_request(f'/shops/{shop_id}/listings/active',
+                         {'limit': limit, 'offset': offset})
 
 
 # ---------- Scanner: scoring + normalization ----------
@@ -5642,16 +5662,25 @@ def _etsy_extract_keywords_from_listing(raw):
             out.append((bg, 'title-bigram'))
     return out
 
-def _etsy_review_metrics(listing_id, shop_age_months):
-    data = _etsy_get_listing_reviews(listing_id, limit=1)
-    if not data: return 0, 0.0
-    total = int(data.get('count') or 0)
-    if total <= 0: return 0, 0.0
-    months = max(1.0, min(shop_age_months, 60.0))
-    return total, round(total / months, 2)
+def _etsy_review_metrics_from_shop(shop_norm):
+    """Per-listing review counts aren't available on Etsy v3 (the endpoint 404s),
+    so we use the shop-level review_count as the per-listing review proxy.
+    This actually matches the 'bestseller for that vendor' mental model better:
+    a winning vendor is identified by their total review_count, not per-listing."""
+    total = int(shop_norm.get('review_count') or 0)
+    age = max(1.0, min(float(shop_norm.get('age_months') or 1.0), 60.0))
+    velocity = round(total / age, 2) if total else 0.0
+    return total, velocity
 
 def _etsy_scan_one(keyword, source, settings):
-    """Scan one keyword. Returns (winners_count, candidate_keywords_added)."""
+    """Scan one keyword. Returns (winners_count, candidate_keywords_added).
+
+    New architecture (post v3 includes-broken finding):
+      1. Pull listings page (1 API call per 100 listings).
+      2. Group by shop_id; fetch each unique shop ONCE per sweep via TTL cache.
+      3. Apply shop-level gates (review_count is the per-listing review proxy).
+      4. Only fetch images for winning listings (lazy, saves ~99% of image calls).
+    """
     run_id = _etsy_record_run(
         started_at=int(time.time()),
         keyword=keyword, source=source, status='running')
@@ -5660,7 +5689,8 @@ def _etsy_scan_one(keyword, source, settings):
     err = None
     new_keywords = []
     try:
-        shop_cache = {}
+        # Per-sweep shop cache (normalized form); _ETSY_SHOP_CACHE handles raw API caching.
+        sweep_shops = {}
         for page in range(int(settings.get('maxPagesPerKeyword') or 2)):
             data = _etsy_find_listings(
                 keyword,
@@ -5670,21 +5700,33 @@ def _etsy_scan_one(keyword, source, settings):
             if not data: break
             results = data.get('results') or []
             if not results: break
+            min_reviews = int(settings.get('minListingReviews') or 0)
+            min_favs = int(settings.get('minListingFavorites') or 0)
             for raw in results:
                 listings_seen += 1
-                shop_obj = raw.get('shop')
-                if not shop_obj: continue
-                sid = shop_obj['shop_id']
-                if sid not in shop_cache:
-                    shop_cache[sid] = _etsy_norm_shop(shop_obj)
+                sid = raw.get('shop_id')
+                if not sid:
+                    continue
+                # Cheap pre-filter before fetching shop: if user demands favorites and
+                # this listing has none, skip the shop lookup entirely.
+                if min_favs > 0 and int(raw.get('num_favorers') or 0) < min_favs:
+                    continue
+                # Fetch (or re-use) the shop record
+                if sid not in sweep_shops:
+                    shop_raw = _etsy_get_shop_cached(sid)
+                    if not shop_raw:
+                        continue
+                    sweep_shops[sid] = _etsy_norm_shop(shop_raw)
                     shops_seen += 1
-                shop = shop_cache[sid]
-                if shop['transaction_sold_count'] < settings['minShopSales']: continue
-                if shop['age_months'] > settings['maxShopAgeMonths']: continue
+                shop = sweep_shops[sid]
+                # Shop-level gates first (cheap, drops most candidates)
+                if shop['transaction_sold_count'] < settings.get('minShopSales', 0): continue
+                if shop['age_months'] > settings.get('maxShopAgeMonths', 9999): continue
+                if shop['review_count'] < min_reviews: continue
                 listing = _etsy_norm_listing(raw, sid, keyword)
-                if listing['num_favorers'] < settings['minListingFavorites']: continue
-                # Enrich with review counts (1 extra API call per listing)
-                rcount, rvel = _etsy_review_metrics(listing['listing_id'], shop['age_months'])
+                if listing['num_favorers'] < min_favs: continue
+                # Reviews & velocity come from shop (per-listing reviews endpoint is gone)
+                rcount, rvel = _etsy_review_metrics_from_shop(shop)
                 listing['listing_reviews'] = rcount
                 listing['review_velocity'] = rvel
                 listing['score'] = _etsy_score(rcount, rvel, listing['num_favorers'],
@@ -5695,13 +5737,26 @@ def _etsy_scan_one(keyword, source, settings):
                 if winner:
                     shop['is_winner'] = 1
                     winners_found += 1
+                    # Lazy: fetch images only for actual winners
+                    if not listing.get('image_url'):
+                        try:
+                            img_data = _etsy_get_listing_images(listing['listing_id'])
+                            if img_data and img_data.get('results'):
+                                urls = [im.get('url_fullxfull') for im in img_data['results']
+                                        if im.get('url_fullxfull')]
+                                if urls:
+                                    listing['image_url'] = urls[0]
+                                    listing['image_urls'] = json.dumps(urls)
+                        except Exception as ie:
+                            log.warning('Image fetch failed for listing %s: %s',
+                                        listing['listing_id'], ie)
                     # Self-expanding discovery: learn from winners
                     for kw, src in _etsy_extract_keywords_from_listing(raw):
                         _etsy_add_keyword(kw, source=src)
                         new_keywords.append(kw)
                 _etsy_upsert_shop(shop)
                 _etsy_upsert_listing(listing)
-            for s in shop_cache.values():
+            for s in sweep_shops.values():
                 _etsy_upsert_shop(s)
         status = 'ok'
     except Exception as e:
@@ -5726,16 +5781,17 @@ def _etsy_scan_shop_listings(shop_id, settings):
     api_before = _etsy_today_usage()
     err = None
     try:
-        shop_raw = _etsy_get_shop(shop_id)
+        shop_raw = _etsy_get_shop_cached(shop_id)
         if not shop_raw: return 0
         shop = _etsy_norm_shop(shop_raw)
         data = _etsy_get_shop_listings(shop_id, limit=50)
         if not data: return 0
+        min_favs = int(settings.get('minListingFavorites') or 0)
         for raw in (data.get('results') or []):
             listings_seen += 1
             listing = _etsy_norm_listing(raw, shop_id, f'shop:{shop_id}')
-            if listing['num_favorers'] < settings['minListingFavorites']: continue
-            rcount, rvel = _etsy_review_metrics(listing['listing_id'], shop['age_months'])
+            if listing['num_favorers'] < min_favs: continue
+            rcount, rvel = _etsy_review_metrics_from_shop(shop)
             listing['listing_reviews'] = rcount
             listing['review_velocity'] = rvel
             listing['score'] = _etsy_score(rcount, rvel, listing['num_favorers'],
@@ -5746,6 +5802,18 @@ def _etsy_scan_shop_listings(shop_id, settings):
             if winner:
                 shop['is_winner'] = 1
                 winners_found += 1
+                if not listing.get('image_url'):
+                    try:
+                        img_data = _etsy_get_listing_images(listing['listing_id'])
+                        if img_data and img_data.get('results'):
+                            urls = [im.get('url_fullxfull') for im in img_data['results']
+                                    if im.get('url_fullxfull')]
+                            if urls:
+                                listing['image_url'] = urls[0]
+                                listing['image_urls'] = json.dumps(urls)
+                    except Exception as ie:
+                        log.warning('Image fetch failed for listing %s: %s',
+                                    listing['listing_id'], ie)
                 for kw, src in _etsy_extract_keywords_from_listing(raw):
                     _etsy_add_keyword(kw, source=src)
             _etsy_upsert_listing(listing)
