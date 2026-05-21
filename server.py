@@ -5879,6 +5879,38 @@ def _etsy_full_sweep():
         except Exception:
             pass
 
+def _etsy_single_keyword_sweep(keyword, source='manual'):
+    """Scan exactly one user-supplied keyword. Used by the 'Scan on Etsy' button.
+    Auto-adds the keyword to the queue so it's tracked for future sweeps."""
+    if _etsy_scanner_state['running']:
+        log.info('Etsy single-kw sweep skipped: a sweep is already running')
+        return
+    _etsy_scanner_state['running'] = True
+    _etsy_scanner_state['current_keyword'] = keyword
+    started = time.time()
+    try:
+        settings = _etsy_load_settings()
+        if not settings.get('apiKey'):
+            log.warning('Etsy single-kw sweep skipped: no API key'); return
+        kw = (keyword or '').strip()
+        if not kw:
+            log.warning('Etsy single-kw sweep skipped: empty keyword'); return
+        # Make sure it's in the queue so future sweeps remember it
+        try: _etsy_add_keyword(kw, source=source)
+        except Exception: pass
+        budget = int(settings.get('dailyRequestBudget') or 4500)
+        if _etsy_today_usage() >= budget:
+            log.warning('Etsy single-kw sweep skipped: daily budget reached'); return
+        try:
+            _etsy_scan_one(kw, source=source, settings=settings)
+        except Exception:
+            log.exception('Etsy single-kw scan failed: %s', kw)
+        log.info('Etsy single-kw sweep complete (%s) in %.1fs', kw, time.time() - started)
+    finally:
+        _etsy_scanner_state['running'] = False
+        _etsy_scanner_state['stop_requested'] = False
+        _etsy_scanner_state['current_keyword'] = None
+
 def _etsy_scanner_loop():
     log.info('Etsy scanner background loop started')
     _etsy_scanner_state['started_at'] = int(time.time())
@@ -6101,6 +6133,29 @@ def etsy_scan_now():
     t = threading.Thread(target=_etsy_full_sweep, daemon=True, name='etsy-manual-sweep')
     t.start()
     return jsonify({'ok': True, 'success': True, 'status': 'started'})
+
+@app.route('/api/etsy/scan-keyword', methods=['POST'])
+@login_required
+def etsy_scan_keyword():
+    """Scan a single user-supplied keyword (e.g. 'silver ring') immediately.
+    Independent of the queue/sweep loop."""
+    payload = request.get_json(silent=True) or {}
+    kw = (payload.get('keyword') or '').strip()
+    if not kw:
+        return jsonify({'ok': False, 'success': False, 'error': 'keyword required'}), 400
+    if len(kw) > 80:
+        return jsonify({'ok': False, 'success': False, 'error': 'keyword too long'}), 400
+    settings = _etsy_load_settings()
+    if not settings.get('apiKey'):
+        return jsonify({'ok': False, 'success': False, 'error': 'Etsy API key not configured'}), 400
+    _etsy_clear_auth_block()
+    if _etsy_scanner_state['running']:
+        return jsonify({'ok': True, 'success': True, 'already_running': True, 'status': 'already_running',
+                        'current_keyword': _etsy_scanner_state.get('current_keyword')})
+    t = threading.Thread(target=_etsy_single_keyword_sweep, args=(kw,), daemon=True,
+                        name=f'etsy-keyword-{kw[:20]}')
+    t.start()
+    return jsonify({'ok': True, 'success': True, 'status': 'started', 'keyword': kw})
 
 @app.route('/api/etsy/stop-scan', methods=['POST'])
 @login_required

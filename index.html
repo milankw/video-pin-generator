@@ -2205,7 +2205,8 @@ textarea { resize: vertical; min-height: 80px; }
 
     <!-- Inline filters row -->
     <div class="etsy-filters">
-      <input type="text" id="etsy-search" placeholder="Search title, vendor, keyword..." oninput="etsyDebouncedReload()">
+      <input type="text" id="etsy-search" placeholder="Search saved winners or scan Etsy for a new keyword..." oninput="etsyDebouncedReload()" onkeydown="if(event.key==='Enter'){event.preventDefault();etsyScanKeyword();}">
+      <button id="etsy-scan-keyword-btn" class="btn-primary" onclick="etsyScanKeyword()" title="Fetch fresh Etsy listings for the typed keyword (uses API credits)" style="white-space:nowrap;">Scan on Etsy</button>
       <select id="etsy-min-reviews-filter" onchange="etsyLoadWinners()" title="Minimum reviews">
         <option value="500" selected>&#11088; 500+ reviews</option>
         <option value="1000">&#11088; 1000+ reviews</option>
@@ -6265,6 +6266,48 @@ async function etsyScanNow() {
 
 function etsyExportCsv() {
   window.location.href = '/api/etsy/export.csv';
+}
+
+async function etsyScanKeyword() {
+  const input = document.getElementById('etsy-search');
+  const btn = document.getElementById('etsy-scan-keyword-btn');
+  const kw = (input && input.value || '').trim();
+  if (!kw) { toast('Type a keyword first (e.g. "silver ring")', 'info'); input && input.focus(); return; }
+  if (kw.length > 80) { toast('Keyword too long (max 80 chars)', 'error'); return; }
+  if (!confirm('Scan Etsy for "' + kw + '" right now?\n\nThis will use API credits (typically 5\u201350 calls).')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
+  try {
+    const res = await api('/api/etsy/scan-keyword', 'POST', { keyword: kw });
+    if (res && (res.ok || res.success)) {
+      if (res.already_running) {
+        toast('A scan is already running' + (res.current_keyword ? ' (' + res.current_keyword + ')' : ''), 'info');
+      } else {
+        toast('Scanning "' + kw + '" on Etsy...', 'success');
+        // Poll stats; when scanner stops, reload winners list filtered to this keyword
+        let polls = 0;
+        const iv = setInterval(async () => {
+          polls++;
+          try {
+            const st = await fetch('/api/etsy/stats').then(r => r.json());
+            etsyRenderStats && etsyRenderStats(st);
+            if (!st.scanner_running || polls > 60) {
+              clearInterval(iv);
+              if (btn) { btn.disabled = false; btn.textContent = 'Scan on Etsy'; }
+              etsyLoadWinners && etsyLoadWinners();
+              toast('Scan finished for "' + kw + '"', 'success');
+            }
+          } catch(e) { /* keep polling */ }
+        }, 2000);
+      }
+    } else {
+      toast('Failed: ' + (res && res.error ? res.error : 'unknown'), 'error');
+      if (btn) { btn.disabled = false; btn.textContent = 'Scan on Etsy'; }
+    }
+  } catch(e) {
+    console.error('etsyScanKeyword', e);
+    toast('Failed to start keyword scan', 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Scan on Etsy'; }
+  }
 }
 
 // ----- OAuth helpers -----
