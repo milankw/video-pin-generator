@@ -4719,23 +4719,95 @@ def _jewelry_get_or_create_collection(name):
 
 
 def _jewelry_load_store_winners(store_id, min_sales):
-    """Read cached winners for a store from the same cache the Lara Green tab uses.
-    Returns a list of product dicts that hit the min_sales threshold."""
-    cache_path = _collection_cache_path(store_id)
-    if not os.path.exists(cache_path):
+    """Read cached winners for a store from the same cache the Winners tab uses
+    (data/winner_cache/<store_id>.json). The cache is a dict keyed by product_id
+    with quantity/revenue. Returns a list of normalized product dicts that
+    hit the min_sales threshold. Image and handle are filled in by enrichment."""
+    cache = _load_winner_cache(store_id)
+    if not cache:
         return []
-    try:
-        with open(cache_path) as f:
-            cache = json.load(f)
-    except Exception:
-        return []
-    products = cache.get('products') or []
     out = []
-    for p in products:
-        sales = int(p.get('sales') or 0)
-        if sales >= min_sales:
-            out.append(p)
+    for pid, p in cache.items():
+        qty = int(p.get('quantity') or 0)
+        if qty < min_sales:
+            continue
+        out.append({
+            'id': str(p.get('product_id') or pid),
+            'name': p.get('title') or '',
+            'handle': '',  # filled by _jewelry_enrich_products
+            'sales': qty,
+            'revenue': float(p.get('revenue') or 0),
+            'image': '',   # filled by _jewelry_enrich_products
+        })
     return out
+
+
+def _jewelry_enrich_products(store, products):
+    """Batch-fetch live product details (handle + main image) for a list of
+    normalized product dicts. Mutates each dict in-place. Best-effort; products
+    that no longer exist on the platform keep empty handle/image."""
+    if not products:
+        return
+    platform, domain, token = _get_store_credentials(store)
+    if not domain or not token:
+        return
+    pid_to_prod = {p['id']: p for p in products}
+    all_pids = list(pid_to_prod.keys())
+    if platform == 'shopify':
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        base_url = f'https://{domain}/admin/api/2024-01'
+        for i in range(0, len(all_pids), 250):
+            batch_ids = ','.join(str(pid) for pid in all_pids[i:i+250])
+            try:
+                pr = http_requests.get(
+                    f'{base_url}/products.json?ids={batch_ids}&limit=250&fields=id,handle,images',
+                    headers=headers, timeout=30
+                )
+                if pr.status_code == 200:
+                    for prod in pr.json().get('products', []):
+                        pid = str(prod.get('id'))
+                        target = pid_to_prod.get(pid)
+                        if not target:
+                            continue
+                        target['handle'] = prod.get('handle') or ''
+                        imgs = prod.get('images') or []
+                        if imgs:
+                            src = imgs[0].get('src') or ''
+                            if src.startswith('//'):
+                                src = 'https:' + src
+                            target['image'] = src
+                time.sleep(0.3)
+            except Exception as e:
+                log.warning('Jewelry enrich batch failed: %s', e)
+    elif platform == 'shoplazza':
+        headers = _shoplazza_headers(token)
+        base_url = f'https://{domain}/openapi/{SHOPLAZZA_API_VERSION}'
+        for i in range(0, len(all_pids), 100):
+            batch_ids = ','.join(str(pid) for pid in all_pids[i:i+100])
+            try:
+                pr = _shoplazza_get_with_retry(
+                    f'{base_url}/products', headers,
+                    params={'ids': batch_ids, 'page_size': 100}, timeout=30,
+                )
+                if pr is not None and pr.status_code == 200:
+                    body = pr.json() or {}
+                    data_block = body.get('data') if isinstance(body.get('data'), dict) else body
+                    prods = data_block.get('products') or body.get('products') or []
+                    for prod in prods:
+                        pid = str(prod.get('id'))
+                        target = pid_to_prod.get(pid)
+                        if not target:
+                            continue
+                        target['handle'] = prod.get('handle') or prod.get('seo_handle') or ''
+                        imgs = prod.get('images') or []
+                        if imgs:
+                            src = (imgs[0] or {}).get('src') or (imgs[0] or {}).get('url') or ''
+                            if src.startswith('//'):
+                                src = 'https:' + src
+                            target['image'] = src
+                time.sleep(0.5)
+            except Exception as e:
+                log.warning('Jewelry enrich (shoplazza) batch failed: %s', e)
 
 
 def _jewelry_scan_worker(store_ids, min_sales, collection_name, store_names_by_id, download_images):
@@ -4764,12 +4836,22 @@ def _jewelry_scan_worker(store_ids, min_sales, collection_name, store_names_by_i
         existing = live_node.setdefault('products', [])
         existing_ids = set(p.get('id') for p in existing if p.get('id'))
 
+        # Cache store records for credential lookup
+        all_stores = _load_stores()
+        store_by_id = {s.get('id'): s for s in all_stores}
         for sid in store_ids:
             state['current_store'] = store_names_by_id.get(sid, sid)
             try:
                 winners = _jewelry_load_store_winners(sid, min_sales)
                 log.info('Jewelry scan: %s -> %d products at >= %d sales',
                          state['current_store'], len(winners), min_sales)
+                # Enrich with handle + image from live platform API
+                store_rec_local = store_by_id.get(sid)
+                if store_rec_local and winners:
+                    try:
+                        _jewelry_enrich_products(store_rec_local, winners)
+                    except Exception as e:
+                        log.warning('Enrichment failed for %s: %s', sid, e)
                 for p in winners:
                     pid_raw = p.get('id') or p.get('handle')
                     if not pid_raw:
@@ -4787,15 +4869,8 @@ def _jewelry_scan_worker(store_ids, min_sales, collection_name, store_names_by_i
                             state['images_saved'] += 1
                     # Build the product card record
                     handle = p.get('handle') or ''
-                    store_domain = ''
-                    # Use the known myshopify domain from stores.json
-                    try:
-                        stores = _load_stores()
-                        store_rec = next((s for s in stores if s.get('id') == sid), None)
-                        if store_rec:
-                            store_domain = store_rec.get('domain') or ''
-                    except Exception:
-                        pass
+                    store_rec = store_by_id.get(sid) or {}
+                    store_domain = store_rec.get('domain') or ''
                     product_url = ''
                     if store_domain and handle:
                         product_url = f'https://{store_domain}/products/{handle}'
@@ -4932,19 +5007,18 @@ def jewelry_winners_store_summary():
     for s in stores:
         sid = s.get('id')
         if not sid: continue
-        cache_path = _collection_cache_path(sid)
+        cache_path = _winner_cache_path(sid)
         has_cache = os.path.exists(cache_path)
         qualified = 0
         total = 0
         synced_at = None
         if has_cache:
             try:
-                with open(cache_path) as f:
-                    c = json.load(f)
-                products = c.get('products') or []
-                total = len(products)
-                qualified = sum(1 for p in products if int(p.get('sales') or 0) >= min_sales)
-                synced_at = c.get('syncedAt') or c.get('updatedAt')
+                cache = _load_winner_cache(sid) or {}
+                total = len(cache)
+                qualified = sum(1 for p in cache.values() if int(p.get('quantity') or 0) >= min_sales)
+                meta = _load_winner_meta(sid) or {}
+                synced_at = meta.get('synced_at') or meta.get('updated_at') or meta.get('finished_at')
             except Exception:
                 pass
         out.append({
