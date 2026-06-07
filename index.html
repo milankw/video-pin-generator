@@ -1669,6 +1669,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="collections">Collections</div>
   <div class="tab" data-tab="analytics">Analytics</div>
   <div class="tab" data-tab="etsy">Etsy Winners <span class="badge badge-purple" id="etsy-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="jewelry-winners">Jewelry Winners <span class="badge badge-purple" id="jw-badge" style="display:none">0</span></div>
 </div>
 
 <!-- Content -->
@@ -2359,6 +2360,69 @@ textarea { resize: vertical; min-height: 80px; }
   </div>
   <!-- ===== END ETSY TAB ===== -->
 
+  <!-- ===== JEWELRY WINNERS TAB ===== -->
+  <div class="tab-panel" id="panel-jewelry-winners">
+    <div class="section-card" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0;font-size:18px;">Jewelry Winners</h2>
+          <div style="color:var(--gray-600);font-size:13px;margin-top:4px;">Select stores, set a minimum sales threshold, and add qualifying products to a named collection. Main images are saved locally.</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="jwLoadStoreSummary()">Refresh stores</button>
+      </div>
+
+      <div class="form-row" style="margin-top:14px;">
+        <div class="form-group" style="flex:2;">
+          <label>Destination collection name</label>
+          <input type="text" id="jw-collection-name" placeholder="e.g. Jewelry winners — Jun 2026" value="Jewelry winners">
+        </div>
+        <div class="form-group" style="flex:1;">
+          <label>Min sales (per product)</label>
+          <input type="number" id="jw-min-sales" value="3" min="1" max="10000" onchange="jwOnMinSalesChange()">
+        </div>
+        <div class="form-group" style="flex:1;display:flex;align-items:flex-end;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:500;">
+            <input type="checkbox" id="jw-download-images" checked> Download images
+          </label>
+        </div>
+        <div class="form-group" style="flex:0 0 auto;display:flex;align-items:flex-end;">
+          <button class="btn btn-primary" id="jw-scan-btn" onclick="jwScanStart()">Scan now</button>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="jwSelectAll(true)">Select all</button>
+          <button class="btn btn-secondary btn-sm" onclick="jwSelectJewelry()">Select jewelry only</button>
+          <button class="btn btn-secondary btn-sm" onclick="jwSelectAll(false)">Deselect all</button>
+          <span id="jw-selected-summary" style="color:var(--gray-600);font-size:13px;align-self:center;"></span>
+        </div>
+        <div id="jw-progress" style="color:var(--gray-600);font-size:13px;"></div>
+      </div>
+    </div>
+
+    <div class="section-card" style="padding:16px;margin-top:14px;">
+      <h3 style="margin:0 0 10px 0;font-size:15px;">Stores</h3>
+      <div id="jw-store-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;">
+        <div style="color:var(--gray-500);">Loading stores…</div>
+      </div>
+    </div>
+
+    <div class="section-card" style="padding:16px;margin-top:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h3 style="margin:0;font-size:15px;">Latest results</h3>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span id="jw-results-count" style="color:var(--gray-600);font-size:13px;"></span>
+          <a id="jw-open-collection" class="btn btn-secondary btn-sm" href="#" style="display:none;" onclick="jwOpenCollection(event)">Open in Collections →</a>
+        </div>
+      </div>
+      <div id="jw-results-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-top:12px;">
+        <div style="color:var(--gray-500);grid-column:1/-1;">No scan yet. Pick stores above and click Scan now.</div>
+      </div>
+    </div>
+  </div>
+  <!-- ===== END JEWELRY WINNERS TAB ===== -->
+
 </div>
 
 <!-- Toast container -->
@@ -2528,6 +2592,7 @@ document.querySelectorAll('.tab').forEach(tab => {
       loadAnalytics();
     }
     if (tab.dataset.tab === 'etsy') { etsyOnTabOpen(); }
+    if (tab.dataset.tab === 'jewelry-winners') { jwOnTabOpen(); }
   });
 });
 
@@ -6395,6 +6460,257 @@ async function etsyPauseToggle() {
   }
 }
 // ===== END ETSY TAB =====
+
+// ===== JEWELRY WINNERS TAB =====
+let _jwStoreSummary = [];   // array of {storeId, storeName, platform, category, totalProducts, qualifiedCount, lastSyncedAt}
+let _jwSelected = new Set();
+let _jwPollTimer = null;
+let _jwLastCollectionId = null;
+let _jwMinSalesDebounce = null;
+let _jwLoadedOnce = false;
+
+function jwOnTabOpen() {
+  if (!_jwLoadedOnce) {
+    _jwLoadedOnce = true;
+    jwLoadStoreSummary();
+  }
+  jwPollStatus(); // refresh latest status / results in case a scan is still running
+}
+
+async function jwLoadStoreSummary() {
+  const grid = document.getElementById('jw-store-grid');
+  grid.innerHTML = '<div style="color:var(--gray-500);">Loading stores…</div>';
+  const minSales = parseInt(document.getElementById('jw-min-sales').value, 10) || 3;
+  try {
+    const data = await api('/api/jewelry-winners/store-summary?minSales=' + encodeURIComponent(minSales));
+    if (!data || !data.success) {
+      grid.innerHTML = '<div style="color:#e53e3e;">Could not load store list.</div>';
+      return;
+    }
+    _jwStoreSummary = data.stores || [];
+    jwRenderStoreGrid();
+  } catch (e) {
+    console.error('jwLoadStoreSummary', e);
+    grid.innerHTML = '<div style="color:#e53e3e;">Error loading stores.</div>';
+  }
+}
+
+function jwRenderStoreGrid() {
+  const grid = document.getElementById('jw-store-grid');
+  if (!_jwStoreSummary.length) {
+    grid.innerHTML = '<div style="color:var(--gray-500);">No stores found.</div>';
+    return;
+  }
+  const html = _jwStoreSummary.map(s => {
+    const checked = _jwSelected.has(s.storeId) ? 'checked' : '';
+    const badge = (s.platform || 'shopify').toLowerCase() === 'shoplazza'
+      ? '<span class="badge badge-blue" style="margin-left:6px;">shoplazza</span>'
+      : '<span class="badge badge-green" style="margin-left:6px;">shopify</span>';
+    const jewelryTag = (s.category || '').toLowerCase() === 'jewelry'
+      ? '<span class="badge badge-purple" style="margin-left:4px;">jewelry</span>'
+      : '';
+    const last = s.lastSyncedAt ? new Date(s.lastSyncedAt * 1000).toLocaleString() : 'never';
+    const qual = (s.qualifiedCount != null) ? s.qualifiedCount : '–';
+    return `
+      <label class="jw-store-row" style="display:flex;align-items:flex-start;gap:10px;padding:10px;border:1px solid var(--gray-200);border-radius:8px;cursor:pointer;background:#fff;">
+        <input type="checkbox" data-store-id="${s.storeId}" ${checked} onchange="jwToggleStore('${s.storeId}', this.checked)" style="margin-top:2px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;color:var(--gray-800);font-size:14px;">
+            ${escapeHtml(s.storeName || s.storeId)} ${badge} ${jewelryTag}
+          </div>
+          <div style="color:var(--gray-600);font-size:12px;margin-top:3px;">
+            ${s.totalProducts || 0} products · <strong style="color:var(--primary);">${qual}</strong> qualify
+          </div>
+          <div style="color:var(--gray-500);font-size:11px;margin-top:2px;">Last synced: ${last}</div>
+        </div>
+      </label>`;
+  }).join('');
+  grid.innerHTML = html;
+  jwUpdateSelectedSummary();
+}
+
+function jwToggleStore(storeId, on) {
+  if (on) _jwSelected.add(storeId); else _jwSelected.delete(storeId);
+  jwUpdateSelectedSummary();
+}
+
+function jwUpdateSelectedSummary() {
+  const el = document.getElementById('jw-selected-summary');
+  if (!el) return;
+  let totalQual = 0;
+  _jwStoreSummary.forEach(s => { if (_jwSelected.has(s.storeId)) totalQual += (s.qualifiedCount || 0); });
+  el.textContent = `${_jwSelected.size} store(s) selected · ~${totalQual} qualifying products`;
+}
+
+function jwSelectAll(on) {
+  if (on) _jwStoreSummary.forEach(s => _jwSelected.add(s.storeId));
+  else _jwSelected.clear();
+  jwRenderStoreGrid();
+}
+
+function jwSelectJewelry() {
+  _jwSelected.clear();
+  _jwStoreSummary.forEach(s => {
+    if ((s.category || '').toLowerCase() === 'jewelry') _jwSelected.add(s.storeId);
+  });
+  jwRenderStoreGrid();
+}
+
+function jwOnMinSalesChange() {
+  clearTimeout(_jwMinSalesDebounce);
+  _jwMinSalesDebounce = setTimeout(() => jwLoadStoreSummary(), 350);
+}
+
+async function jwScanStart() {
+  const collectionName = (document.getElementById('jw-collection-name').value || '').trim();
+  if (!collectionName) { toast('Enter a collection name', 'error'); return; }
+  if (_jwSelected.size === 0) { toast('Pick at least one store', 'error'); return; }
+  const minSales = parseInt(document.getElementById('jw-min-sales').value, 10) || 3;
+  const downloadImages = document.getElementById('jw-download-images').checked;
+  const btn = document.getElementById('jw-scan-btn');
+  btn.disabled = true; btn.textContent = 'Starting…';
+  try {
+    const data = await api('/api/jewelry-winners/scan', 'POST', {
+      stores: Array.from(_jwSelected),
+      minSales: minSales,
+      collectionName: collectionName,
+      downloadImages: downloadImages
+    });
+    if (!data || !data.success) {
+      toast(data && data.error ? data.error : 'Could not start scan', 'error');
+      btn.disabled = false; btn.textContent = 'Scan now';
+      return;
+    }
+    toast('Scan started', 'success');
+    if (_jwPollTimer) clearInterval(_jwPollTimer);
+    _jwPollTimer = setInterval(jwPollStatus, 2000);
+    jwPollStatus();
+  } catch (e) {
+    console.error('jwScanStart', e);
+    toast('Error starting scan', 'error');
+    btn.disabled = false; btn.textContent = 'Scan now';
+  }
+}
+
+async function jwPollStatus() {
+  try {
+    const data = await api('/api/jewelry-winners/status');
+    if (!data || !data.success) return;
+    const st = data.state || {};
+    const progressEl = document.getElementById('jw-progress');
+    const btn = document.getElementById('jw-scan-btn');
+    if (st.running) {
+      btn.disabled = true; btn.textContent = 'Scanning…';
+      const idx = st.currentStoreIndex || 0;
+      const total = st.totalStores || 0;
+      const sname = st.currentStoreName || '';
+      progressEl.textContent = `Scanning ${sname} (${idx}/${total}) · ${st.productsAdded || 0} products added · ${st.imagesSaved || 0} images saved`;
+    } else {
+      btn.disabled = false; btn.textContent = 'Scan now';
+      if (st.lastError) {
+        progressEl.innerHTML = `<span style="color:#e53e3e;">Last error: ${escapeHtml(st.lastError)}</span>`;
+      } else if (st.lastFinishedAt) {
+        const when = new Date(st.lastFinishedAt * 1000).toLocaleString();
+        progressEl.textContent = `Last scan: ${st.productsAdded || 0} added · ${st.imagesSaved || 0} images · finished ${when}`;
+      } else {
+        progressEl.textContent = '';
+      }
+      if (_jwPollTimer) { clearInterval(_jwPollTimer); _jwPollTimer = null; }
+    }
+    // Render results
+    if (st.collectionId) _jwLastCollectionId = st.collectionId;
+    if (Array.isArray(st.recentProducts)) {
+      jwRenderResults(st.recentProducts, st.collectionId, st.collectionName);
+    }
+  } catch (e) {
+    console.error('jwPollStatus', e);
+  }
+}
+
+function jwRenderResults(products, collectionId, collectionName) {
+  const grid = document.getElementById('jw-results-grid');
+  const count = document.getElementById('jw-results-count');
+  const openBtn = document.getElementById('jw-open-collection');
+  if (!products.length) {
+    grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">No products yet.</div>';
+    count.textContent = '';
+    openBtn.style.display = 'none';
+    return;
+  }
+  count.textContent = `${products.length} product(s) in “${collectionName || 'collection'}”`;
+  if (collectionId) {
+    openBtn.style.display = '';
+    openBtn.dataset.collectionId = collectionId;
+  }
+  grid.innerHTML = products.slice().reverse().map(p => jwRenderCard(p, collectionId)).join('');
+}
+
+function jwRenderCard(p, collectionId) {
+  const img = p.image || p.localImage || p.remoteImage || '';
+  const imgHtml = img
+    ? `<img class="coll-product-card-img" src="${img}" alt="" loading="lazy" onerror="this.onerror=null;this.src='${(p.remoteImage||'').replace(/'/g, "\\'")}'">`
+    : `<div class="coll-product-card-noimg">No image</div>`;
+  const sales = (p.sales != null) ? `${p.sales} sales` : '';
+  const url = p.productUrl || '#';
+  const storeBadge = p.storeName ? `<span class="badge badge-purple">${escapeHtml(p.storeName)}</span>` : '';
+  const pid = (p.id || '').replace(/'/g, "\\'");
+  const cid = (collectionId || '').replace(/'/g, "\\'");
+  return `
+    <div class="coll-product-card" data-pid="${escapeHtml(p.id || '')}">
+      ${imgHtml}
+      <div class="coll-product-card-body">
+        <div class="coll-product-card-title">${escapeHtml(p.name || p.handle || 'Untitled')}</div>
+        <div class="coll-product-card-meta">${storeBadge} ${sales ? `<span>${sales}</span>` : ''}</div>
+      </div>
+      <div class="coll-product-card-actions">
+        <a class="copy-btn" href="${url}" target="_blank" rel="noopener" title="Open product">Open</a>
+        <button class="copy-btn" onclick="jwCopyUrl('${url.replace(/'/g, "\\'")}')" title="Copy URL">Copy URL</button>
+        ${cid ? `<button class="delete-btn" onclick="jwRemoveProduct('${cid}', '${pid}')" title="Remove">Remove</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function jwCopyUrl(url) {
+  navigator.clipboard.writeText(url).then(
+    () => toast('URL copied', 'success'),
+    () => toast('Could not copy', 'error')
+  );
+}
+
+async function jwRemoveProduct(collectionId, productId) {
+  if (!collectionId || !productId) return;
+  if (!confirm('Remove this product from the collection?')) return;
+  try {
+    const resp = await fetch(`/api/collections/node/${encodeURIComponent(collectionId)}/products/${encodeURIComponent(productId)}`, { method: 'DELETE' });
+    const data = await resp.json();
+    if (data && data.success) {
+      const card = document.querySelector(`.coll-product-card[data-pid="${productId.replace(/"/g, '\\"')}"]`);
+      if (card) card.remove();
+      toast('Removed', 'success');
+    } else {
+      toast((data && data.error) || 'Remove failed', 'error');
+    }
+  } catch (e) {
+    console.error('jwRemoveProduct', e);
+    toast('Remove failed', 'error');
+  }
+}
+
+function jwOpenCollection(ev) {
+  ev.preventDefault();
+  const cid = document.getElementById('jw-open-collection').dataset.collectionId;
+  const tab = document.querySelector('[data-tab="collections"]');
+  if (tab) tab.click();
+  if (cid && typeof collSelectNode === 'function') {
+    setTimeout(() => { try { collSelectNode(cid); } catch(e){} }, 200);
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// ===== END JEWELRY WINNERS TAB =====
 </script>
 </body>
 </html>

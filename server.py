@@ -37,6 +37,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 VIDEOS_DIR = os.path.join(DATA_DIR, 'videos')
 os.makedirs(VIDEOS_DIR, exist_ok=True)
+PRODUCT_IMAGES_DIR = os.path.join(DATA_DIR, 'product_images')
+os.makedirs(PRODUCT_IMAGES_DIR, exist_ok=True)
 
 # --- Persistent secret key ---
 SECRET_KEY_FILE = os.path.join(BASE_DIR, '.flask_secret')
@@ -4621,6 +4623,350 @@ def api_move_collection_node(node_id):
         data['tree'].append(node_copy)
     _save_collections(data)
     return jsonify({'success': True, 'tree': data['tree']})
+
+
+# ============================================================
+# ===== Jewelry Winners: multi-store winners -> collection ===
+# ============================================================
+# State for the in-progress scan so the frontend can poll progress.
+_jewelry_scan_state = {
+    'running': False,
+    'started_at': None,
+    'current_store': None,
+    'stores_total': 0,
+    'stores_done': 0,
+    'products_added': 0,
+    'images_saved': 0,
+    'errors': [],
+    'collection_id': None,
+    'collection_name': None,
+    'finished_at': None,
+}
+_jewelry_scan_lock = threading.Lock()
+
+def _download_product_image(image_url, store_id, product_id):
+    """Download a product image to PRODUCT_IMAGES_DIR. Returns the public URL
+    path (e.g. '/product-images/<store>/<filename>') on success, or None.
+    Idempotent: skips download if the file already exists.
+    """
+    if not image_url:
+        return None
+    try:
+        # Filename derivation
+        ext = '.jpg'
+        if '.' in image_url.split('/')[-1].split('?')[0]:
+            candidate = '.' + image_url.split('/')[-1].split('?')[0].split('.')[-1].lower()
+            if candidate in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+                ext = candidate
+        # Sanitize store_id / product_id for filesystem
+        safe_store = ''.join(c for c in str(store_id) if c.isalnum() or c in '-_')[:60] or 'store'
+        safe_pid = ''.join(c for c in str(product_id) if c.isalnum() or c in '-_')[:60] or 'product'
+        store_dir = os.path.join(PRODUCT_IMAGES_DIR, safe_store)
+        os.makedirs(store_dir, exist_ok=True)
+        filename = safe_pid + ext
+        local_path = os.path.join(store_dir, filename)
+        public_url = f'/product-images/{safe_store}/{filename}'
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 1024:
+            return public_url
+        # Fetch
+        resp = http_requests.get(image_url, timeout=20, headers={
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        })
+        if resp.status_code != 200:
+            return None
+        data = resp.content
+        if not data or len(data) < 1024:
+            return None
+        tmp = local_path + '.tmp'
+        with open(tmp, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, local_path)
+        return public_url
+    except Exception as e:
+        log.warning('Image download failed for %s: %s', image_url[:80], e)
+        return None
+
+
+@app.route('/product-images/<path:subpath>')
+def serve_product_image(subpath):
+    """Serve cached product images. No auth: these are public CDN-style assets."""
+    return send_from_directory(PRODUCT_IMAGES_DIR, subpath)
+
+
+def _jewelry_get_or_create_collection(name):
+    """Find a top-level collection by name (case-insensitive). Create it if missing.
+    Returns the node dict."""
+    data = _load_collections()
+    name_norm = (name or '').strip()
+    if not name_norm:
+        raise ValueError('Collection name required')
+    for node in data['tree']:
+        if (node.get('name') or '').strip().lower() == name_norm.lower():
+            return node
+    # Create new top-level node
+    new_node = {
+        'id': 'col_' + uuid.uuid4().hex[:12],
+        'name': name_norm,
+        'type': 'collection',
+        'children': [],
+        'products': [],
+        'createdAt': int(time.time()),
+    }
+    data['tree'].append(new_node)
+    _save_collections(data)
+    return new_node
+
+
+def _jewelry_load_store_winners(store_id, min_sales):
+    """Read cached winners for a store from the same cache the Lara Green tab uses.
+    Returns a list of product dicts that hit the min_sales threshold."""
+    cache_path = _collection_cache_path(store_id)
+    if not os.path.exists(cache_path):
+        return []
+    try:
+        with open(cache_path) as f:
+            cache = json.load(f)
+    except Exception:
+        return []
+    products = cache.get('products') or []
+    out = []
+    for p in products:
+        sales = int(p.get('sales') or 0)
+        if sales >= min_sales:
+            out.append(p)
+    return out
+
+
+def _jewelry_scan_worker(store_ids, min_sales, collection_name, store_names_by_id, download_images):
+    """Background worker that walks every selected store, filters by min_sales,
+    downloads images, and appends to the target collection."""
+    state = _jewelry_scan_state
+    try:
+        with _jewelry_scan_lock:
+            state['running'] = True
+            state['started_at'] = int(time.time())
+            state['stores_total'] = len(store_ids)
+            state['stores_done'] = 0
+            state['products_added'] = 0
+            state['images_saved'] = 0
+            state['errors'] = []
+            state['current_store'] = None
+            state['finished_at'] = None
+        # Get or create the collection
+        node = _jewelry_get_or_create_collection(collection_name)
+        state['collection_id'] = node['id']
+        state['collection_name'] = node['name']
+
+        # Deduplicate against existing products in the node
+        data = _load_collections()
+        live_node = _find_collection_node(data['tree'], node['id'])
+        existing = live_node.setdefault('products', [])
+        existing_ids = set(p.get('id') for p in existing if p.get('id'))
+
+        for sid in store_ids:
+            state['current_store'] = store_names_by_id.get(sid, sid)
+            try:
+                winners = _jewelry_load_store_winners(sid, min_sales)
+                log.info('Jewelry scan: %s -> %d products at >= %d sales',
+                         state['current_store'], len(winners), min_sales)
+                for p in winners:
+                    pid_raw = p.get('id') or p.get('handle')
+                    if not pid_raw:
+                        continue
+                    # Namespace product IDs by store so the same handle across
+                    # stores doesn't collide.
+                    pid = f'{sid}:{pid_raw}'
+                    if pid in existing_ids:
+                        continue
+                    local_image_url = None
+                    remote_image = p.get('image') or ''
+                    if download_images and remote_image:
+                        local_image_url = _download_product_image(remote_image, sid, pid_raw)
+                        if local_image_url:
+                            state['images_saved'] += 1
+                    # Build the product card record
+                    handle = p.get('handle') or ''
+                    store_domain = ''
+                    # Use the known myshopify domain from stores.json
+                    try:
+                        stores = _load_stores()
+                        store_rec = next((s for s in stores if s.get('id') == sid), None)
+                        if store_rec:
+                            store_domain = store_rec.get('domain') or ''
+                    except Exception:
+                        pass
+                    product_url = ''
+                    if store_domain and handle:
+                        product_url = f'https://{store_domain}/products/{handle}'
+                    card = {
+                        'id': pid,
+                        'storeId': sid,
+                        'storeName': state['current_store'],
+                        'name': p.get('name') or p.get('title') or handle,
+                        'handle': handle,
+                        'sales': int(p.get('sales') or 0),
+                        'revenue': float(p.get('revenue') or 0),
+                        'remoteImage': remote_image,
+                        'image': local_image_url or remote_image,
+                        'localImage': local_image_url,
+                        'productUrl': product_url,
+                        'source': '1688' if (p.get('source') == '1688') else 'shopify',
+                        'addedAt': int(time.time()),
+                    }
+                    existing.append(card)
+                    existing_ids.add(pid)
+                    state['products_added'] += 1
+                # Persist after every store so progress isn't lost
+                _save_collections(data)
+            except Exception as e:
+                log.exception('Jewelry scan store failed: %s', sid)
+                state['errors'].append({
+                    'store': state['current_store'], 'error': str(e)[:200]
+                })
+            finally:
+                state['stores_done'] += 1
+        state['current_store'] = None
+    finally:
+        with _jewelry_scan_lock:
+            state['running'] = False
+            state['finished_at'] = int(time.time())
+
+
+@app.route('/api/jewelry-winners/scan', methods=['POST'])
+@login_required
+def jewelry_winners_scan():
+    """Kick off a multi-store winners scan.
+    Body: {
+      stores: ['store_id', ...],
+      minSales: 3,
+      collectionName: 'Jewelry winners (3+ sales)',
+      downloadImages: true
+    }
+    """
+    body = request.get_json(force=True) or {}
+    store_ids = body.get('stores') or []
+    if not isinstance(store_ids, list) or not store_ids:
+        return jsonify({'success': False, 'error': 'stores required (non-empty list)'}), 400
+    try:
+        min_sales = int(body.get('minSales') or 3)
+    except Exception:
+        return jsonify({'success': False, 'error': 'minSales must be integer'}), 400
+    collection_name = (body.get('collectionName') or '').strip()
+    if not collection_name:
+        return jsonify({'success': False, 'error': 'collectionName required'}), 400
+    download_images = bool(body.get('downloadImages', True))
+    if _jewelry_scan_state['running']:
+        return jsonify({'success': True, 'status': 'already_running', 'state': _jewelry_scan_state})
+    # Build a name map for status display
+    try:
+        stores = _load_stores()
+        name_map = {s['id']: s.get('name', s['id']) for s in stores}
+    except Exception:
+        name_map = {}
+    t = threading.Thread(
+        target=_jewelry_scan_worker,
+        args=(store_ids, min_sales, collection_name, name_map, download_images),
+        daemon=True, name='jewelry-scan')
+    t.start()
+    return jsonify({'success': True, 'status': 'started',
+                    'stores': len(store_ids), 'minSales': min_sales,
+                    'collectionName': collection_name})
+
+
+@app.route('/api/jewelry-winners/status', methods=['GET'])
+@login_required
+def jewelry_winners_status():
+    """Poll-able status endpoint for the running (or last) scan.
+    Returns a camelCase payload the frontend expects, plus a tail of the
+    most recent products added to the destination collection."""
+    s = _jewelry_scan_state
+    recent_products = []
+    last_error = None
+    if s.get('errors'):
+        try:
+            last = s['errors'][-1]
+            last_error = f"{last.get('store','')}: {last.get('error','')}".strip(': ')
+        except Exception:
+            last_error = str(s['errors'][-1])[:200]
+    col_id = s.get('collection_id')
+    if col_id:
+        try:
+            data = _load_collections()
+            node = _find_collection_node(data['tree'], col_id)
+            if node:
+                prods = node.get('products') or []
+                # most recent 60, newest-last so frontend reverse() shows newest first
+                recent_products = prods[-60:]
+        except Exception:
+            pass
+    payload = {
+        'running': bool(s.get('running')),
+        'startedAt': s.get('started_at'),
+        'currentStoreName': s.get('current_store'),
+        'totalStores': s.get('stores_total') or 0,
+        'currentStoreIndex': s.get('stores_done') or 0,
+        'productsAdded': s.get('products_added') or 0,
+        'imagesSaved': s.get('images_saved') or 0,
+        'collectionId': s.get('collection_id'),
+        'collectionName': s.get('collection_name'),
+        'lastFinishedAt': s.get('finished_at'),
+        'lastError': last_error,
+        'errors': s.get('errors') or [],
+        'recentProducts': recent_products,
+    }
+    return jsonify({'success': True, 'state': payload})
+
+
+@app.route('/api/jewelry-winners/store-summary', methods=['GET'])
+@login_required
+def jewelry_winners_store_summary():
+    """For each connected store, return how many products would be picked up
+    at a given minSales threshold. Lets the UI preview the result before scanning."""
+    try:
+        min_sales = int(request.args.get('minSales', '3'))
+    except Exception:
+        min_sales = 3
+    stores = _load_stores()
+    out = []
+    for s in stores:
+        sid = s.get('id')
+        if not sid: continue
+        cache_path = _collection_cache_path(sid)
+        has_cache = os.path.exists(cache_path)
+        qualified = 0
+        total = 0
+        synced_at = None
+        if has_cache:
+            try:
+                with open(cache_path) as f:
+                    c = json.load(f)
+                products = c.get('products') or []
+                total = len(products)
+                qualified = sum(1 for p in products if int(p.get('sales') or 0) >= min_sales)
+                synced_at = c.get('syncedAt') or c.get('updatedAt')
+            except Exception:
+                pass
+        out.append({
+            'id': sid,
+            'storeId': sid,
+            'name': s.get('name', sid),
+            'storeName': s.get('name', sid),
+            'platform': s.get('platform', 'shopify'),
+            'category': s.get('storeCategory', ''),
+            'totalProducts': total,
+            'qualifiedProducts': qualified,
+            'qualifiedCount': qualified,
+            'hasCache': has_cache,
+            'syncedAt': synced_at,
+            'lastSyncedAt': synced_at,
+        })
+    # Sort: jewelry first, then by qualified count desc
+    out.sort(key=lambda x: (
+        0 if (x.get('category') or '').lower() == 'jewelry' else 1,
+        -(x.get('qualifiedCount') or 0)
+    ))
+    return jsonify({'success': True, 'stores': out, 'minSales': min_sales})
 
 
 # ===== Creative Studio =====
