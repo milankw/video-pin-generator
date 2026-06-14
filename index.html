@@ -1670,6 +1670,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="analytics">Analytics</div>
   <div class="tab" data-tab="etsy">Etsy Winners <span class="badge badge-purple" id="etsy-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="jewelry-winners">Jewelry Winners <span class="badge badge-purple" id="jw-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="etsy-shops">Etsy Shops <span class="badge badge-purple" id="esh-badge" style="display:none">0</span></div>
 </div>
 
 <!-- Content -->
@@ -2423,6 +2424,113 @@ textarea { resize: vertical; min-height: 80px; }
   </div>
   <!-- ===== END JEWELRY WINNERS TAB ===== -->
 
+  <!-- ===== ETSY SHOPS TAB ===== -->
+  <div class="tab-panel" id="panel-etsy-shops">
+    <div class="section-card" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0;font-size:18px;">Etsy Shops</h2>
+          <div style="color:var(--gray-600);font-size:13px;margin-top:4px;">Import any Etsy shop once. Listings sorted by hearts (favorites). Saved forever — no re-fetching unless you click Refresh.</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div id="esh-api-bucket" title="Etsy API calls used today / daily budget" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--gray-100);border:1px solid var(--gray-200);border-radius:8px;font-size:12px;color:var(--gray-700);">
+            <span>Etsy API today:</span>
+            <strong id="esh-api-bucket-text">— / —</strong>
+            <div style="width:80px;height:6px;background:var(--gray-200);border-radius:3px;overflow:hidden;"><div id="esh-api-bucket-bar" style="height:100%;width:0%;background:#10b981;transition:width .3s,background .3s;"></div></div>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="esh-show-favs-btn" onclick="eshShowFavorites()">My favorites <span id="esh-fav-count" class="badge badge-purple" style="display:none;margin-left:6px;">0</span></button>
+          <button class="btn btn-secondary btn-sm" onclick="eshLoadShops()">Refresh shops</button>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-top:14px;align-items:flex-end;">
+        <div class="form-group" style="flex:1;">
+          <label>Etsy shop URL or name</label>
+          <input type="text" id="esh-shop-input" placeholder="https://www.etsy.com/shop/VillaSorgenfrei" onkeydown="if(event.key==='Enter'){event.preventDefault();eshImport();}">
+        </div>
+        <div class="form-group" style="flex:0 0 auto;">
+          <button class="btn btn-primary" id="esh-import-btn" onclick="eshImport()">Import shop</button>
+        </div>
+      </div>
+      <div id="esh-import-status" style="color:var(--gray-600);font-size:13px;margin-top:4px;"></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:280px 1fr;gap:14px;margin-top:14px;">
+      <!-- Shop list -->
+      <div class="section-card" style="padding:12px;align-self:flex-start;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <h3 style="margin:0;font-size:14px;">Saved shops</h3>
+          <span id="esh-shop-count" style="color:var(--gray-500);font-size:12px;"></span>
+        </div>
+        <div id="esh-shop-list" style="display:flex;flex-direction:column;gap:6px;max-height:70vh;overflow-y:auto;">
+          <div style="color:var(--gray-500);font-size:13px;">Loading…</div>
+        </div>
+      </div>
+
+      <!-- Detail / grid -->
+      <div>
+        <div class="section-card" id="esh-detail-header" style="padding:14px;display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+            <div style="display:flex;gap:12px;align-items:center;min-width:0;">
+              <img id="esh-shop-icon" src="" alt="" style="width:48px;height:48px;border-radius:8px;object-fit:cover;background:var(--gray-100);display:none;">
+              <div style="min-width:0;">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                  <h3 id="esh-shop-title" style="margin:0;font-size:18px;"></h3>
+                  <a id="esh-shop-link" href="#" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="font-size:11px;padding:2px 8px;">View on Etsy ↗</a>
+                </div>
+                <div id="esh-shop-stats" style="color:var(--gray-600);font-size:13px;margin-top:4px;"></div>
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" id="esh-refresh-btn" onclick="eshRefreshCurrent()">Refresh from Etsy</button>
+              <button class="btn btn-danger btn-sm" onclick="eshDeleteCurrent()">Remove shop</button>
+            </div>
+          </div>
+
+          <!-- Filters -->
+          <div class="form-row" style="margin-top:12px;align-items:flex-end;">
+            <div class="form-group" style="flex:1;min-width:160px;">
+              <label>Search title / tags</label>
+              <input type="text" id="esh-search" oninput="eshDebouncedReload()" placeholder="e.g. necklace">
+            </div>
+            <div class="form-group" style="flex:0 0 160px;">
+              <label>Sort by</label>
+              <select id="esh-sort" onchange="eshLoadDetail()">
+                <option value="favorers">Most hearts</option>
+                <option value="views">Most views</option>
+                <option value="newest">Newest listed</option>
+                <option value="oldest">Oldest listed</option>
+                <option value="price_desc">Price: high to low</option>
+                <option value="price_asc">Price: low to high</option>
+                <option value="title">Title (A–Z)</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:0 0 auto;">
+              <label style="display:flex;align-items:center;gap:6px;font-weight:500;">
+                <input type="checkbox" id="esh-fav-filter" onchange="eshLoadDetail()"> Favorites only
+              </label>
+            </div>
+            <div class="form-group" style="flex:0 0 auto;color:var(--gray-600);font-size:13px;">
+              <span id="esh-results-count"></span>
+            </div>
+          </div>
+
+          <div id="esh-import-progress" style="display:none;margin-top:8px;">
+            <div style="background:var(--gray-100);border-radius:6px;overflow:hidden;height:8px;">
+              <div id="esh-progress-bar" style="background:var(--purple-500,#7c3aed);height:100%;width:0%;transition:width .3s;"></div>
+            </div>
+            <div id="esh-progress-text" style="color:var(--gray-600);font-size:12px;margin-top:4px;"></div>
+          </div>
+        </div>
+
+        <div id="esh-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;margin-top:14px;">
+          <div style="color:var(--gray-500);grid-column:1/-1;">Pick a saved shop on the left, or import a new shop above.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- ===== END ETSY SHOPS TAB ===== -->
+
 </div>
 
 <!-- Toast container -->
@@ -2593,6 +2701,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     }
     if (tab.dataset.tab === 'etsy') { etsyOnTabOpen(); }
     if (tab.dataset.tab === 'jewelry-winners') { jwOnTabOpen(); }
+    if (tab.dataset.tab === 'etsy-shops') { eshOnTabOpen(); }
   });
 });
 
@@ -6711,6 +6820,335 @@ function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 // ===== END JEWELRY WINNERS TAB =====
+
+
+// ===== ETSY SHOPS TAB =========================================================
+let _eshState = {
+  shops: [],
+  currentShopId: null,
+  showingFavorites: false,
+  pollTimer: null,
+  searchDebounce: null,
+};
+
+function eshOnTabOpen() {
+  eshLoadShops();
+  eshLoadFavoritesCount();
+  eshRefreshApiBucket();
+  // Auto-refresh the bucket every 15s while the tab is open, so user sees
+  // calls tick up during an import.
+  if (!_eshState.bucketTimer) {
+    _eshState.bucketTimer = setInterval(eshRefreshApiBucket, 15000);
+  }
+}
+
+async function eshRefreshApiBucket() {
+  try {
+    const r = await fetch('/api/etsy/health').then(r => r.json());
+    if (!r || !r.success) return;
+    const used = Number(r.api_today || 0);
+    const cap  = Number(r.daily_budget || 4500);
+    const pct  = cap > 0 ? Math.min(100, Math.round(100 * used / cap)) : 0;
+    const el = document.getElementById('esh-api-bucket-text');
+    const bar = document.getElementById('esh-api-bucket-bar');
+    if (el) el.textContent = `${used.toLocaleString()} / ${cap.toLocaleString()} (${pct}%)`;
+    if (bar) {
+      bar.style.width = pct + '%';
+      bar.style.background = pct >= 90 ? '#dc2626' : (pct >= 70 ? '#f59e0b' : '#10b981');
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function eshDebouncedReload() {
+  clearTimeout(_eshState.searchDebounce);
+  _eshState.searchDebounce = setTimeout(() => eshLoadDetail(), 300);
+}
+
+async function eshLoadShops() {
+  try {
+    const data = await api('/api/etsy-shops');
+    if (!data || !data.ok) return;
+    _eshState.shops = data.shops || [];
+    eshRenderShopList();
+  } catch (e) { console.error('eshLoadShops', e); }
+}
+
+function eshRenderShopList() {
+  const list = document.getElementById('esh-shop-list');
+  const cnt = document.getElementById('esh-shop-count');
+  cnt.textContent = _eshState.shops.length ? `${_eshState.shops.length} saved` : '';
+  document.getElementById('esh-badge').style.display = _eshState.shops.length ? '' : 'none';
+  document.getElementById('esh-badge').textContent = _eshState.shops.length;
+  if (!_eshState.shops.length) {
+    list.innerHTML = '<div style="color:var(--gray-500);font-size:13px;padding:8px;">No shops yet. Paste a shop URL above to import one.</div>';
+    return;
+  }
+  list.innerHTML = _eshState.shops.map(s => {
+    const active = (s.shop_id === _eshState.currentShopId) ? 'background:var(--purple-50,#f5f3ff);border-color:var(--purple-300,#c4b5fd);' : '';
+    const icon = s.icon_url ? `<img src="${escapeHtml(s.icon_url)}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;flex:0 0 32px;" loading="lazy">` : '<div style="width:32px;height:32px;border-radius:6px;background:var(--gray-100);flex:0 0 32px;"></div>';
+    return `
+      <div class="esh-shop-item" onclick="eshSelectShop(${s.shop_id})" style="display:flex;gap:8px;padding:8px;border:1px solid var(--gray-200);border-radius:8px;cursor:pointer;align-items:center;${active}">
+        ${icon}
+        <div style="min-width:0;flex:1;">
+          <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(s.shop_name)}</div>
+          <div style="color:var(--gray-600);font-size:11px;">${eshFmt(s.imported_count)} items · ♥ ${eshFmt(s.num_favorers)}${s.favorites_count?` · ⭐ ${s.favorites_count}`:''}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function eshLoadFavoritesCount() {
+  try {
+    const r = await api('/api/etsy-shops/favorites');
+    const n = r && r.ok ? (r.favorites || []).length : 0;
+    const b = document.getElementById('esh-fav-count');
+    if (n > 0) { b.style.display = ''; b.textContent = n; } else { b.style.display = 'none'; }
+  } catch (e) {}
+}
+
+async function eshImport() {
+  const inp = document.getElementById('esh-shop-input');
+  const val = (inp.value || '').trim();
+  if (!val) return;
+  const btn = document.getElementById('esh-import-btn');
+  const status = document.getElementById('esh-import-status');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  status.textContent = 'Resolving shop…';
+  try {
+    const r = await api('/api/etsy-shops/import', 'POST', { shop_url: val });
+    if (!r || !r.ok) {
+      status.textContent = (r && r.error) || 'Import failed';
+      toast(status.textContent, 'error');
+      btn.disabled = false; btn.textContent = 'Import shop';
+      return;
+    }
+    status.textContent = 'Import started. This usually takes 10–60 seconds for small shops.';
+    inp.value = '';
+    // Begin polling for this shop_name until the job lands a shop_id
+    eshStartPollByName(r.shop_name || val, btn);
+  } catch (e) {
+    console.error(e);
+    status.textContent = 'Import failed: ' + e.message;
+    btn.disabled = false; btn.textContent = 'Import shop';
+  }
+}
+
+function eshStartPollByName(shopName, btn) {
+  clearInterval(_eshState.pollTimer);
+  _eshState.pollTimer = setInterval(async () => {
+    try {
+      const r = await api('/api/etsy-shops/progress/by-name?shop_name=' + encodeURIComponent(shopName));
+      if (!r || !r.ok || !r.progress) return;
+      const p = r.progress;
+      const status = document.getElementById('esh-import-status');
+      const phase = p.phase || p.status;
+      status.textContent = `${phase} · ${p.done || 0} / ${p.total || 0}`;
+      if (p.status === 'error') {
+        status.textContent = 'Error: ' + (p.error || 'unknown');
+        clearInterval(_eshState.pollTimer);
+        if (btn) { btn.disabled = false; btn.textContent = 'Import shop'; }
+        return;
+      }
+      if (p.status === 'done' && p.shop_id) {
+        status.textContent = `Done. Imported ${p.done || 0} listings.`;
+        clearInterval(_eshState.pollTimer);
+        if (btn) { btn.disabled = false; btn.textContent = 'Import shop'; }
+        await eshLoadShops();
+        eshSelectShop(p.shop_id);
+      }
+    } catch (e) { /* ignore */ }
+  }, 1500);
+}
+
+function eshSelectShop(shopId) {
+  _eshState.currentShopId = shopId;
+  _eshState.showingFavorites = false;
+  eshRenderShopList();
+  eshLoadDetail();
+}
+
+async function eshLoadDetail() {
+  if (_eshState.showingFavorites) return eshShowFavorites();
+  const id = _eshState.currentShopId;
+  if (!id) return;
+  const sort = document.getElementById('esh-sort').value;
+  const favOnly = document.getElementById('esh-fav-filter').checked;
+  const search = document.getElementById('esh-search').value.trim();
+  const url = `/api/etsy-shops/${id}?sort=${sort}&favorites_only=${favOnly?1:0}&search=${encodeURIComponent(search)}`;
+  try {
+    const r = await api(url);
+    if (!r || !r.ok) {
+      document.getElementById('esh-grid').innerHTML = '<div style="color:var(--red-600);grid-column:1/-1;">' + escapeHtml((r&&r.error)||'Load failed') + '</div>';
+      return;
+    }
+    eshRenderDetail(r.shop, r.listings, r.job);
+  } catch (e) { console.error(e); }
+}
+
+function eshRenderDetail(shop, listings, job) {
+  // Header
+  const header = document.getElementById('esh-detail-header');
+  header.style.display = '';
+  document.getElementById('esh-shop-title').textContent = shop.shop_name;
+  const link = document.getElementById('esh-shop-link');
+  link.href = shop.url || `https://www.etsy.com/shop/${shop.shop_name}`;
+  const icon = document.getElementById('esh-shop-icon');
+  if (shop.icon_url) { icon.src = shop.icon_url; icon.style.display = ''; } else { icon.style.display = 'none'; }
+  const created = shop.created_timestamp ? new Date(shop.created_timestamp * 1000).toLocaleDateString() : '—';
+  const refreshed = shop.last_refreshed_at ? new Date(shop.last_refreshed_at * 1000).toLocaleString() : '—';
+  document.getElementById('esh-shop-stats').innerHTML =
+    `${eshFmt(shop.listing_active_count)} listings · ` +
+    `★ ${shop.review_average ? Number(shop.review_average).toFixed(1) : '—'} (${eshFmt(shop.review_count)} reviews) · ` +
+    `${eshFmt(shop.transaction_sold_count)} sales · ` +
+    `♥ ${eshFmt(shop.num_favorers)} shop fans · ` +
+    `Opened ${created} · ` +
+    `<span title="Last refreshed">Synced ${refreshed}</span>`;
+
+  // Progress (if running)
+  const prog = document.getElementById('esh-import-progress');
+  if (job && job.status === 'running') {
+    prog.style.display = '';
+    const pct = (job.total ? Math.min(100, Math.round(100 * (job.done||0) / job.total)) : 5);
+    document.getElementById('esh-progress-bar').style.width = pct + '%';
+    document.getElementById('esh-progress-text').textContent = `${job.phase || job.status} · ${job.done||0} / ${job.total||0}`;
+    if (!_eshState.pollTimer) {
+      _eshState.pollTimer = setInterval(() => eshLoadDetail(), 2000);
+    }
+  } else {
+    prog.style.display = 'none';
+    if (_eshState.pollTimer) { clearInterval(_eshState.pollTimer); _eshState.pollTimer = null; }
+  }
+
+  // Grid
+  document.getElementById('esh-results-count').textContent = `${listings.length} shown`;
+  eshRenderGrid(listings, shop.shop_id);
+}
+
+function eshRenderGrid(listings, shopId) {
+  const grid = document.getElementById('esh-grid');
+  if (!listings.length) {
+    grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">No listings match.</div>';
+    return;
+  }
+  grid.innerHTML = listings.map(L => eshCardHtml(L, shopId)).join('');
+}
+
+function eshCardHtml(L, shopId) {
+  const img = L.image_local_path ? L.image_main_url : (L.image_main_url || '');
+  const price = L.price ? `${L.price.toFixed(2)} ${L.price_currency || ''}` : '';
+  const created = L.created_timestamp ? new Date(L.created_timestamp * 1000) : null;
+  const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86400000) : null;
+  const ageLabel = ageDays == null ? '' : (ageDays < 30 ? `<span style="color:#dc2626;">🔥 ${ageDays}d new</span>` : (ageDays < 180 ? `${ageDays}d old` : `${Math.floor(ageDays/30)}mo old`));
+  const heartClass = L.is_favorite ? 'esh-fav-on' : 'esh-fav-off';
+  return `
+    <div class="section-card esh-card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;">
+      <div style="position:relative;aspect-ratio:1/1;background:var(--gray-100);">
+        ${img ? `<img src="${escapeHtml(img)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentNode.style.background='var(--gray-200)'">` : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--gray-400);font-size:12px;">no image</div>'}
+        <button onclick="event.stopPropagation();eshToggleFav(${shopId}, ${L.listing_id}, this)"
+                class="${heartClass}"
+                title="${L.is_favorite?'Unfavorite':'Add to favorites'}"
+                style="position:absolute;top:6px;right:6px;background:rgba(255,255,255,.95);border:0;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.2);color:${L.is_favorite?'#dc2626':'#9ca3af'};">${L.is_favorite?'♥':'♡'}</button>
+      </div>
+      <div style="padding:10px;display:flex;flex-direction:column;gap:6px;flex:1;">
+        <a href="${escapeHtml(L.url||'#')}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-size:13px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${escapeHtml(L.title||'')}">${escapeHtml(L.title||'(untitled)')}</a>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--gray-700);">
+          <span style="font-weight:600;">${price}</span>
+          <span title="Hearts on this listing">♥ ${eshFmt(L.num_favorers)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--gray-500);">
+          <span title="Views">👁 ${eshFmt(L.views)}</span>
+          <span>${ageLabel}</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function eshToggleFav(shopId, listingId, btn) {
+  try {
+    const r = await api(`/api/etsy-shops/${shopId}/favorite/${listingId}`, 'POST', {});
+    if (!r || !r.ok) return;
+    const on = !!r.is_favorite;
+    btn.innerHTML = on ? '♥' : '♡';
+    btn.style.color = on ? '#dc2626' : '#9ca3af';
+    btn.title = on ? 'Unfavorite' : 'Add to favorites';
+    eshLoadFavoritesCount();
+  } catch (e) { console.error(e); }
+}
+
+async function eshShowFavorites() {
+  _eshState.showingFavorites = true;
+  _eshState.currentShopId = null;
+  eshRenderShopList();
+  const header = document.getElementById('esh-detail-header');
+  header.style.display = '';
+  document.getElementById('esh-shop-title').textContent = 'My favorites';
+  document.getElementById('esh-shop-icon').style.display = 'none';
+  document.getElementById('esh-shop-link').style.display = 'none';
+  document.getElementById('esh-import-progress').style.display = 'none';
+  try {
+    const r = await api('/api/etsy-shops/favorites');
+    if (!r || !r.ok) return;
+    const favs = r.favorites || [];
+    document.getElementById('esh-shop-stats').textContent = `${favs.length} hearted listing${favs.length===1?'':'s'} across all shops`;
+    document.getElementById('esh-results-count').textContent = `${favs.length} shown`;
+    const grid = document.getElementById('esh-grid');
+    if (!favs.length) {
+      grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">Click the heart on any listing to save it here.</div>';
+      return;
+    }
+    grid.innerHTML = favs.map(L => `
+      <div class="section-card esh-card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;">
+        <div style="position:relative;aspect-ratio:1/1;background:var(--gray-100);">
+          ${L.image_main_url ? `<img src="${escapeHtml(L.image_main_url)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;">` : ''}
+          <button onclick="event.stopPropagation();eshToggleFav(${L.shop_id}, ${L.listing_id}, this).then(()=>eshShowFavorites())" style="position:absolute;top:6px;right:6px;background:rgba(255,255,255,.95);border:0;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;color:#dc2626;">♥</button>
+        </div>
+        <div style="padding:10px;display:flex;flex-direction:column;gap:6px;flex:1;">
+          <a href="${escapeHtml(L.url||'#')}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-size:13px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${escapeHtml(L.title||'(untitled)')}</a>
+          <div style="font-size:11px;color:var(--gray-500);">From <strong>${escapeHtml(L.shop_name)}</strong></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--gray-700);">
+            <span style="font-weight:600;">${L.price?L.price.toFixed(2)+' '+(L.price_currency||''):''}</span>
+            <span>♥ ${eshFmt(L.num_favorers)}</span>
+          </div>
+        </div>
+      </div>`).join('');
+  } catch (e) { console.error(e); }
+}
+
+async function eshRefreshCurrent() {
+  if (!_eshState.currentShopId) return;
+  if (!confirm('Re-fetch this shop from Etsy now? This makes a fresh API call.')) return;
+  const btn = document.getElementById('esh-refresh-btn');
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/etsy-shops/${_eshState.currentShopId}/refresh`, 'POST', {});
+    if (!r || !r.ok) { toast((r&&r.error)||'Refresh failed', 'error'); btn.disabled=false; return; }
+    toast('Refresh started', 'success');
+    eshLoadDetail();
+  } catch (e) { console.error(e); btn.disabled=false; }
+}
+
+async function eshDeleteCurrent() {
+  if (!_eshState.currentShopId) return;
+  if (!confirm('Remove this shop from your saved list? Image files stay on disk.')) return;
+  try {
+    const r = await api(`/api/etsy-shops/${_eshState.currentShopId}`, 'DELETE');
+    if (r && r.ok) {
+      _eshState.currentShopId = null;
+      document.getElementById('esh-detail-header').style.display = 'none';
+      document.getElementById('esh-grid').innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">Pick a saved shop on the left, or import a new shop above.</div>';
+      eshLoadShops();
+    }
+  } catch (e) { console.error(e); }
+}
+
+function eshFmt(n) {
+  n = Number(n) || 0;
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace('.0','') + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace('.0','') + 'k';
+  return String(n);
+}
+// ===== END ETSY SHOPS TAB =====
+
 </script>
 </body>
 </html>

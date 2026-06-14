@@ -5503,6 +5503,26 @@ def _etsy_bump_usage(n=1):
         c.execute("""INSERT INTO etsy_api_usage (day, calls) VALUES (date('now'), :n)
                      ON CONFLICT(day) DO UPDATE SET calls = calls + :n""", {'n': n})
 
+# --- Priority (user-initiated) budget: separate counter so background
+# scanners cannot starve manual actions like 'Import this Etsy shop'.
+def _etsy_today_priority_usage():
+    with _EtsyCursor() as c:
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS etsy_api_priority_usage (day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0)")
+        except Exception:
+            pass
+        r = c.execute("SELECT calls FROM etsy_api_priority_usage WHERE day=date('now')").fetchone()
+        return r['calls'] if r else 0
+
+def _etsy_bump_priority_usage(n=1):
+    with _EtsyCursor() as c:
+        try:
+            c.execute("CREATE TABLE IF NOT EXISTS etsy_api_priority_usage (day TEXT PRIMARY KEY, calls INTEGER NOT NULL DEFAULT 0)")
+        except Exception:
+            pass
+        c.execute("""INSERT INTO etsy_api_priority_usage (day, calls) VALUES (date('now'), :n)
+                     ON CONFLICT(day) DO UPDATE SET calls = calls + :n""", {'n': n})
+
 def _etsy_upsert_shop(s):
     with _EtsyCursor() as c:
         c.execute("""
@@ -5869,7 +5889,14 @@ def _etsy_get_access_token():
 def _etsy_is_connected():
     return bool(_etsy_load_tokens().get('access_token'))
 
-def _etsy_request(path, params=None, retries=3):
+def _etsy_request(path, params=None, retries=3, priority=False):
+    """Call the Etsy Open API.
+
+    priority=True bypasses the shared daily budget (used by background
+    scanners) and instead enforces a small separate cap so user-initiated
+    actions like 'Import this Etsy shop' always work even when the
+    background scanner has spent the day's budget.
+    """
     settings = _etsy_load_settings()
     api_key = (settings.get('apiKey') or '').strip()
     if not api_key:
@@ -5878,9 +5905,16 @@ def _etsy_request(path, params=None, retries=3):
     # credentials are bad. Avoids burning daily quota on guaranteed-failures.
     if _etsy_auth_block['until'] > time.time():
         return None
-    if _etsy_today_usage() >= int(settings.get('dailyRequestBudget') or 8000):
-        log.warning('Etsy daily budget reached; pausing')
-        return None
+    if priority:
+        # Separate per-day cap for user-initiated calls (default 1000).
+        prio_cap = int(settings.get('dailyPriorityBudget') or 1000)
+        if _etsy_today_priority_usage() >= prio_cap:
+            log.warning('Etsy priority budget reached (%d); pausing', prio_cap)
+            raise RuntimeError(f'Etsy daily priority budget reached ({prio_cap} calls). Try again tomorrow or raise dailyPriorityBudget in settings.')
+    else:
+        if _etsy_today_usage() >= int(settings.get('dailyRequestBudget') or 8000):
+            log.warning('Etsy daily budget reached; pausing')
+            return None
     # Rate-limit (synchronous): enforce min interval between calls
     rps = float(settings.get('requestsPerSecond') or 5.0)
     min_interval = 1.0 / max(0.1, rps)
@@ -5909,7 +5943,10 @@ def _etsy_request(path, params=None, retries=3):
         try:
             _etsy_last_request_ts[0] = time.time()
             r = http_requests.get(url, params=params, headers=headers, timeout=30)
-            _etsy_bump_usage(1)
+            if priority:
+                _etsy_bump_priority_usage(1)
+            else:
+                _etsy_bump_usage(1)
             if r.status_code == 200:
                 _etsy_clear_auth_block()
                 return r.json()
@@ -6353,12 +6390,13 @@ def _etsy_scanner_loop():
         time.sleep(max(60, interval))
 
 def _etsy_ensure_scanner_thread():
-    global _etsy_scanner_thread
-    if _etsy_scanner_thread and _etsy_scanner_thread.is_alive():
-        return
-    _etsy_init_db()
-    _etsy_scanner_thread = threading.Thread(target=_etsy_scanner_loop, daemon=True, name='etsy-scanner')
-    _etsy_scanner_thread.start()
+    # DISABLED 2026-06-14 per user: the background sweep was consuming the
+    # entire 4500/day Etsy API budget, starving user-initiated shop imports
+    # (Etsy Shops tab). All API quota is now reserved for manual imports.
+    # Re-enable by removing the early return below.
+    _etsy_init_db()  # still init DB so existing endpoints don't 500
+    log.info('Etsy background scanner is DISABLED (all API quota reserved for Etsy Shops tab imports)')
+    return
 
 # ---------- HTTP routes ----------
 @app.route('/api/etsy/health', methods=['GET'])
@@ -6693,6 +6731,38 @@ def etsy_oauth_status():
     })
 
 # ===== End Etsy Jewelry Scanner section ======================================
+
+
+# ===== Etsy Shops tab (per-shop import + favorites) ===========================
+# Imports any Etsy shop's full catalog via Etsy Open API v3 and stores it
+# forever. UI: a card grid sorted by hearts (num_favorers). See
+# etsy_shops_module.py for storage + routes.
+try:
+    from flask import send_from_directory as _es_send_from_directory  # noqa: F401
+    import etsy_shops_module as _etsy_shops_module
+
+    def _etsy_shops_request(path, params=None):
+        """Adapter that reuses our existing auth/rate-limit logic.
+
+        Background scanner is disabled, so the full daily budget is
+        available to user-initiated shop imports. Re-raises so the
+        import worker can surface a real error message to the UI
+        instead of silently treating an API failure as 'shop not found'.
+        """
+        return _etsy_request(path, params=params)
+
+    _etsy_shops_module.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        etsy_request_fn=_etsy_shops_request,
+        login_required=login_required,
+        send_from_directory=_es_send_from_directory,
+    )
+    log.info('Etsy Shops tab registered (data=%s)', DATA_DIR)
+except Exception as _es_e:
+    log.exception('Etsy Shops tab failed to register: %s', _es_e)
+# ===== End Etsy Shops tab =====================================================
+
 
 # ===== Main =====
 if __name__ == '__main__':
