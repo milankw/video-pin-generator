@@ -7019,12 +7019,67 @@ function eshRenderDetail(shop, listings, job) {
     if (_eshState.pollTimer) { clearInterval(_eshState.pollTimer); _eshState.pollTimer = null; }
   }
 
-  // Grid
-  document.getElementById('esh-results-count').textContent = `${listings.length} shown`;
+  // Grid (eshRenderGrid handles esh-results-count via incremental render)
   eshRenderGrid(listings, shop.shop_id);
 }
 
+// Incremental rendering: even a 6700-card grid froze the browser when
+// rendered all at once. Now we render 60 at a time and load more as the
+// user nears the bottom (IntersectionObserver sentinel).
+const ESH_PAGE_SIZE = 60;
+
 function eshRenderGrid(listings, shopId) {
+  const grid = document.getElementById('esh-grid');
+  // Tear down any prior observer + cached state so re-renders don't leak
+  // observers (each shop switch / sort change calls this).
+  if (_eshState.gridObserver) { try { _eshState.gridObserver.disconnect(); } catch(_){} _eshState.gridObserver = null; }
+  _eshState.gridListings = listings;
+  _eshState.gridShopId = shopId;
+  _eshState.gridRendered = 0;
+
+  if (!listings.length) {
+    grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">No listings match.</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  eshRenderMore();
+}
+
+function eshRenderMore() {
+  const grid = document.getElementById('esh-grid');
+  if (!grid) return;
+  const listings = _eshState.gridListings || [];
+  const shopId = _eshState.gridShopId;
+  const start = _eshState.gridRendered || 0;
+  const end = Math.min(start + ESH_PAGE_SIZE, listings.length);
+  if (start >= end) return;
+  // Remove old sentinel if any
+  const oldSentinel = document.getElementById('esh-grid-sentinel');
+  if (oldSentinel) oldSentinel.remove();
+  // Append next batch
+  const html = listings.slice(start, end).map(L => eshCardHtml(L, shopId)).join('');
+  grid.insertAdjacentHTML('beforeend', html);
+  _eshState.gridRendered = end;
+  // Update count to reflect what's visible
+  const countEl = document.getElementById('esh-results-count');
+  if (countEl) countEl.textContent = `${end} of ${listings.length} shown`;
+  // If more remain, add a fresh sentinel and observe it.
+  if (end < listings.length) {
+    const s = document.createElement('div');
+    s.id = 'esh-grid-sentinel';
+    s.style.cssText = 'grid-column:1/-1;height:60px;display:flex;align-items:center;justify-content:center;color:var(--gray-500);font-size:13px;';
+    s.textContent = `Loading more… (${end} / ${listings.length})`;
+    grid.appendChild(s);
+    if (_eshState.gridObserver) { try { _eshState.gridObserver.disconnect(); } catch(_){} }
+    _eshState.gridObserver = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) eshRenderMore();
+    }, { rootMargin: '600px 0px' });
+    _eshState.gridObserver.observe(s);
+  }
+  return;
+}
+
+function __eshLegacyRenderAll(listings, shopId) { // kept only for reference
   const grid = document.getElementById('esh-grid');
   if (!listings.length) {
     grid.innerHTML = '<div style="color:var(--gray-500);grid-column:1/-1;">No listings match.</div>';
@@ -7040,8 +7095,11 @@ function eshCardHtml(L, shopId) {
   const ageDays = created ? Math.floor((Date.now() - created.getTime()) / 86400000) : null;
   const ageLabel = ageDays == null ? '' : (ageDays < 30 ? `<span style="color:#dc2626;">🔥 ${ageDays}d new</span>` : (ageDays < 180 ? `${ageDays}d old` : `${Math.floor(ageDays/30)}mo old`));
   const heartClass = L.is_favorite ? 'esh-fav-on' : 'esh-fav-off';
+  const selected = (_eshState.selected && _eshState.selected.has(L.listing_id));
+  const cardBorder = selected ? 'box-shadow:0 0 0 3px #2563eb;' : '';
   return `
-    <div class="section-card esh-card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;">
+    <div class="section-card esh-card" data-listing-id="${L.listing_id}" data-shop-id="${shopId}" onclick="eshToggleSelect(${L.listing_id}, this)" style="padding:0;overflow:hidden;display:flex;flex-direction:column;cursor:pointer;${cardBorder}position:relative;">
+      ${selected ? `<div style="position:absolute;top:6px;left:6px;z-index:2;background:#2563eb;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.3);">✓</div>` : ''}
       <div style="position:relative;aspect-ratio:1/1;background:var(--gray-100);">
         ${img ? `<img src="${escapeHtml(img)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentNode.style.background='var(--gray-200)'">` : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--gray-400);font-size:12px;">no image</div>'}
         <button onclick="event.stopPropagation();eshToggleFav(${shopId}, ${L.listing_id}, this)"
@@ -7050,7 +7108,7 @@ function eshCardHtml(L, shopId) {
                 style="position:absolute;top:6px;right:6px;background:rgba(255,255,255,.95);border:0;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.2);color:${L.is_favorite?'#dc2626':'#9ca3af'};">${L.is_favorite?'♥':'♡'}</button>
       </div>
       <div style="padding:10px;display:flex;flex-direction:column;gap:6px;flex:1;">
-        <a href="${escapeHtml(L.url||'#')}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none;font-size:13px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${escapeHtml(L.title||'')}">${escapeHtml(L.title||'(untitled)')}</a>
+        <a href="${escapeHtml(L.url||'#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:inherit;text-decoration:none;font-size:13px;font-weight:600;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;" title="${escapeHtml(L.title||'')}">${escapeHtml(L.title||'(untitled)')}</a>
         <div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--gray-700);">
           <span style="font-weight:600;">${price}</span>
           <span title="Hearts on this listing">♥ ${eshFmt(L.num_favorers)}</span>
@@ -7061,6 +7119,245 @@ function eshCardHtml(L, shopId) {
         </div>
       </div>
     </div>`;
+}
+
+// ----- Selection + Push to Shopify -----
+// Click a card to toggle selection. A floating action bar at the bottom
+// shows the count + opens the push-to-Shopify modal.
+function eshToggleSelect(listingId, cardEl) {
+  if (!_eshState.selected) _eshState.selected = new Set();
+  if (_eshState.selected.has(listingId)) {
+    _eshState.selected.delete(listingId);
+    cardEl.style.boxShadow = '';
+    const check = cardEl.querySelector('div[style*="#2563eb"]');
+    if (check) check.remove();
+  } else {
+    _eshState.selected.add(listingId);
+    cardEl.style.boxShadow = '0 0 0 3px #2563eb';
+    if (!cardEl.querySelector('div[data-esh-check]')) {
+      const c = document.createElement('div');
+      c.setAttribute('data-esh-check', '1');
+      c.style.cssText = 'position:absolute;top:6px;left:6px;z-index:2;background:#2563eb;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,.3);';
+      c.textContent = '✓';
+      cardEl.appendChild(c);
+    }
+  }
+  eshUpdateActionBar();
+}
+
+function eshClearSelection() {
+  if (!_eshState.selected) return;
+  _eshState.selected.clear();
+  // Visually clear by re-rendering current grid from start.
+  if (_eshState.gridListings) {
+    _eshState.gridRendered = 0;
+    document.getElementById('esh-grid').innerHTML = '';
+    eshRenderMore();
+  }
+  eshUpdateActionBar();
+}
+
+function eshUpdateActionBar() {
+  let bar = document.getElementById('esh-action-bar');
+  const n = (_eshState.selected && _eshState.selected.size) || 0;
+  if (!n) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'esh-action-bar';
+    bar.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:12px 20px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);display:flex;gap:12px;align-items:center;z-index:9999;font-size:14px;';
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `
+    <span><strong>${n}</strong> selected</span>
+    <button onclick="eshOpenPushModal()" style="background:#10b981;color:#fff;border:0;padding:8px 16px;border-radius:8px;font-weight:600;cursor:pointer;">Push to Shopify</button>
+    <button onclick="eshClearSelection()" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3);padding:8px 12px;border-radius:8px;cursor:pointer;">Clear</button>
+  `;
+}
+
+async function eshOpenPushModal() {
+  const n = (_eshState.selected && _eshState.selected.size) || 0;
+  if (!n) return;
+  // Build modal
+  let modal = document.getElementById('esh-push-modal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'esh-push-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;';
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:640px;width:100%;max-height:90vh;overflow:auto;padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;font-size:18px;">Push ${n} listing${n===1?'':'s'} to Shopify</h3>
+        <button onclick="document.getElementById('esh-push-modal').remove()" style="background:transparent;border:0;font-size:24px;cursor:pointer;color:var(--gray-500);">×</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;">
+        <label>Target store
+          <select id="esh-push-store" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;"><option>Loading…</option></select>
+        </label>
+        <label>Pricing
+          <select id="esh-push-pricing-mode" onchange="eshUpdatePricingInput()" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+            <option value="as_is">As is (Etsy price)</option>
+            <option value="multiplier">Multiplier (e.g. 1.5×)</option>
+            <option value="fixed_add">Add fixed amount</option>
+            <option value="fixed">Fixed price for all</option>
+          </select>
+          <input id="esh-push-pricing-value" type="number" step="0.01" placeholder="e.g. 1.5" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:6px;display:none;">
+        </label>
+        <label>Title
+          <select id="esh-push-title-mode" onchange="eshUpdateTitleInput()" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+            <option value="as_is">As is</option>
+            <option value="clean">Clean (strip Etsy SEO tail after | or –)</option>
+            <option value="prefix">Add prefix</option>
+            <option value="suffix">Add suffix</option>
+          </select>
+          <input id="esh-push-title-extra" type="text" placeholder="prefix/suffix text" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:6px;display:none;">
+        </label>
+        <label>Collections (optional)
+          <select id="esh-push-collections" multiple style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;min-height:80px;"><option disabled>Select store first</option></select>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Hold Cmd/Ctrl to multi-select</div>
+        </label>
+        <label>Extra tags (comma-separated, optional)
+          <input id="esh-push-extra-tags" type="text" placeholder="e.g. trending, jewelry, gift" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+        </label>
+        <label>Vendor name (optional, defaults to store name)
+          <input id="esh-push-vendor" type="text" placeholder="" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;">
+          <input id="esh-push-variants" type="checkbox" checked>
+          Include variants (1 extra Etsy API call per listing)
+        </label>
+      </div>
+      <div id="esh-push-progress" style="margin-top:16px;display:none;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;">
+        <button onclick="document.getElementById('esh-push-modal').remove()" class="btn btn-secondary" style="padding:8px 16px;">Cancel</button>
+        <button id="esh-push-go" onclick="eshDoPush(false)" style="background:#10b981;color:#fff;border:0;padding:8px 20px;border-radius:8px;font-weight:600;cursor:pointer;">Push to Shopify</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  // Load stores list.
+  try {
+    const r = await fetch('/api/etsy-shops/shopify/stores').then(r=>r.json());
+    if (r && r.ok) {
+      const sel = document.getElementById('esh-push-store');
+      sel.innerHTML = r.stores.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.domain)}${s.currency ? ', '+s.currency : ''})</option>`).join('');
+      sel.onchange = eshLoadCollectionsForStore;
+      if (r.stores.length) eshLoadCollectionsForStore();
+    }
+  } catch (e) { console.error('store load', e); }
+}
+
+function eshUpdatePricingInput() {
+  const mode = document.getElementById('esh-push-pricing-mode').value;
+  const inp = document.getElementById('esh-push-pricing-value');
+  inp.style.display = mode === 'as_is' ? 'none' : 'block';
+  if (mode === 'multiplier') inp.placeholder = 'e.g. 1.5 (means ×1.5)';
+  else if (mode === 'fixed_add') inp.placeholder = 'e.g. 5 (add 5 to each price)';
+  else if (mode === 'fixed') inp.placeholder = 'e.g. 29.99 (same price for all)';
+}
+
+function eshUpdateTitleInput() {
+  const mode = document.getElementById('esh-push-title-mode').value;
+  const inp = document.getElementById('esh-push-title-extra');
+  inp.style.display = (mode === 'prefix' || mode === 'suffix') ? 'block' : 'none';
+  inp.placeholder = mode === 'prefix' ? 'Text before title' : (mode === 'suffix' ? 'Text after title' : '');
+}
+
+async function eshLoadCollectionsForStore() {
+  const storeId = document.getElementById('esh-push-store').value;
+  const sel = document.getElementById('esh-push-collections');
+  sel.innerHTML = '<option disabled>Loading…</option>';
+  try {
+    const r = await fetch('/api/etsy-shops/shopify/collections?store_id=' + encodeURIComponent(storeId)).then(r=>r.json());
+    if (r && r.ok && r.collections) {
+      if (!r.collections.length) {
+        sel.innerHTML = '<option disabled>(no collections in this store)</option>';
+        return;
+      }
+      sel.innerHTML = r.collections.map(c => `<option value="${c.id}">${escapeHtml(c.title)} (${c.type})</option>`).join('');
+    } else {
+      sel.innerHTML = '<option disabled>(error loading)</option>';
+    }
+  } catch (e) {
+    sel.innerHTML = '<option disabled>(error)</option>';
+  }
+}
+
+async function eshDoPush(forceDuplicate) {
+  const ids = Array.from(_eshState.selected || []);
+  if (!ids.length) return;
+  const storeId = document.getElementById('esh-push-store').value;
+  const pricingMode = document.getElementById('esh-push-pricing-mode').value;
+  const pricingValue = parseFloat(document.getElementById('esh-push-pricing-value').value) || null;
+  const titleMode = document.getElementById('esh-push-title-mode').value;
+  const titleExtra = document.getElementById('esh-push-title-extra').value;
+  const collEl = document.getElementById('esh-push-collections');
+  const collectionIds = Array.from(collEl.selectedOptions).map(o => parseInt(o.value, 10)).filter(Boolean);
+  const extraTags = document.getElementById('esh-push-extra-tags').value;
+  const vendor = document.getElementById('esh-push-vendor').value;
+  const includeVariants = document.getElementById('esh-push-variants').checked;
+
+  const options = {
+    pricing_mode: pricingMode,
+    pricing_value: pricingValue,
+    title_mode: titleMode,
+    title_prefix: titleMode === 'prefix' ? titleExtra : '',
+    title_suffix: titleMode === 'suffix' ? titleExtra : '',
+    collection_ids: collectionIds,
+    extra_tags: extraTags,
+    vendor: vendor,
+    include_variants: includeVariants,
+    status: 'active',
+  };
+
+  const prog = document.getElementById('esh-push-progress');
+  const goBtn = document.getElementById('esh-push-go');
+  goBtn.disabled = true; goBtn.textContent = 'Pushing…';
+  prog.style.display = 'block';
+  prog.innerHTML = `<div style="font-size:13px;color:var(--gray-700);">Pushing ${ids.length} listing${ids.length===1?'':'s'}… this can take a bit if variants are included.</div>`;
+
+  try {
+    const r = await fetch('/api/etsy-shops/shopify/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({listing_ids: ids, target_store_id: storeId, options, force_duplicate: forceDuplicate})
+    }).then(r=>r.json());
+    if (!r.ok) { prog.innerHTML = `<div style="color:#dc2626;">Push failed: ${escapeHtml(r.error||'unknown')}</div>`; goBtn.disabled = false; goBtn.textContent = 'Push to Shopify'; return; }
+    const conflicts = (r.results || []).filter(x => x.conflict);
+    if (conflicts.length && !forceDuplicate) {
+      // Ask user to confirm re-push.
+      if (confirm(`${conflicts.length} listing${conflicts.length===1?'':'s'} already pushed to this store. Push again anyway (will create new product with unique URL)?`)) {
+        // Restrict selection to just the conflicted ones for the retry.
+        _eshState.selected = new Set(conflicts.map(c => c.listing_id));
+        await eshDoPush(true);
+        return;
+      }
+    }
+    // Render summary.
+    const ok = r.results.filter(x => x.ok);
+    const failed = r.results.filter(x => !x.ok && !x.conflict);
+    let html = `<div style="font-size:13px;"><strong>${ok.length}</strong> pushed`;
+    if (failed.length) html += `, <strong style="color:#dc2626;">${failed.length}</strong> failed`;
+    html += '.</div>';
+    if (ok.length) {
+      html += '<div style="margin-top:8px;max-height:200px;overflow:auto;">' +
+              ok.map(x => `<div style="font-size:12px;color:var(--gray-600);">✓ <a href="${escapeHtml(x.shopify_admin_url||'#')}" target="_blank" rel="noopener">${x.shopify_handle || x.shopify_product_id}</a></div>`).join('') +
+              '</div>';
+    }
+    if (failed.length) {
+      html += '<div style="margin-top:8px;max-height:200px;overflow:auto;">' +
+              failed.map(x => `<div style="font-size:12px;color:#dc2626;">✗ ${x.listing_id}: ${escapeHtml(x.error||'')}</div>`).join('') +
+              '</div>';
+    }
+    prog.innerHTML = html;
+    goBtn.textContent = 'Done';
+    goBtn.onclick = () => { document.getElementById('esh-push-modal').remove(); eshClearSelection(); };
+  } catch (e) {
+    prog.innerHTML = `<div style="color:#dc2626;">Network error: ${escapeHtml(e.message||String(e))}</div>`;
+    goBtn.disabled = false; goBtn.textContent = 'Retry';
+  }
 }
 
 async function eshToggleFav(shopId, listingId, btn) {

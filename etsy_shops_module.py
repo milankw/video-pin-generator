@@ -35,10 +35,45 @@ def _images_dir(data_dir):
     os.makedirs(p, exist_ok=True)
     return p
 
+class _Conn:
+    """Context manager that guarantees connection close.
+
+    Python's ``with sqlite3.connect(...) as c:`` only commits/rolls-back on
+    exit — it does NOT close the connection. Used at scale (one import =
+    hundreds of DB calls) that leaks file descriptors and SQLite handles,
+    serialises writes via OS locks, and surfaces as 'database is locked'.
+    This wrapper closes the connection on exit.
+    """
+    __slots__ = ('_path', '_c')
+    def __init__(self, path):
+        self._path = path
+        self._c = None
+    def __enter__(self):
+        c = sqlite3.connect(self._path, timeout=30)
+        c.row_factory = sqlite3.Row
+        # WAL mode lets readers and writers proceed concurrently. Set once;
+        # cheap when already enabled. busy_timeout handles transient lock
+        # contention without raising.
+        try:
+            c.execute('PRAGMA journal_mode=WAL')
+            c.execute('PRAGMA busy_timeout=30000')
+            c.execute('PRAGMA synchronous=NORMAL')
+        except Exception:
+            pass
+        self._c = c
+        return c
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self._c.commit()
+            else:
+                self._c.rollback()
+        finally:
+            try: self._c.close()
+            except Exception: pass
+
 def _conn(data_dir):
-    c = sqlite3.connect(_db_path(data_dir), timeout=30)
-    c.row_factory = sqlite3.Row
-    return c
+    return _Conn(_db_path(data_dir))
 
 def init_db(data_dir):
     """Create tables on first run. Idempotent."""
@@ -306,60 +341,86 @@ def _import_worker(shop_input, data_dir, etsy_request_fn):
             enriched[int(L['listing_id'])] = L
         _job_update(data_dir, shop_id, done=min(i + 100, len(ids)))
 
-    # 5) Persist listings + download images
+    # 5) Persist listings + download images.
+    # Clear stale rows up-front (own short transaction).
     with _conn(data_dir) as c:
-        # Clear stale rows for this shop so a refresh removes deactivated listings
         c.execute('DELETE FROM etsy_listing WHERE shop_id=?', (shop_id,))
-        for lid, base in by_id.items():
+
+    _job_update(data_dir, shop_id, phase='persisting', total=len(by_id), done=0)
+
+    # Per-listing short transaction. Holding ONE transaction open across
+    # thousands of HTTP image downloads (~300ms each) was locking the DB
+    # for 10+ minutes and starving every reader. Now each listing commits
+    # immediately, so the API/UI can see progress in near real-time.
+    #
+    # HOTLINK MODE: we no longer download images to disk. Etsy's CDN URLs
+    # are public + permanent + faster than re-serving from this VPS.
+    # Saves ~100 KB per listing on disk (a 6747-listing shop = 0 MB vs
+    # ~675 MB) and turns a 13-min import into ~30 sec.
+    done_count = 0
+    for lid, base in by_id.items():
+        try:
             rich = enriched.get(lid) or {}
             merged = {**base, **rich}
             images = merged.get('images') or []
-            main_url = images[0].get('url_fullxfull') if images else None
+            # 570px wide is plenty for grid cards (<=400px).
+            main_display_url = None
+            if images:
+                im0 = images[0]
+                main_display_url = (im0.get('url_570xN') or im0.get('url_fullxfull')
+                                    or im0.get('url_300x300'))
             secondary_urls = [im.get('url_570xN') or im.get('url_fullxfull')
                               for im in images if im.get('url_570xN') or im.get('url_fullxfull')]
 
-            local_path, served_url = _download_image(main_url, shop_id, lid, data_dir)
+            # Hotlink only — no on-disk copy.
+            local_path, served_url = (None, None)
 
             price = merged.get('price') or {}
-            c.execute("""
-                INSERT INTO etsy_listing(listing_id, shop_id, title, url,
-                    price_amount, price_divisor, price_currency,
-                    num_favorers, views, quantity, state,
-                    created_timestamp, updated_timestamp,
-                    tags, materials, image_main_url, image_local_path, image_urls,
-                    imported_at, raw_json)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(listing_id) DO UPDATE SET
-                    title=excluded.title, url=excluded.url,
-                    price_amount=excluded.price_amount, price_divisor=excluded.price_divisor,
-                    price_currency=excluded.price_currency,
-                    num_favorers=excluded.num_favorers, views=excluded.views,
-                    quantity=excluded.quantity, state=excluded.state,
-                    updated_timestamp=excluded.updated_timestamp,
-                    tags=excluded.tags, materials=excluded.materials,
-                    image_main_url=excluded.image_main_url,
-                    image_local_path=excluded.image_local_path,
-                    image_urls=excluded.image_urls,
-                    raw_json=excluded.raw_json
-            """, (
-                lid, shop_id, merged.get('title'), merged.get('url'),
-                int(price.get('amount') or 0), int(price.get('divisor') or 100),
-                price.get('currency_code'),
-                int(merged.get('num_favorers') or 0),
-                int(merged.get('views') or 0),
-                int(merged.get('quantity') or 0),
-                merged.get('state'),
-                int(merged.get('created_timestamp') or 0),
-                int(merged.get('updated_timestamp') or merged.get('last_modified_timestamp') or 0),
-                json.dumps(merged.get('tags') or []),
-                json.dumps(merged.get('materials') or []),
-                served_url or main_url,
-                local_path,
-                json.dumps(secondary_urls),
-                int(time.time()),
-                json.dumps(merged),
-            ))
-        c.commit()
+            with _conn(data_dir) as c:
+                c.execute("""
+                    INSERT INTO etsy_listing(listing_id, shop_id, title, url,
+                        price_amount, price_divisor, price_currency,
+                        num_favorers, views, quantity, state,
+                        created_timestamp, updated_timestamp,
+                        tags, materials, image_main_url, image_local_path, image_urls,
+                        imported_at, raw_json)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(listing_id) DO UPDATE SET
+                        title=excluded.title, url=excluded.url,
+                        price_amount=excluded.price_amount, price_divisor=excluded.price_divisor,
+                        price_currency=excluded.price_currency,
+                        num_favorers=excluded.num_favorers, views=excluded.views,
+                        quantity=excluded.quantity, state=excluded.state,
+                        updated_timestamp=excluded.updated_timestamp,
+                        tags=excluded.tags, materials=excluded.materials,
+                        image_main_url=excluded.image_main_url,
+                        image_local_path=excluded.image_local_path,
+                        image_urls=excluded.image_urls,
+                        raw_json=excluded.raw_json
+                """, (
+                    lid, shop_id, merged.get('title'), merged.get('url'),
+                    int(price.get('amount') or 0), int(price.get('divisor') or 100),
+                    price.get('currency_code'),
+                    int(merged.get('num_favorers') or 0),
+                    int(merged.get('views') or 0),
+                    int(merged.get('quantity') or 0),
+                    merged.get('state'),
+                    int(merged.get('created_timestamp') or 0),
+                    int(merged.get('updated_timestamp') or merged.get('last_modified_timestamp') or 0),
+                    json.dumps(merged.get('tags') or []),
+                    json.dumps(merged.get('materials') or []),
+                    served_url or main_display_url,
+                    local_path,
+                    json.dumps(secondary_urls),
+                    int(time.time()),
+                    json.dumps(merged),
+                ))
+        except Exception as e:
+            log.warning('etsy-shops: failed to persist listing %s: %s', lid, e)
+        done_count += 1
+        # Update job progress every 25 listings to limit DB churn.
+        if done_count % 25 == 0 or done_count == len(by_id):
+            _job_update(data_dir, shop_id, done=done_count)
 
     _job_update(data_dir, shop_id, status='done', phase='done',
                 finished_at=int(time.time()),
@@ -479,11 +540,19 @@ def get_progress(data_dir, shop_id):
 
 
 def delete_shop(data_dir, shop_id):
+    """Remove all data for this shop: DB rows AND on-disk image files."""
     with _conn(data_dir) as c:
         c.execute('DELETE FROM etsy_listing WHERE shop_id=?', (shop_id,))
         c.execute('DELETE FROM etsy_shop WHERE shop_id=?', (shop_id,))
         c.execute('DELETE FROM etsy_import_job WHERE shop_id=?', (shop_id,))
-        c.commit()
+    # Delete cached image files to free disk space.
+    try:
+        import shutil
+        img_dir = os.path.join(_image_dir(data_dir), str(shop_id))
+        if os.path.isdir(img_dir):
+            shutil.rmtree(img_dir, ignore_errors=True)
+    except Exception as e:
+        log.warning('Could not remove image dir for shop %s: %s', shop_id, e)
     return True
 
 
@@ -528,11 +597,32 @@ def list_favorites(data_dir):
 
 # ---------- Flask wiring ----------
 
+def _recover_zombie_jobs(data_dir):
+    """Any job still marked status='running' at startup is a zombie — the
+    worker thread died with the process. Mark as 'error' so the UI can
+    show a clean retry path instead of polling forever.
+    """
+    try:
+        with _conn(data_dir) as c:
+            n = c.execute(
+                """UPDATE etsy_import_job
+                   SET status='error',
+                       error=COALESCE(error,'')||'Import interrupted by server restart. Click Refresh to retry.',
+                       finished_at=strftime('%s','now')
+                   WHERE status IN ('running','queued')"""
+            ).rowcount
+            if n:
+                log.info('etsy-shops: recovered %d zombie import job(s)', n)
+    except Exception as e:
+        log.warning('etsy-shops: zombie recovery failed: %s', e)
+
+
 def register_routes(app, data_dir, etsy_request_fn, login_required, send_from_directory):
     """Attach all /api/etsy-shops/* routes and the image-serve route to the Flask app."""
     from flask import jsonify, request
 
     init_db(data_dir)
+    _recover_zombie_jobs(data_dir)
 
     @app.route('/api/etsy-shops', methods=['GET'])
     @login_required

@@ -1,0 +1,769 @@
+"""Etsy listing -> Shopify product pusher.
+
+This is a separate module so the Etsy Shops tab stays focused on browsing,
+and Shopify push logic lives in one place that can evolve independently.
+
+What it does
+------------
+* Given (etsy listing_id, target Shopify store, push options) it:
+  1. Loads the cached Etsy listing data (no extra API call needed).
+  2. Optionally fetches Etsy ``getListingInventory`` (1 extra call) to
+     get variations + offerings.
+  3. Maps Etsy data -> Shopify ``POST /admin/api/2024-10/products.json``
+     body (title, body_html, vendor, tags, status, options, variants,
+     images).
+  4. Links variation images to variants by setting ``variant.image_id``
+     using the per-variation image references Etsy provides.
+  5. Records the push in ``etsy_shopify_push`` so we can detect duplicates
+     and assign unique Shopify handles on intentional re-pushes.
+
+Public API
+----------
+* ``push_listing(...)``  — sync push of one listing.
+* ``register_routes(app, ...)`` — Flask wiring.
+
+Design notes
+------------
+* No background-thread queue. The user said "I'll click cards then push" —
+  pushes are interactive and short. We run them in the request handler
+  with a small in-memory job map for progress polling when pushing >1.
+* We never auto-skip a duplicate; the route returns ``conflict=True`` and
+  the UI asks the user to confirm before the second push.
+* We use Shopify REST 2024-10 because it's the version every store in
+  this app already supports (verified against stored access tokens).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from typing import Any
+
+import requests as http_requests
+
+log = logging.getLogger(__name__)
+
+SHOPIFY_API_VERSION = '2024-10'
+
+
+# ---------- tiny DB helper (same WAL pattern as etsy_shops_module) ----------
+
+def _db_path(data_dir):
+    return os.path.join(data_dir, 'etsy_shops.db')
+
+
+class _Conn:
+    """Auto-closing sqlite connection — same pattern as etsy_shops_module."""
+    __slots__ = ('_path', '_c')
+    def __init__(self, path): self._path = path; self._c = None
+    def __enter__(self):
+        c = sqlite3.connect(self._path, timeout=30)
+        c.row_factory = sqlite3.Row
+        try:
+            c.execute('PRAGMA journal_mode=WAL')
+            c.execute('PRAGMA busy_timeout=30000')
+        except Exception:
+            pass
+        self._c = c
+        return c
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None: self._c.commit()
+            else: self._c.rollback()
+        finally:
+            try: self._c.close()
+            except Exception: pass
+
+
+def _init_push_table(data_dir):
+    """Tracks every successful push so the UI can show 'already pushed'
+    and we can generate unique handles on intentional re-pushes."""
+    with _Conn(_db_path(data_dir)) as c:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS etsy_shopify_push (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                listing_id INTEGER NOT NULL,
+                shop_id INTEGER NOT NULL,
+                target_store_id TEXT NOT NULL,
+                target_domain TEXT NOT NULL,
+                shopify_product_id INTEGER,
+                shopify_handle TEXT,
+                shopify_admin_url TEXT,
+                pushed_at INTEGER NOT NULL,
+                push_options TEXT,
+                error TEXT
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_eshp_listing ON etsy_shopify_push(listing_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_eshp_target ON etsy_shopify_push(target_store_id, listing_id)")
+
+
+# ---------- store loading ----------
+
+def _load_stores(data_dir):
+    """Return list of Shopify-capable stores from data/stores.json.
+
+    The host server.py also reads this file (single source of truth for
+    Shopify credentials). We never duplicate writes here.
+    """
+    path = os.path.join(data_dir, 'stores.json')
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception as e:
+        log.warning('etsy-to-shopify: cannot read stores.json: %s', e)
+        return []
+    out = []
+    seen = set()
+    for s in data:
+        token = (s.get('shopifyAccessToken') or '').strip()
+        domain = (s.get('domain') or s.get('shopifyDomain') or '').strip()
+        if not token or not domain:
+            continue
+        # De-dupe by domain (the file has duplicates from prior migrations).
+        if domain in seen:
+            continue
+        seen.add(domain)
+        out.append({
+            'id': s.get('id') or domain,
+            'name': s.get('name') or domain,
+            'domain': domain,
+            'access_token': token,
+            'currency': s.get('currency') or '',
+            'category': s.get('storeCategory') or '',
+        })
+    out.sort(key=lambda x: x['name'].lower())
+    return out
+
+
+def _find_store(data_dir, store_id):
+    for s in _load_stores(data_dir):
+        if s['id'] == store_id or s['domain'] == store_id:
+            return s
+    return None
+
+
+# ---------- Shopify REST helpers ----------
+
+class ShopifyError(RuntimeError):
+    """Raised when Shopify returns 4xx/5xx. Wraps body for surfacing to UI."""
+    def __init__(self, status, body):
+        super().__init__(f'Shopify {status}: {body[:500] if isinstance(body, str) else body}')
+        self.status = status
+        self.body = body
+
+
+def _shopify_request(store, method, path, body=None, params=None, retries=3):
+    url = f"https://{store['domain']}/admin/api/{SHOPIFY_API_VERSION}{path}"
+    headers = {
+        'X-Shopify-Access-Token': store['access_token'],
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    last_err = None
+    for attempt in range(retries):
+        try:
+            r = http_requests.request(method, url, params=params,
+                                      data=json.dumps(body) if body is not None else None,
+                                      headers=headers, timeout=45)
+            if r.status_code in (200, 201):
+                return r.json()
+            if r.status_code == 429:
+                # Shopify rate limit. Honour Retry-After.
+                wait = float(r.headers.get('Retry-After') or 2)
+                log.info('Shopify 429, waiting %.1fs', wait)
+                time.sleep(wait)
+                continue
+            if r.status_code >= 500 and attempt < retries - 1:
+                time.sleep(1 + attempt)
+                continue
+            raise ShopifyError(r.status_code, r.text)
+        except http_requests.RequestException as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(1 + attempt)
+                continue
+            raise
+    if last_err:
+        raise last_err
+    raise RuntimeError('Shopify request exhausted retries with no result')
+
+
+# ---------- title / handle helpers ----------
+
+_HANDLE_STRIP = re.compile(r'[^a-z0-9]+')
+
+
+def _slugify_handle(text, suffix=''):
+    s = (text or '').lower()
+    s = _HANDLE_STRIP.sub('-', s).strip('-')
+    s = s[:200]  # Shopify handle max length safety
+    if suffix:
+        s = f'{s}-{suffix}'
+    return s or f'product-{int(time.time())}'
+
+
+def _apply_title_mode(original_title, mode, prefix='', suffix=''):
+    t = (original_title or '').strip()
+    if mode == 'prefix':
+        return f'{prefix} {t}'.strip()
+    if mode == 'suffix':
+        return f'{t} {suffix}'.strip()
+    if mode == 'clean':
+        # Remove common Etsy SEO bloat: "| Gift for Her", trailing punctuation,
+        # excess whitespace. Conservative — keep first clause.
+        t = re.split(r'\s[\|\u2013\u2014\-]\s', t)[0]
+        return t[:255].strip()
+    # 'as_is'
+    return t[:255]
+
+
+# ---------- pricing ----------
+
+def _apply_pricing(amount_minor, divisor, mode, value=None):
+    """amount_minor / divisor = base price. Returns Shopify variant price string."""
+    base = (float(amount_minor) / float(max(1, divisor))) if amount_minor else 0.0
+    if mode == 'multiplier' and value:
+        base = base * float(value)
+    elif mode == 'fixed_add' and value:
+        base = base + float(value)
+    elif mode == 'fixed':
+        base = float(value or 0)
+    # 'as_is' falls through
+    return f'{base:.2f}'
+
+
+# ---------- Etsy data extraction ----------
+
+def _load_cached_listing(data_dir, listing_id):
+    """Read the listing's raw_json that the Etsy Shops import stored.
+
+    raw_json contains the merged listing + image array, so we don't need
+    a fresh API call for the base data.
+    """
+    with _Conn(_db_path(data_dir)) as c:
+        row = c.execute(
+            'SELECT shop_id, raw_json FROM etsy_listing WHERE listing_id=?',
+            (listing_id,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return {'shop_id': row['shop_id'], 'data': json.loads(row['raw_json'])}
+    except Exception:
+        return None
+
+
+def _fetch_inventory(etsy_request_fn, listing_id):
+    """Call Etsy getListingInventory. Returns dict or None.
+
+    Etsy returns: { products: [ { property_values, offerings, sku, ... }, ... ],
+                    price_on_property, quantity_on_property, sku_on_property }
+    """
+    try:
+        return etsy_request_fn(f'/v3/application/listings/{listing_id}/inventory') or None
+    except Exception as e:
+        log.warning('etsy inventory fetch failed for %s: %s', listing_id, e)
+        return None
+
+
+# ---------- mapping: Etsy -> Shopify product payload ----------
+
+def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suffix=''):
+    """Map Etsy data to the body for POST /admin/api/.../products.json.
+
+    Returns ``{'product': {...}}`` ready to POST.
+    """
+    title = _apply_title_mode(listing_data.get('title') or '',
+                              push_opts.get('title_mode') or 'as_is',
+                              push_opts.get('title_prefix') or '',
+                              push_opts.get('title_suffix') or '')
+
+    description = listing_data.get('description') or ''
+    # Etsy descriptions are plain text with \n. Shopify body_html wants HTML.
+    # Convert blank-line paragraphs to <p>, single newlines to <br>.
+    body_html = _description_to_html(description)
+
+    tags = list(listing_data.get('tags') or [])
+    extra_tags = (push_opts.get('extra_tags') or '').split(',')
+    tags += [t.strip() for t in extra_tags if t.strip()]
+    # Always tag with source so user can filter "imported from Etsy" later.
+    tags.append('etsy-import')
+    tags = ','.join(sorted(set(tags)))
+
+    handle = _slugify_handle(title, suffix=handle_suffix)
+
+    # Images: collect Etsy image URLs from cached listing data.
+    # NOTE: Shopify will fetch each image URL itself, so we just pass URLs.
+    images_in = listing_data.get('images') or []
+    product_images = []
+    image_idx_by_url = {}  # url -> 0-based index for variant image_id resolution
+    for i, im in enumerate(images_in):
+        u = im.get('url_fullxfull') or im.get('url_570xN') or im.get('url_300x300')
+        if not u:
+            continue
+        product_images.append({
+            'src': u,
+            'position': i + 1,
+            'alt': title[:255],
+        })
+        image_idx_by_url[u] = i
+
+    # Pricing for the base (no-variant) case.
+    price_obj = listing_data.get('price') or {}
+    base_price_str = _apply_pricing(
+        price_obj.get('amount') or 0,
+        price_obj.get('divisor') or 100,
+        push_opts.get('pricing_mode') or 'as_is',
+        push_opts.get('pricing_value'),
+    )
+
+    product = {
+        'title': title,
+        'body_html': body_html,
+        'vendor': push_opts.get('vendor') or store['name'],
+        'product_type': push_opts.get('product_type') or '',
+        'tags': tags,
+        'status': 'active' if (push_opts.get('status') or 'active') == 'active' else 'draft',
+        'handle': handle,
+        'images': product_images,
+    }
+
+    # Variants: derive from Etsy inventory if requested + available.
+    options, variants, variant_image_links = _build_variants(
+        inventory, listing_data, push_opts, base_price_str, image_idx_by_url,
+    )
+    if options:
+        product['options'] = options
+    if variants:
+        product['variants'] = variants
+    else:
+        # Single-variant product.
+        product['variants'] = [{
+            'price': base_price_str,
+            'inventory_management': None,  # untracked (user explicitly said no inventory tracking)
+            'requires_shipping': True,
+            'taxable': True,
+            'sku': (listing_data.get('sku') or [''])[0] if isinstance(listing_data.get('sku'), list) else (listing_data.get('sku') or ''),
+        }]
+
+    return {'product': product}, variant_image_links
+
+
+def _description_to_html(text):
+    if not text:
+        return ''
+    # Escape HTML-sensitive chars, then convert newlines.
+    import html as _html
+    s = _html.escape(text)
+    # Split on 2+ newlines -> paragraphs. Single newlines -> <br>.
+    paras = re.split(r'\n\s*\n', s.strip())
+    return ''.join(f'<p>{p.replace(chr(10), "<br>")}</p>' for p in paras if p.strip())
+
+
+def _build_variants(inventory, listing_data, push_opts, base_price_str, image_idx_by_url):
+    """Translate Etsy inventory -> Shopify options/variants/image links.
+
+    Returns (options_list, variants_list, variant_image_links).
+    variant_image_links is a list of dicts {'variant_option_signature': str,
+                                            'image_position': int}
+    used after the POST to assign variant.image_id.
+    """
+    if not inventory:
+        return [], [], []
+    products = inventory.get('products') or []
+    if not products:
+        return [], [], []
+
+    # Discover the distinct property names in the order Etsy lists them.
+    # Shopify supports up to 3 options (option1, option2, option3) which
+    # aligns with Etsy's June-2026 cap of 3 variations.
+    prop_order = []
+    prop_seen = set()
+    for p in products:
+        for pv in p.get('property_values') or []:
+            name = (pv.get('property_name') or '').strip()
+            if name and name not in prop_seen:
+                prop_seen.add(name)
+                prop_order.append(name)
+    prop_order = prop_order[:3]
+    if not prop_order:
+        return [], [], []
+
+    options = [{'name': n, 'position': i + 1, 'values': []} for i, n in enumerate(prop_order)]
+    seen_values = [set() for _ in prop_order]
+
+    pricing_mode = push_opts.get('pricing_mode') or 'as_is'
+    pricing_value = push_opts.get('pricing_value')
+
+    variants = []
+    variant_image_links = []  # to apply after creation
+    for p in products:
+        # Build option1/2/3 from property_values in declared order.
+        opt_vals = [None] * len(prop_order)
+        for pv in p.get('property_values') or []:
+            name = (pv.get('property_name') or '').strip()
+            if name not in prop_order:
+                continue
+            idx = prop_order.index(name)
+            vals = pv.get('values') or []
+            opt_vals[idx] = (vals[0] if vals else '').strip()
+        # Fill missing slots with 'Default' so Shopify doesn't reject the variant.
+        for i, v in enumerate(opt_vals):
+            if not v:
+                opt_vals[i] = 'Default'
+            seen_values[i].add(opt_vals[i])
+
+        # Price: Etsy offerings[0].price.amount/divisor.
+        offerings = p.get('offerings') or []
+        if offerings and offerings[0].get('price'):
+            pr = offerings[0]['price']
+            variant_price = _apply_pricing(
+                pr.get('amount') or 0,
+                pr.get('divisor') or 100,
+                pricing_mode, pricing_value,
+            )
+        else:
+            variant_price = base_price_str
+
+        variant_payload = {
+            'price': variant_price,
+            'inventory_management': None,  # untracked per user spec
+            'requires_shipping': True,
+            'taxable': True,
+            'sku': (p.get('sku') or '').strip() or None,
+        }
+        # Position the option values into option1/2/3.
+        for i, v in enumerate(opt_vals):
+            variant_payload[f'option{i+1}'] = v
+
+        variants.append(variant_payload)
+
+        # If this product references a variation image, remember the link.
+        # Etsy exposes variation images via getListingVariationImages — that's
+        # a separate call we don't make here to keep push fast. As a
+        # heuristic, if the product itself has an `image` field with a URL,
+        # use it; otherwise the variant will inherit the product's primary
+        # image (Shopify default). This is fine for most jewelry/clothing
+        # shops where variations share photos.
+        v_img = (p.get('image') or {}).get('url_fullxfull') if isinstance(p.get('image'), dict) else None
+        if v_img and v_img in image_idx_by_url:
+            variant_image_links.append({
+                'option_signature': '|'.join(opt_vals),
+                'image_position': image_idx_by_url[v_img] + 1,
+            })
+
+    # Populate options.values from collected sets, preserving first-seen order
+    # in `products` to be deterministic.
+    for opt in options:
+        idx = options.index(opt)
+        ordered = []
+        seen = set()
+        for p in products:
+            for pv in p.get('property_values') or []:
+                if (pv.get('property_name') or '').strip() == opt['name']:
+                    vals = pv.get('values') or []
+                    v = (vals[0] if vals else '').strip() or 'Default'
+                    if v not in seen:
+                        seen.add(v); ordered.append(v)
+        if not ordered:
+            ordered = ['Default']
+        opt['values'] = ordered
+
+    return options, variants, variant_image_links
+
+
+# ---------- the push itself ----------
+
+def push_listing(data_dir, etsy_request_fn, listing_id, target_store_id,
+                 push_opts, *, force_duplicate=False):
+    """Push one Etsy listing to one Shopify store.
+
+    Returns dict with keys:
+        ok: bool
+        conflict: bool   — set when already pushed and force_duplicate=False
+        shopify_product_id: int|None
+        shopify_admin_url: str|None
+        shopify_handle: str|None
+        error: str|None
+    """
+    _init_push_table(data_dir)
+
+    cached = _load_cached_listing(data_dir, listing_id)
+    if not cached:
+        return {'ok': False, 'error': f'Listing {listing_id} not found in cache. Import the shop first.'}
+
+    store = _find_store(data_dir, target_store_id)
+    if not store:
+        return {'ok': False, 'error': f'Shopify store {target_store_id!r} not found or not connected.'}
+
+    # Duplicate detection.
+    existing = _find_existing_push(data_dir, listing_id, store['id'])
+    if existing and not force_duplicate:
+        return {
+            'ok': False,
+            'conflict': True,
+            'existing': {
+                'shopify_product_id': existing['shopify_product_id'],
+                'shopify_admin_url': existing['shopify_admin_url'],
+                'pushed_at': existing['pushed_at'],
+            },
+        }
+
+    # On forced re-push, append -2, -3, ... so the new handle doesn't collide.
+    handle_suffix = ''
+    if existing and force_duplicate:
+        n = 1 + _count_existing_pushes(data_dir, listing_id, store['id'])
+        handle_suffix = str(n + 1)  # first re-push => -2
+
+    listing_data = cached['data']
+
+    # Fetch variations (one extra Etsy API call).
+    inventory = None
+    if push_opts.get('include_variants', True):
+        inventory = _fetch_inventory(etsy_request_fn, listing_id)
+
+    body, variant_image_links = _build_shopify_product(
+        listing_data, inventory, push_opts, store, handle_suffix=handle_suffix,
+    )
+
+    try:
+        resp = _shopify_request(store, 'POST', '/products.json', body=body)
+    except ShopifyError as e:
+        log.warning('Shopify push failed for listing %s: %s', listing_id, e)
+        _record_push(data_dir, listing_id, cached['shop_id'], store,
+                     push_opts, error=str(e))
+        return {'ok': False, 'error': str(e)}
+
+    product = resp.get('product') or {}
+    product_id = product.get('id')
+    handle = product.get('handle')
+    admin_url = f"https://{store['domain']}/admin/products/{product_id}" if product_id else None
+
+    # Variant image assignment (if we have links).
+    if product_id and variant_image_links and product.get('variants') and product.get('images'):
+        try:
+            _apply_variant_images(store, product, variant_image_links)
+        except Exception as e:
+            log.warning('variant image link failed for %s: %s', listing_id, e)
+            # Non-fatal.
+
+    _record_push(data_dir, listing_id, cached['shop_id'], store,
+                 push_opts, shopify_product_id=product_id, handle=handle,
+                 admin_url=admin_url)
+
+    return {
+        'ok': True,
+        'shopify_product_id': product_id,
+        'shopify_admin_url': admin_url,
+        'shopify_handle': handle,
+    }
+
+
+def _apply_variant_images(store, product, variant_image_links):
+    """After product creation, set variant.image_id for each linked variant.
+
+    product.variants is the Shopify response (has option1..3 + variant id).
+    product.images is the Shopify response (has id + position).
+    """
+    pos_to_image_id = {img['position']: img['id'] for img in product.get('images') or []}
+    # Build variant signature lookup (option1|option2|option3) -> variant_id
+    sig_to_variant_id = {}
+    for v in product.get('variants') or []:
+        sig = '|'.join([(v.get('option1') or ''), (v.get('option2') or ''), (v.get('option3') or '')]).rstrip('|')
+        sig_to_variant_id[sig] = v['id']
+
+    product_id = product['id']
+    for link in variant_image_links:
+        sig = link['option_signature']
+        # Normalize trailing empty option slots so signatures align.
+        sig_norm = sig.rstrip('|')
+        variant_id = sig_to_variant_id.get(sig_norm) or sig_to_variant_id.get(sig)
+        image_id = pos_to_image_id.get(link['image_position'])
+        if not variant_id or not image_id:
+            continue
+        _shopify_request(store, 'PUT', f'/variants/{variant_id}.json',
+                         body={'variant': {'id': variant_id, 'image_id': image_id}})
+
+
+def _record_push(data_dir, listing_id, shop_id, store, push_opts,
+                 shopify_product_id=None, handle=None, admin_url=None, error=None):
+    with _Conn(_db_path(data_dir)) as c:
+        c.execute("""
+            INSERT INTO etsy_shopify_push
+                (listing_id, shop_id, target_store_id, target_domain,
+                 shopify_product_id, shopify_handle, shopify_admin_url,
+                 pushed_at, push_options, error)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+        """, (
+            listing_id, shop_id, store['id'], store['domain'],
+            shopify_product_id, handle, admin_url,
+            int(time.time()), json.dumps(push_opts or {}), error,
+        ))
+
+
+def _find_existing_push(data_dir, listing_id, store_id):
+    with _Conn(_db_path(data_dir)) as c:
+        r = c.execute("""
+            SELECT shopify_product_id, shopify_admin_url, pushed_at
+            FROM etsy_shopify_push
+            WHERE listing_id=? AND target_store_id=? AND error IS NULL
+            ORDER BY pushed_at DESC LIMIT 1
+        """, (listing_id, store_id)).fetchone()
+    return dict(r) if r else None
+
+
+def _count_existing_pushes(data_dir, listing_id, store_id):
+    with _Conn(_db_path(data_dir)) as c:
+        r = c.execute("""
+            SELECT COUNT(*) AS n FROM etsy_shopify_push
+            WHERE listing_id=? AND target_store_id=? AND error IS NULL
+        """, (listing_id, store_id)).fetchone()
+    return r['n'] if r else 0
+
+
+def list_pushes_for_listing(data_dir, listing_id):
+    with _Conn(_db_path(data_dir)) as c:
+        rows = c.execute("""
+            SELECT target_store_id, target_domain, shopify_product_id,
+                   shopify_admin_url, pushed_at, error
+            FROM etsy_shopify_push WHERE listing_id=?
+            ORDER BY pushed_at DESC
+        """, (listing_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- Shopify collections lookup ----------
+
+def list_collections(store, limit=250):
+    """Return list of {id, title, type} for both smart + custom collections."""
+    out = []
+    try:
+        r = _shopify_request(store, 'GET', '/custom_collections.json',
+                             params={'limit': limit})
+        for c in r.get('custom_collections', []):
+            out.append({'id': c['id'], 'title': c.get('title') or '', 'type': 'custom'})
+    except Exception as e:
+        log.warning('list custom_collections failed: %s', e)
+    try:
+        r = _shopify_request(store, 'GET', '/smart_collections.json',
+                             params={'limit': limit})
+        for c in r.get('smart_collections', []):
+            out.append({'id': c['id'], 'title': c.get('title') or '', 'type': 'smart'})
+    except Exception as e:
+        log.warning('list smart_collections failed: %s', e)
+    out.sort(key=lambda x: (x['title'] or '').lower())
+    return out
+
+
+def add_product_to_collections(store, product_id, collection_ids):
+    """Add a product to custom collections via /collects.json. Smart collections
+    auto-include products by rule, so we only collect for custom ones —
+    but Shopify's /collects endpoint silently accepts both, so we try all."""
+    ok = 0
+    for cid in collection_ids or []:
+        try:
+            _shopify_request(store, 'POST', '/collects.json',
+                             body={'collect': {'product_id': product_id, 'collection_id': cid}})
+            ok += 1
+        except ShopifyError as e:
+            # Smart collections will 422; that's expected.
+            log.info('collect %s -> %s skipped: %s', product_id, cid, e.status)
+    return ok
+
+
+# ---------- Flask wiring ----------
+
+def register_routes(app, data_dir, etsy_request_fn, login_required):
+    """Mount routes under /api/etsy-shops/shopify/* so they live alongside
+    the existing Etsy Shops endpoints."""
+    from flask import jsonify, request
+
+    _init_push_table(data_dir)
+
+    @app.route('/api/etsy-shops/shopify/stores', methods=['GET'])
+    @login_required
+    def _ets_shopify_stores():
+        stores = _load_stores(data_dir)
+        # Strip token before returning.
+        public = [{'id': s['id'], 'name': s['name'], 'domain': s['domain'],
+                   'currency': s['currency'], 'category': s['category']}
+                  for s in stores]
+        return jsonify({'ok': True, 'success': True, 'stores': public})
+
+    @app.route('/api/etsy-shops/shopify/collections', methods=['GET'])
+    @login_required
+    def _ets_shopify_collections():
+        store_id = request.args.get('store_id') or ''
+        store = _find_store(data_dir, store_id)
+        if not store:
+            return jsonify({'ok': False, 'error': 'store not found'}), 404
+        try:
+            cols = list_collections(store)
+            return jsonify({'ok': True, 'success': True, 'collections': cols})
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
+
+    @app.route('/api/etsy-shops/shopify/push', methods=['POST'])
+    @login_required
+    def _ets_shopify_push():
+        body = request.get_json(force=True, silent=True) or {}
+        listing_ids = body.get('listing_ids') or []
+        if not isinstance(listing_ids, list) or not listing_ids:
+            return jsonify({'ok': False, 'error': 'listing_ids required'}), 400
+        store_id = body.get('target_store_id') or ''
+        if not store_id:
+            return jsonify({'ok': False, 'error': 'target_store_id required'}), 400
+        push_opts = body.get('options') or {}
+        force_duplicate = bool(body.get('force_duplicate'))
+        collection_ids = push_opts.get('collection_ids') or []
+
+        results = []
+        store = _find_store(data_dir, store_id)
+        if not store:
+            return jsonify({'ok': False, 'error': 'store not found'}), 404
+        for lid in listing_ids:
+            try:
+                lid_int = int(lid)
+            except Exception:
+                results.append({'listing_id': lid, 'ok': False, 'error': 'bad listing_id'})
+                continue
+            try:
+                r = push_listing(data_dir, etsy_request_fn, lid_int, store_id,
+                                 push_opts, force_duplicate=force_duplicate)
+            except Exception as e:
+                log.exception('push_listing crash for %s', lid_int)
+                r = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+            r['listing_id'] = lid_int
+            # Attach to collections on success.
+            if r.get('ok') and r.get('shopify_product_id') and collection_ids:
+                try:
+                    add_product_to_collections(store, r['shopify_product_id'], collection_ids)
+                except Exception as e:
+                    log.warning('attach collections failed: %s', e)
+            results.append(r)
+
+        return jsonify({
+            'ok': True,
+            'success': True,
+            'results': results,
+            'pushed': sum(1 for r in results if r.get('ok')),
+            'conflicts': sum(1 for r in results if r.get('conflict')),
+            'failed': sum(1 for r in results if not r.get('ok') and not r.get('conflict')),
+        })
+
+    @app.route('/api/etsy-shops/shopify/pushes/<int:listing_id>', methods=['GET'])
+    @login_required
+    def _ets_shopify_pushes_for_listing(listing_id):
+        return jsonify({'ok': True, 'success': True,
+                        'pushes': list_pushes_for_listing(data_dir, listing_id)})
+
+    log.info('Etsy -> Shopify push routes registered')

@@ -6761,7 +6761,22 @@ try:
     log.info('Etsy Shops tab registered (data=%s)', DATA_DIR)
 except Exception as _es_e:
     log.exception('Etsy Shops tab failed to register: %s', _es_e)
-# ===== End Etsy Shops tab =====================================================
+
+# Push-to-Shopify routes for the Etsy Shops tab. Uses the same Etsy API
+# adapter (priority budget) and reads stored Shopify tokens from
+# data/stores.json. See etsy_to_shopify.py for mapping logic.
+try:
+    import etsy_to_shopify as _etsy_to_shopify
+    _etsy_to_shopify.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        etsy_request_fn=_etsy_shops_request,
+        login_required=login_required,
+    )
+    log.info('Etsy -> Shopify push routes registered')
+except Exception as _es2_e:
+    log.exception('Etsy -> Shopify push routes failed to register: %s', _es2_e)
+# ===== End Etsy Shops tab ======================================================
 
 
 # ===== Main =====
