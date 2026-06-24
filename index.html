@@ -7198,12 +7198,34 @@ async function eshOpenPushModal() {
         </label>
         <label>Pricing
           <select id="esh-push-pricing-mode" onchange="eshUpdatePricingInput()" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+            <option value="category" selected>Category-based (by title keyword)</option>
             <option value="as_is">As is (Etsy price)</option>
             <option value="multiplier">Multiplier (e.g. 1.5×)</option>
             <option value="fixed_add">Add fixed amount</option>
             <option value="fixed">Fixed price for all</option>
           </select>
           <input id="esh-push-pricing-value" type="number" step="0.01" placeholder="e.g. 1.5" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:6px;display:none;">
+          <div id="esh-push-category-prices" style="margin-top:8px;border:1px solid var(--gray-200);border-radius:8px;padding:10px;background:#f9fafb;">
+            <div style="font-size:12px;color:var(--gray-700);margin-bottom:8px;">Sale price per category. <span style="color:var(--gray-500);">Compare-at = 2× rounded to whole dollar (50% off badge).</span></div>
+            <div style="display:grid;grid-template-columns:1fr 110px 110px;gap:6px 10px;align-items:center;font-size:12px;">
+              <div style="font-weight:600;color:var(--gray-600);"></div>
+              <div style="font-weight:600;color:var(--gray-600);text-align:left;">Sale</div>
+              <div style="font-weight:600;color:var(--gray-600);text-align:left;">Compare-at</div>
+              <div>Earrings</div>
+              <input id="esh-cat-price-Earrings"  type="number" step="0.01" value="26.99" oninput="eshUpdateCompareAt('Earrings')"  style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+              <input id="esh-cat-cmp-Earrings"    type="text" readonly value="54" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+              <div>Rings</div>
+              <input id="esh-cat-price-Rings"     type="number" step="0.01" value="29.99" oninput="eshUpdateCompareAt('Rings')"     style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+              <input id="esh-cat-cmp-Rings"       type="text" readonly value="60" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+              <div>Bracelets</div>
+              <input id="esh-cat-price-Bracelets" type="number" step="0.01" value="32.99" oninput="eshUpdateCompareAt('Bracelets')" style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+              <input id="esh-cat-cmp-Bracelets"   type="text" readonly value="66" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+              <div>Necklaces</div>
+              <input id="esh-cat-price-Necklaces" type="number" step="0.01" value="36.99" oninput="eshUpdateCompareAt('Necklaces')" style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+              <input id="esh-cat-cmp-Necklaces"   type="text" readonly value="74" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+            </div>
+            <div style="font-size:11px;color:var(--gray-500);margin-top:8px;">Listings whose title doesn't match any category will be <strong>skipped</strong> and reported below.</div>
+          </div>
         </label>
         <label>Title
           <select id="esh-push-title-mode" onchange="eshUpdateTitleInput()" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
@@ -7214,10 +7236,9 @@ async function eshOpenPushModal() {
           </select>
           <input id="esh-push-title-extra" type="text" placeholder="prefix/suffix text" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:6px;display:none;">
         </label>
-        <label>Collections (optional)
-          <select id="esh-push-collections" multiple style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;min-height:80px;"><option disabled>Select store first</option></select>
-          <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Hold Cmd/Ctrl to multi-select</div>
-        </label>
+        <div style="font-size:12px;color:var(--gray-600);background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 10px;">
+          <strong>Smart collections</strong> in your Shopify store will pick up these products automatically via <strong>tag</strong> (lowercase category like <code>earrings</code>), <strong>product type</strong> (matches detected category), and <strong>vendor</strong> (set below). No manual collection picking needed.
+        </div>
         <label>Extra tags (comma-separated, optional)
           <input id="esh-push-extra-tags" type="text" placeholder="e.g. trending, jewelry, gift" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
         </label>
@@ -7237,14 +7258,14 @@ async function eshOpenPushModal() {
     </div>
   `;
   document.body.appendChild(modal);
+  // Default pricing-mode UI (category grid visible, numeric input hidden).
+  eshUpdatePricingInput();
   // Load stores list.
   try {
     const r = await fetch('/api/etsy-shops/shopify/stores').then(r=>r.json());
     if (r && r.ok) {
       const sel = document.getElementById('esh-push-store');
       sel.innerHTML = r.stores.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(s.domain)}${s.currency ? ', '+s.currency : ''})</option>`).join('');
-      sel.onchange = eshLoadCollectionsForStore;
-      if (r.stores.length) eshLoadCollectionsForStore();
     }
   } catch (e) { console.error('store load', e); }
 }
@@ -7252,10 +7273,29 @@ async function eshOpenPushModal() {
 function eshUpdatePricingInput() {
   const mode = document.getElementById('esh-push-pricing-mode').value;
   const inp = document.getElementById('esh-push-pricing-value');
-  inp.style.display = mode === 'as_is' ? 'none' : 'block';
+  const catBox = document.getElementById('esh-push-category-prices');
+  // Numeric input only for multiplier/fixed_add/fixed.
+  inp.style.display = (mode === 'multiplier' || mode === 'fixed_add' || mode === 'fixed') ? 'block' : 'none';
   if (mode === 'multiplier') inp.placeholder = 'e.g. 1.5 (means ×1.5)';
   else if (mode === 'fixed_add') inp.placeholder = 'e.g. 5 (add 5 to each price)';
   else if (mode === 'fixed') inp.placeholder = 'e.g. 29.99 (same price for all)';
+  // Category price grid only for category mode.
+  if (catBox) catBox.style.display = (mode === 'category') ? 'block' : 'none';
+}
+
+function eshUpdateCompareAt(category) {
+  const v = parseFloat(document.getElementById('esh-cat-price-' + category).value) || 0;
+  const cmp = Math.round(v * 2);
+  document.getElementById('esh-cat-cmp-' + category).value = isFinite(cmp) ? String(cmp) : '';
+}
+
+function eshReadCategoryPrices() {
+  const out = {};
+  for (const c of ['Earrings','Rings','Bracelets','Necklaces']) {
+    const v = parseFloat(document.getElementById('esh-cat-price-' + c).value);
+    if (isFinite(v) && v > 0) out[c] = v;
+  }
+  return out;
 }
 
 function eshUpdateTitleInput() {
@@ -7263,26 +7303,6 @@ function eshUpdateTitleInput() {
   const inp = document.getElementById('esh-push-title-extra');
   inp.style.display = (mode === 'prefix' || mode === 'suffix') ? 'block' : 'none';
   inp.placeholder = mode === 'prefix' ? 'Text before title' : (mode === 'suffix' ? 'Text after title' : '');
-}
-
-async function eshLoadCollectionsForStore() {
-  const storeId = document.getElementById('esh-push-store').value;
-  const sel = document.getElementById('esh-push-collections');
-  sel.innerHTML = '<option disabled>Loading…</option>';
-  try {
-    const r = await fetch('/api/etsy-shops/shopify/collections?store_id=' + encodeURIComponent(storeId)).then(r=>r.json());
-    if (r && r.ok && r.collections) {
-      if (!r.collections.length) {
-        sel.innerHTML = '<option disabled>(no collections in this store)</option>';
-        return;
-      }
-      sel.innerHTML = r.collections.map(c => `<option value="${c.id}">${escapeHtml(c.title)} (${c.type})</option>`).join('');
-    } else {
-      sel.innerHTML = '<option disabled>(error loading)</option>';
-    }
-  } catch (e) {
-    sel.innerHTML = '<option disabled>(error)</option>';
-  }
 }
 
 async function eshDoPush(forceDuplicate) {
@@ -7293,8 +7313,6 @@ async function eshDoPush(forceDuplicate) {
   const pricingValue = parseFloat(document.getElementById('esh-push-pricing-value').value) || null;
   const titleMode = document.getElementById('esh-push-title-mode').value;
   const titleExtra = document.getElementById('esh-push-title-extra').value;
-  const collEl = document.getElementById('esh-push-collections');
-  const collectionIds = Array.from(collEl.selectedOptions).map(o => parseInt(o.value, 10)).filter(Boolean);
   const extraTags = document.getElementById('esh-push-extra-tags').value;
   const vendor = document.getElementById('esh-push-vendor').value;
   const includeVariants = document.getElementById('esh-push-variants').checked;
@@ -7302,10 +7320,10 @@ async function eshDoPush(forceDuplicate) {
   const options = {
     pricing_mode: pricingMode,
     pricing_value: pricingValue,
+    category_prices: pricingMode === 'category' ? eshReadCategoryPrices() : null,
     title_mode: titleMode,
     title_prefix: titleMode === 'prefix' ? titleExtra : '',
     title_suffix: titleMode === 'suffix' ? titleExtra : '',
-    collection_ids: collectionIds,
     extra_tags: extraTags,
     vendor: vendor,
     include_variants: includeVariants,
@@ -7337,13 +7355,21 @@ async function eshDoPush(forceDuplicate) {
     }
     // Render summary.
     const ok = r.results.filter(x => x.ok);
-    const failed = r.results.filter(x => !x.ok && !x.conflict);
+    const skipped = r.results.filter(x => x.skipped);
+    const failed = r.results.filter(x => !x.ok && !x.conflict && !x.skipped);
     let html = `<div style="font-size:13px;"><strong>${ok.length}</strong> pushed`;
+    if (skipped.length) html += `, <strong style="color:#b45309;">${skipped.length}</strong> skipped`;
     if (failed.length) html += `, <strong style="color:#dc2626;">${failed.length}</strong> failed`;
     html += '.</div>';
     if (ok.length) {
       html += '<div style="margin-top:8px;max-height:200px;overflow:auto;">' +
-              ok.map(x => `<div style="font-size:12px;color:var(--gray-600);">✓ <a href="${escapeHtml(x.shopify_admin_url||'#')}" target="_blank" rel="noopener">${x.shopify_handle || x.shopify_product_id}</a></div>`).join('') +
+              ok.map(x => `<div style="font-size:12px;color:var(--gray-600);">✓ <a href="${escapeHtml(x.shopify_admin_url||'#')}" target="_blank" rel="noopener">${escapeHtml(x.shopify_handle || String(x.shopify_product_id))}</a>${x.category ? ' <span style="color:#9ca3af;">['+escapeHtml(x.category)+']</span>' : ''}</div>`).join('') +
+              '</div>';
+    }
+    if (skipped.length) {
+      html += '<div style="margin-top:8px;padding:8px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:12px;color:#92400e;max-height:200px;overflow:auto;">' +
+              '<div style="font-weight:600;margin-bottom:4px;">Skipped (no category match):</div>' +
+              skipped.map(x => `<div>• ${escapeHtml(x.title || ('listing ' + x.listing_id))}</div>`).join('') +
               '</div>';
     }
     if (failed.length) {

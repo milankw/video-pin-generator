@@ -228,8 +228,37 @@ def _apply_title_mode(original_title, mode, prefix='', suffix=''):
 
 # ---------- pricing ----------
 
-def _apply_pricing(amount_minor, divisor, mode, value=None):
-    """amount_minor / divisor = base price. Returns Shopify variant price string."""
+# Category detection keyword map. Order matters: more specific first so we
+# don't mis-classify 'earring' as 'ring'. Each entry is (category, keyword_regex).
+# Keywords are matched case-insensitive against the title with word boundaries.
+_CATEGORY_RULES = [
+    ('Earrings',  re.compile(r'\b(earring|earrings|studs?|hoops?|ear[\s-]?cuff|ear[\s-]?climber|dangles?|huggies?|jhumka|tassel earring|threader)\b', re.I)),
+    ('Bracelets', re.compile(r'\b(bracelet|bracelets|bangle|bangles|cuff bracelet|tennis bracelet|charm bracelet|anklet|anklets)\b', re.I)),
+    ('Necklaces', re.compile(r'\b(necklace|necklaces|pendant|pendants|choker|chokers|chain|chains|locket|lockets|lariat)\b', re.I)),
+    # 'ring' last so the earring regex above wins first.
+    ('Rings',     re.compile(r'\b(ring|rings|signet|band|bands|wrap ring|stacking ring|midi ring|toe ring)\b', re.I)),
+]
+
+
+def _detect_category(title):
+    """Return one of Earrings/Rings/Bracelets/Necklaces by matching title
+    keywords. Returns None if nothing matches."""
+    t = title or ''
+    for cat, rx in _CATEGORY_RULES:
+        if rx.search(t):
+            return cat
+    return None
+
+
+def _apply_pricing(amount_minor, divisor, mode, value=None,
+                   category=None, category_prices=None):
+    """amount_minor / divisor = base price. Returns Shopify variant price string.
+
+    For mode='category', category_prices is a dict like
+    ``{'Earrings': 26.99, 'Rings': 29.99, 'Bracelets': 32.99, 'Necklaces': 36.99}``
+    and ``category`` selects the price. If category is None, returns None
+    so the caller can skip the listing.
+    """
     base = (float(amount_minor) / float(max(1, divisor))) if amount_minor else 0.0
     if mode == 'multiplier' and value:
         base = base * float(value)
@@ -237,8 +266,26 @@ def _apply_pricing(amount_minor, divisor, mode, value=None):
         base = base + float(value)
     elif mode == 'fixed':
         base = float(value or 0)
+    elif mode == 'category':
+        if not category or not category_prices:
+            return None
+        price = category_prices.get(category)
+        if price is None:
+            return None
+        base = float(price)
     # 'as_is' falls through
     return f'{base:.2f}'
+
+
+def _compare_at_for_category(category, category_prices):
+    """Compare-at price for a category = 2× sale price rounded to whole dollar.
+    Returns string or None."""
+    if not category or not category_prices:
+        return None
+    p = category_prices.get(category)
+    if p is None:
+        return None
+    return f'{round(float(p) * 2):.2f}'
 
 
 # ---------- Etsy data extraction ----------
@@ -280,12 +327,23 @@ def _fetch_inventory(etsy_request_fn, listing_id):
 def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suffix=''):
     """Map Etsy data to the body for POST /admin/api/.../products.json.
 
-    Returns ``{'product': {...}}`` ready to POST.
+    Returns ``({'product': {...}}, variant_image_links, category)``.
+    ``category`` is one of Earrings/Rings/Bracelets/Necklaces or None and is
+    returned so the caller can use it for diagnostics.
     """
-    title = _apply_title_mode(listing_data.get('title') or '',
+    raw_title = listing_data.get('title') or ''
+    title = _apply_title_mode(raw_title,
                               push_opts.get('title_mode') or 'as_is',
                               push_opts.get('title_prefix') or '',
                               push_opts.get('title_suffix') or '')
+
+    pricing_mode = push_opts.get('pricing_mode') or 'as_is'
+    category_prices = push_opts.get('category_prices') or None
+    # Detect from the original Etsy title, which has the keywords.
+    category = _detect_category(raw_title)
+    compare_at_str = None
+    if pricing_mode == 'category':
+        compare_at_str = _compare_at_for_category(category, category_prices)
 
     description = listing_data.get('description') or ''
     # Etsy descriptions are plain text with \n. Shopify body_html wants HTML.
@@ -297,7 +355,10 @@ def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suf
     tags += [t.strip() for t in extra_tags if t.strip()]
     # Always tag with source so user can filter "imported from Etsy" later.
     tags.append('etsy-import')
-    tags = ','.join(sorted(set(tags)))
+    # Add lowercase category tag so tag-based smart collections match.
+    if category:
+        tags.append(category.lower())  # 'earrings' / 'rings' / 'bracelets' / 'necklaces'
+    tags = ','.join(sorted(set(t for t in tags if t)))
 
     handle = _slugify_handle(title, suffix=handle_suffix)
 
@@ -322,15 +383,21 @@ def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suf
     base_price_str = _apply_pricing(
         price_obj.get('amount') or 0,
         price_obj.get('divisor') or 100,
-        push_opts.get('pricing_mode') or 'as_is',
+        pricing_mode,
         push_opts.get('pricing_value'),
+        category=category,
+        category_prices=category_prices,
     )
+
+    # product_type: prefer explicit override, else use detected category so
+    # smart collections that match by Product Type work.
+    product_type = push_opts.get('product_type') or category or ''
 
     product = {
         'title': title,
         'body_html': body_html,
         'vendor': push_opts.get('vendor') or store['name'],
-        'product_type': push_opts.get('product_type') or '',
+        'product_type': product_type,
         'tags': tags,
         'status': 'active' if (push_opts.get('status') or 'active') == 'active' else 'draft',
         'handle': handle,
@@ -340,6 +407,7 @@ def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suf
     # Variants: derive from Etsy inventory if requested + available.
     options, variants, variant_image_links = _build_variants(
         inventory, listing_data, push_opts, base_price_str, image_idx_by_url,
+        category=category, compare_at_str=compare_at_str,
     )
     if options:
         product['options'] = options
@@ -347,15 +415,18 @@ def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suf
         product['variants'] = variants
     else:
         # Single-variant product.
-        product['variants'] = [{
+        single_variant = {
             'price': base_price_str,
             'inventory_management': None,  # untracked (user explicitly said no inventory tracking)
             'requires_shipping': True,
             'taxable': True,
             'sku': (listing_data.get('sku') or [''])[0] if isinstance(listing_data.get('sku'), list) else (listing_data.get('sku') or ''),
-        }]
+        }
+        if compare_at_str:
+            single_variant['compare_at_price'] = compare_at_str
+        product['variants'] = [single_variant]
 
-    return {'product': product}, variant_image_links
+    return {'product': product}, variant_image_links, category
 
 
 def _description_to_html(text):
@@ -369,7 +440,8 @@ def _description_to_html(text):
     return ''.join(f'<p>{p.replace(chr(10), "<br>")}</p>' for p in paras if p.strip())
 
 
-def _build_variants(inventory, listing_data, push_opts, base_price_str, image_idx_by_url):
+def _build_variants(inventory, listing_data, push_opts, base_price_str, image_idx_by_url,
+                    category=None, compare_at_str=None):
     """Translate Etsy inventory -> Shopify options/variants/image links.
 
     Returns (options_list, variants_list, variant_image_links).
@@ -403,6 +475,7 @@ def _build_variants(inventory, listing_data, push_opts, base_price_str, image_id
 
     pricing_mode = push_opts.get('pricing_mode') or 'as_is'
     pricing_value = push_opts.get('pricing_value')
+    category_prices = push_opts.get('category_prices') or None
 
     variants = []
     variant_image_links = []  # to apply after creation
@@ -423,16 +496,22 @@ def _build_variants(inventory, listing_data, push_opts, base_price_str, image_id
             seen_values[i].add(opt_vals[i])
 
         # Price: Etsy offerings[0].price.amount/divisor.
-        offerings = p.get('offerings') or []
-        if offerings and offerings[0].get('price'):
-            pr = offerings[0]['price']
-            variant_price = _apply_pricing(
-                pr.get('amount') or 0,
-                pr.get('divisor') or 100,
-                pricing_mode, pricing_value,
-            )
-        else:
+        # In category mode every variant is the flat category price, so we
+        # don't even look at the per-variant Etsy price.
+        if pricing_mode == 'category':
             variant_price = base_price_str
+        else:
+            offerings = p.get('offerings') or []
+            if offerings and offerings[0].get('price'):
+                pr = offerings[0]['price']
+                variant_price = _apply_pricing(
+                    pr.get('amount') or 0,
+                    pr.get('divisor') or 100,
+                    pricing_mode, pricing_value,
+                    category=category, category_prices=category_prices,
+                )
+            else:
+                variant_price = base_price_str
 
         variant_payload = {
             'price': variant_price,
@@ -441,6 +520,8 @@ def _build_variants(inventory, listing_data, push_opts, base_price_str, image_id
             'taxable': True,
             'sku': (p.get('sku') or '').strip() or None,
         }
+        if compare_at_str:
+            variant_payload['compare_at_price'] = compare_at_str
         # Position the option values into option1/2/3.
         for i, v in enumerate(opt_vals):
             variant_payload[f'option{i+1}'] = v
@@ -526,12 +607,37 @@ def push_listing(data_dir, etsy_request_fn, listing_id, target_store_id,
 
     listing_data = cached['data']
 
+    # In category-pricing mode we must be able to detect a category from the
+    # title. If we can't, skip — the user explicitly asked unmatched listings
+    # to be skipped (not silently priced).
+    pricing_mode = (push_opts.get('pricing_mode') or 'as_is')
+    if pricing_mode == 'category':
+        cat = _detect_category(listing_data.get('title') or '')
+        if not cat:
+            return {
+                'ok': False,
+                'skipped': True,
+                'reason': 'no_category_match',
+                'error': 'Title did not match Earrings/Rings/Bracelets/Necklaces keywords; skipped.',
+                'title': listing_data.get('title') or '',
+            }
+        cat_prices = push_opts.get('category_prices') or {}
+        if cat not in cat_prices:
+            return {
+                'ok': False,
+                'skipped': True,
+                'reason': 'category_price_missing',
+                'error': f'No price configured for category {cat}; skipped.',
+                'title': listing_data.get('title') or '',
+                'category': cat,
+            }
+
     # Fetch variations (one extra Etsy API call).
     inventory = None
     if push_opts.get('include_variants', True):
         inventory = _fetch_inventory(etsy_request_fn, listing_id)
 
-    body, variant_image_links = _build_shopify_product(
+    body, variant_image_links, detected_category = _build_shopify_product(
         listing_data, inventory, push_opts, store, handle_suffix=handle_suffix,
     )
 
@@ -565,6 +671,8 @@ def push_listing(data_dir, etsy_request_fn, listing_id, target_store_id,
         'shopify_product_id': product_id,
         'shopify_admin_url': admin_url,
         'shopify_handle': handle,
+        'category': detected_category,
+        'title': listing_data.get('title') or '',
     }
 
 
@@ -699,19 +807,6 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
                   for s in stores]
         return jsonify({'ok': True, 'success': True, 'stores': public})
 
-    @app.route('/api/etsy-shops/shopify/collections', methods=['GET'])
-    @login_required
-    def _ets_shopify_collections():
-        store_id = request.args.get('store_id') or ''
-        store = _find_store(data_dir, store_id)
-        if not store:
-            return jsonify({'ok': False, 'error': 'store not found'}), 404
-        try:
-            cols = list_collections(store)
-            return jsonify({'ok': True, 'success': True, 'collections': cols})
-        except Exception as e:
-            return jsonify({'ok': False, 'error': str(e)}), 500
-
     @app.route('/api/etsy-shops/shopify/push', methods=['POST'])
     @login_required
     def _ets_shopify_push():
@@ -724,7 +819,6 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
             return jsonify({'ok': False, 'error': 'target_store_id required'}), 400
         push_opts = body.get('options') or {}
         force_duplicate = bool(body.get('force_duplicate'))
-        collection_ids = push_opts.get('collection_ids') or []
 
         results = []
         store = _find_store(data_dir, store_id)
@@ -743,12 +837,6 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
                 log.exception('push_listing crash for %s', lid_int)
                 r = {'ok': False, 'error': f'{type(e).__name__}: {e}'}
             r['listing_id'] = lid_int
-            # Attach to collections on success.
-            if r.get('ok') and r.get('shopify_product_id') and collection_ids:
-                try:
-                    add_product_to_collections(store, r['shopify_product_id'], collection_ids)
-                except Exception as e:
-                    log.warning('attach collections failed: %s', e)
             results.append(r)
 
         return jsonify({
@@ -757,7 +845,8 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
             'results': results,
             'pushed': sum(1 for r in results if r.get('ok')),
             'conflicts': sum(1 for r in results if r.get('conflict')),
-            'failed': sum(1 for r in results if not r.get('ok') and not r.get('conflict')),
+            'skipped': sum(1 for r in results if r.get('skipped')),
+            'failed': sum(1 for r in results if not r.get('ok') and not r.get('conflict') and not r.get('skipped')),
         })
 
     @app.route('/api/etsy-shops/shopify/pushes/<int:listing_id>', methods=['GET'])
