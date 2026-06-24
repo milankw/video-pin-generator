@@ -632,10 +632,49 @@ def push_listing(data_dir, etsy_request_fn, listing_id, target_store_id,
                 'category': cat,
             }
 
-    # Fetch variations (one extra Etsy API call).
+    # Fetch variations. The Etsy v3 /listings/{id}/inventory endpoint is
+    # owner-only and returns 404 for any listing we don't own. So we cascade:
+    #   1) try the Etsy API (free, works if we own the listing)
+    #   2) on miss, read the public listing page via ScrapingBee (cached, so
+    #      every listing costs at most 1 lifetime ScrapingBee credit)
     inventory = None
     if push_opts.get('include_variants', True):
         inventory = _fetch_inventory(etsy_request_fn, listing_id)
+        if not (inventory and inventory.get('products')):
+            try:
+                from etsy_page_extract import fetch_listing_variants
+                price_obj = listing_data.get('price') or {}
+                shop_data = listing_data.get('shop') or {}
+                seller_slug = (
+                    shop_data.get('shop_name')
+                    or listing_data.get('url', '').split('/')[-2] if listing_data.get('url') else ''
+                )
+                # Use the canonical /listing/{id}/ URL — Etsy 301s to the
+                # full slug-bearing URL, ScrapingBee follows redirects.
+                listing_url = (
+                    listing_data.get('url')
+                    or f'https://www.etsy.com/listing/{listing_id}/'
+                )
+                page_inv = fetch_listing_variants(
+                    data_dir,
+                    int(listing_id),
+                    listing_url=listing_url,
+                    base_price_amount=int(price_obj.get('amount') or 0),
+                    base_price_divisor=int(price_obj.get('divisor') or 100),
+                    base_currency=str(price_obj.get('currency_code') or 'USD'),
+                )
+                if page_inv and page_inv.get('products'):
+                    log.info(
+                        'push_listing %s: using page-extracted inventory '
+                        '(%d products) since Etsy API returned none',
+                        listing_id, len(page_inv.get('products') or []),
+                    )
+                    inventory = page_inv
+            except Exception as e:
+                log.warning(
+                    'page-extract fallback failed for listing %s: %s',
+                    listing_id, e,
+                )
 
     body, variant_image_links, detected_category = _build_shopify_product(
         listing_data, inventory, push_opts, store, handle_suffix=handle_suffix,

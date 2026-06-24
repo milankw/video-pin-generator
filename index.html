@@ -7251,8 +7251,11 @@ async function eshOpenPushModal() {
         </label>
         <label style="display:flex;align-items:center;gap:8px;">
           <input id="esh-push-variants" type="checkbox" checked>
-          Include variants (1 extra Etsy API call per listing)
+          Include variants (read from Etsy page, cached after first read)
         </label>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:-4px;padding-left:24px;">
+          Variations come from the public listing page since Etsy’s API only exposes inventory for shops you own. Each listing costs 1 lifetime credit — re-pushes and pushes to additional stores are free.
+        </div>
       </div>
       <div id="esh-push-progress" style="margin-top:16px;display:none;"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;">
