@@ -354,6 +354,87 @@ def _resolve_inventory(data_dir, etsy_request_fn, listing_id, listing_data):
     return None
 
 
+# ---------- ScrapingBee usage / credit tracking ----------
+
+_SCRAPINGBEE_USAGE_CACHE = {'data': None, 'fetched_at': 0.0}
+_SCRAPINGBEE_USAGE_TTL = 300  # 5 minutes
+_SCRAPINGBEE_USAGE_LOCK = threading.Lock()
+
+
+def _load_scrapingbee_key_from_data_dir(data_dir):
+    path = os.path.join(data_dir, 'etsy_settings.json')
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return (json.load(f).get('scrapingbeeApiKey') or '').strip() or None
+    except Exception:
+        return None
+
+
+def get_scrapingbee_usage(data_dir, force_refresh=False):
+    """Return the current ScrapingBee /usage payload, augmented with derived
+    fields the UI can show without recomputing.
+
+    Cached in-process for 5 minutes so polling from the header pill stays
+    cheap. Pass force_refresh=True to bypass the cache (e.g. after a push).
+    """
+    now = time.time()
+    if not force_refresh:
+        with _SCRAPINGBEE_USAGE_LOCK:
+            cached = _SCRAPINGBEE_USAGE_CACHE.get('data')
+            ts = _SCRAPINGBEE_USAGE_CACHE.get('fetched_at', 0.0)
+            if cached and (now - ts) < _SCRAPINGBEE_USAGE_TTL:
+                return cached
+    api_key = _load_scrapingbee_key_from_data_dir(data_dir)
+    if not api_key:
+        out = {'ok': False, 'configured': False,
+               'error': 'ScrapingBee API key not configured.'}
+        with _SCRAPINGBEE_USAGE_LOCK:
+            _SCRAPINGBEE_USAGE_CACHE['data'] = out
+            _SCRAPINGBEE_USAGE_CACHE['fetched_at'] = now
+        return out
+    try:
+        r = http_requests.get(
+            'https://app.scrapingbee.com/api/v1/usage',
+            headers={'Authorization': f'Bearer {api_key}'},
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return {'ok': False, 'configured': True,
+                    'error': f'ScrapingBee usage returned {r.status_code}',
+                    'body': r.text[:200]}
+        d = r.json()
+    except Exception as e:
+        return {'ok': False, 'configured': True,
+                'error': f'{type(e).__name__}: {e}'}
+    used = int(d.get('used_api_credit') or 0)
+    cap = int(d.get('max_api_credit') or 0)
+    remaining = max(0, cap - used)
+    pct_used = (used / cap * 100.0) if cap else 0.0
+    out = {
+        'ok': True,
+        'configured': True,
+        'used_api_credit': used,
+        'max_api_credit': cap,
+        'remaining_api_credit': remaining,
+        'percent_used': round(pct_used, 1),
+        'max_concurrency': d.get('max_concurrency'),
+        'current_concurrency': d.get('current_concurrency'),
+        'renewal_subscription_date': d.get('renewal_subscription_date'),
+        # Threshold flags so the UI doesn't have to redo the math.
+        'low': remaining > 0 and pct_used >= 80,
+        'critical': remaining > 0 and pct_used >= 95,
+        'exhausted': remaining <= 0,
+        # Estimated listings remaining at ~15 credits each (mid of 10-25 range).
+        'estimated_listings_remaining': remaining // 15 if remaining else 0,
+    }
+    with _SCRAPINGBEE_USAGE_LOCK:
+        _SCRAPINGBEE_USAGE_CACHE['data'] = out
+        _SCRAPINGBEE_USAGE_CACHE['fetched_at'] = now
+    return out
+
+
 def summarize_inventory_options(inventory):
     """Return a UI-friendly summary of the option groups in an inventory dict.
 
@@ -1033,5 +1114,50 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
                 'options': options,
             })
         return jsonify({'ok': True, 'success': True, 'listings': out})
+
+    @app.route('/api/etsy-shops/scrapingbee/usage', methods=['GET'])
+    @login_required
+    def _ets_scrapingbee_usage():
+        force = request.args.get('refresh') in ('1', 'true', 'yes')
+        return jsonify(get_scrapingbee_usage(data_dir, force_refresh=force))
+
+    @app.route('/api/etsy-shops/scrapingbee/estimate', methods=['POST'])
+    @login_required
+    def _ets_scrapingbee_estimate():
+        """Given a list of listing_ids, report how many are already cached
+        (free) vs uncached (will cost a ScrapingBee credit each on first
+        fetch). Used by the modal to warn before a big push.
+        """
+        try:
+            from etsy_page_extract import is_listing_cached
+        except Exception as e:
+            return jsonify({'ok': False, 'error': f'extractor unavailable: {e}'}), 500
+        body = request.get_json(force=True, silent=True) or {}
+        listing_ids = body.get('listing_ids') or []
+        if not isinstance(listing_ids, list):
+            return jsonify({'ok': False, 'error': 'listing_ids required'}), 400
+        cached_ids, uncached_ids = [], []
+        for lid in listing_ids:
+            try:
+                lid_int = int(lid)
+            except Exception:
+                continue
+            if is_listing_cached(data_dir, lid_int):
+                cached_ids.append(lid_int)
+            else:
+                uncached_ids.append(lid_int)
+        usage = get_scrapingbee_usage(data_dir)
+        # ~15 credits per uncached listing (mid of 10-25 range).
+        est_credits = len(uncached_ids) * 15
+        remaining = usage.get('remaining_api_credit', 0) if usage.get('ok') else 0
+        return jsonify({
+            'ok': True,
+            'cached_count': len(cached_ids),
+            'uncached_count': len(uncached_ids),
+            'estimated_credits': est_credits,
+            'remaining_credits': remaining,
+            'would_exceed': est_credits > remaining,
+            'usage': usage,
+        })
 
     log.info('Etsy -> Shopify push routes registered')

@@ -2438,6 +2438,11 @@ textarea { resize: vertical; min-height: 80px; }
             <strong id="esh-api-bucket-text">— / —</strong>
             <div style="width:80px;height:6px;background:var(--gray-200);border-radius:3px;overflow:hidden;"><div id="esh-api-bucket-bar" style="height:100%;width:0%;background:#10b981;transition:width .3s,background .3s;"></div></div>
           </div>
+          <div id="esh-bee-bucket" title="ScrapingBee credits used this billing cycle" style="display:none;align-items:center;gap:8px;padding:6px 10px;background:var(--gray-100);border:1px solid var(--gray-200);border-radius:8px;font-size:12px;color:var(--gray-700);cursor:default;" onclick="eshRefreshBeeUsage(true)">
+            <span>ScrapingBee:</span>
+            <strong id="esh-bee-bucket-text">— / —</strong>
+            <div style="width:80px;height:6px;background:var(--gray-200);border-radius:3px;overflow:hidden;"><div id="esh-bee-bucket-bar" style="height:100%;width:0%;background:#10b981;transition:width .3s,background .3s;"></div></div>
+          </div>
           <button class="btn btn-secondary btn-sm" id="esh-show-favs-btn" onclick="eshShowFavorites()">My favorites <span id="esh-fav-count" class="badge badge-purple" style="display:none;margin-left:6px;">0</span></button>
           <button class="btn btn-secondary btn-sm" onclick="eshLoadShops()">Refresh shops</button>
         </div>
@@ -6835,11 +6840,72 @@ function eshOnTabOpen() {
   eshLoadShops();
   eshLoadFavoritesCount();
   eshRefreshApiBucket();
+  eshRefreshBeeUsage();
   // Auto-refresh the bucket every 15s while the tab is open, so user sees
   // calls tick up during an import.
   if (!_eshState.bucketTimer) {
-    _eshState.bucketTimer = setInterval(eshRefreshApiBucket, 15000);
+    _eshState.bucketTimer = setInterval(() => {
+      eshRefreshApiBucket();
+      eshRefreshBeeUsage();
+    }, 15000);
   }
+}
+
+async function eshRefreshBeeUsage(force) {
+  try {
+    const url = '/api/etsy-shops/scrapingbee/usage' + (force ? '?refresh=1' : '');
+    const r = await fetch(url).then(r => r.json());
+    const wrap = document.getElementById('esh-bee-bucket');
+    if (!wrap) return;
+    if (!r || !r.configured) {
+      // No key configured; hide the pill entirely.
+      wrap.style.display = 'none';
+      return;
+    }
+    wrap.style.display = 'flex';
+    if (!r.ok) {
+      wrap.style.background = '#fef2f2';
+      wrap.style.borderColor = '#fecaca';
+      wrap.title = 'ScrapingBee usage check failed: ' + (r.error || 'unknown');
+      const el = document.getElementById('esh-bee-bucket-text');
+      if (el) el.textContent = 'unavailable';
+      return;
+    }
+    const used = r.used_api_credit || 0;
+    const cap  = r.max_api_credit || 0;
+    const pct  = r.percent_used || 0;
+    const remaining = r.remaining_api_credit || 0;
+    const el = document.getElementById('esh-bee-bucket-text');
+    const bar = document.getElementById('esh-bee-bucket-bar');
+    if (el) el.textContent = `${used.toLocaleString()} / ${cap.toLocaleString()} (${pct}%)`;
+    if (bar) {
+      bar.style.width = Math.min(100, pct) + '%';
+      bar.style.background = r.exhausted ? '#dc2626' : (r.critical ? '#dc2626' : (r.low ? '#f59e0b' : '#10b981'));
+    }
+    // Color the pill background on warning thresholds.
+    if (r.exhausted) {
+      wrap.style.background = '#fee2e2';
+      wrap.style.borderColor = '#fecaca';
+      wrap.style.color = '#991b1b';
+    } else if (r.critical) {
+      wrap.style.background = '#fef3c7';
+      wrap.style.borderColor = '#fde68a';
+      wrap.style.color = '#92400e';
+    } else if (r.low) {
+      wrap.style.background = '#fffbeb';
+      wrap.style.borderColor = '#fed7aa';
+      wrap.style.color = '#92400e';
+    } else {
+      wrap.style.background = 'var(--gray-100)';
+      wrap.style.borderColor = 'var(--gray-200)';
+      wrap.style.color = 'var(--gray-700)';
+    }
+    // Tooltip with renewal date + estimated listings remaining.
+    const renewal = r.renewal_subscription_date ? new Date(r.renewal_subscription_date).toLocaleDateString() : 'unknown';
+    const est = r.estimated_listings_remaining || 0;
+    wrap.title = `ScrapingBee: ${remaining.toLocaleString()} credits left — about ${est} more uncached listings.\nRenews ${renewal}.\nClick to refresh.`;
+    _eshState.beeUsage = r;
+  } catch (e) { /* ignore */ }
 }
 
 async function eshRefreshApiBucket() {
@@ -7268,6 +7334,7 @@ async function eshOpenPushModal() {
           <div style="font-size:11px;color:var(--gray-500);margin-top:6px;">
             Variations come from the public Etsy listing page since Etsy’s API only exposes inventory for shops you own. Each listing costs 1 lifetime credit — re-pushes and pushes to additional stores are free.
           </div>
+          <div id="esh-push-credit-line" style="display:none;font-size:11px;margin-top:6px;"></div>
           <div id="esh-push-picker" style="display:none;margin-top:12px;border:1px solid var(--gray-200);border-radius:8px;padding:12px;background:var(--gray-50);max-height:340px;overflow:auto;">
             <div style="font-size:13px;color:var(--gray-600);">Loading variant options…</div>
           </div>
@@ -7283,6 +7350,8 @@ async function eshOpenPushModal() {
   document.body.appendChild(modal);
   // Default pricing-mode UI (category grid visible, numeric input hidden).
   eshUpdatePricingInput();
+  // Show estimated credit cost inside the modal.
+  eshUpdatePushCreditLine();
   // Load stores list.
   try {
     const r = await fetch('/api/etsy-shops/shopify/stores').then(r=>r.json());
@@ -7332,8 +7401,51 @@ function eshUpdateTitleInput() {
 // Cache fetched options per listing id so toggling radio modes doesn't refetch.
 _eshState.variantOptionsByListing = _eshState.variantOptionsByListing || {};
 
+async function eshUpdatePushCreditLine() {
+  const line = document.getElementById('esh-push-credit-line');
+  if (!line) return;
+  const mode = (document.querySelector('input[name="esh-push-variants-mode"]:checked') || {}).value || 'all';
+  const ids = Array.from(_eshState.selected || []);
+  if (mode === 'none' || !ids.length) {
+    line.style.display = 'none';
+    return;
+  }
+  line.style.display = 'block';
+  line.textContent = 'Estimating ScrapingBee credits…';
+  line.style.color = 'var(--gray-500)';
+  try {
+    const est = await fetch('/api/etsy-shops/scrapingbee/estimate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({listing_ids: ids}),
+    }).then(r=>r.json());
+    if (!est || !est.ok) { line.style.display = 'none'; return; }
+    const usage = est.usage || {};
+    const remaining = est.remaining_credits || 0;
+    const credits = est.estimated_credits || 0;
+    if (est.uncached_count === 0) {
+      line.style.color = '#15803d';
+      line.textContent = `✓ All ${ids.length} listing${ids.length===1?'':'s'} already cached — this push will use 0 ScrapingBee credits.`;
+    } else {
+      const cachedNote = est.cached_count ? ` (${est.cached_count} already cached, free)` : '';
+      if (est.would_exceed) {
+        line.style.color = '#b91c1c';
+        line.textContent = `⚠ About ${credits} ScrapingBee credits needed for ${est.uncached_count} new listing${est.uncached_count===1?'':'s'}${cachedNote}, but only ${remaining} left. Upgrade or wait until renewal.`;
+      } else if (usage.low) {
+        line.style.color = '#b45309';
+        line.textContent = `⚠ About ${credits} ScrapingBee credits needed${cachedNote}. You have ${remaining} left (${usage.percent_used||0}% used).`;
+      } else {
+        line.style.color = 'var(--gray-600)';
+        line.textContent = `About ${credits} ScrapingBee credits will be used${cachedNote}. ${remaining} credits remain.`;
+      }
+    }
+  } catch (e) { line.style.display = 'none'; }
+}
+
 async function eshOnVariantsModeChange() {
   const mode = (document.querySelector('input[name="esh-push-variants-mode"]:checked') || {}).value || 'all';
+  // Refresh the credit estimate line whenever mode changes.
+  eshUpdatePushCreditLine();
   const picker = document.getElementById('esh-push-picker');
   if (mode !== 'pick') {
     picker.style.display = 'none';
@@ -7453,6 +7565,35 @@ async function eshDoPush(forceDuplicate) {
     }
   }
 
+  // ScrapingBee preflight: only matters when variants will be fetched.
+  if (variantsMode === 'all' || variantsMode === 'pick') {
+    try {
+      const est = await fetch('/api/etsy-shops/scrapingbee/estimate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({listing_ids: ids}),
+      }).then(r=>r.json());
+      if (est && est.ok && est.uncached_count > 0) {
+        const remaining = est.remaining_credits || 0;
+        const credits = est.estimated_credits || 0;
+        if (est.would_exceed) {
+          const proceed = confirm(
+            `This push would extract ${est.uncached_count} new listing${est.uncached_count===1?'':'s'} (~${credits} ScrapingBee credits), but you only have ${remaining} credits left.\n\nUncached listings will fail to fetch variants once you run out. Continue anyway?`
+          );
+          if (!proceed) return;
+        } else if ((est.usage || {}).low && credits >= 50) {
+          const proceed = confirm(
+            `Heads up: you're at ${(est.usage||{}).percent_used||0}% of your ScrapingBee quota. This push will use about ${credits} more credits (${remaining} left). Continue?`
+          );
+          if (!proceed) return;
+        }
+      } else if (est && est.ok && est.uncached_count === 0 && ids.length > 3) {
+        // Friendly note: 100% cache hit, no credits spent.
+        console.log('All', ids.length, 'listings already cached, push will not spend any ScrapingBee credits.');
+      }
+    } catch (e) { /* preflight is best-effort */ }
+  }
+
   const options = {
     pricing_mode: pricingMode,
     pricing_value: pricingValue,
@@ -7518,6 +7659,8 @@ async function eshDoPush(forceDuplicate) {
     prog.innerHTML = html;
     goBtn.textContent = 'Done';
     goBtn.onclick = () => { document.getElementById('esh-push-modal').remove(); eshClearSelection(); };
+    // Refresh the bee usage pill so the header reflects credits spent.
+    eshRefreshBeeUsage(true);
   } catch (e) {
     prog.innerHTML = `<div style="color:#dc2626;">Network error: ${escapeHtml(e.message||String(e))}</div>`;
     goBtn.disabled = false; goBtn.textContent = 'Retry';

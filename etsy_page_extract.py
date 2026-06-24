@@ -57,6 +57,26 @@ def _init_variant_cache(data_dir: str) -> None:
         con.close()
 
 
+def is_listing_cached(data_dir: str, listing_id: int) -> bool:
+    """True if the listing already has an entry in the variant cache.
+
+    Used by the UI to estimate how many ScrapingBee credits a push would cost.
+    """
+    try:
+        _init_variant_cache(data_dir)
+        con = sqlite3.connect(_db_path(data_dir), timeout=30)
+        try:
+            row = con.execute(
+                'SELECT 1 FROM etsy_listing_variants WHERE listing_id=?',
+                (int(listing_id),),
+            ).fetchone()
+        finally:
+            con.close()
+        return row is not None
+    except Exception:
+        return False
+
+
 def _get_cached_inventory(data_dir: str, listing_id: int) -> Optional[Dict[str, Any]]:
     """Return cached inventory dict if we've already extracted this listing."""
     con = sqlite3.connect(_db_path(data_dir), timeout=30)
