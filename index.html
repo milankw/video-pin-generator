@@ -7249,12 +7249,28 @@ async function eshOpenPushModal() {
           <input id="esh-push-product-type" type="text" placeholder="e.g. Jewelry" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
           <div style="font-size:11px;color:var(--gray-500);margin-top:4px;">Leave empty to use the detected category (Earrings / Rings / Bracelets / Necklaces). Override with a single value to apply to every pushed product.</div>
         </label>
-        <label style="display:flex;align-items:center;gap:8px;">
-          <input id="esh-push-variants" type="checkbox" checked>
-          Include variants (read from Etsy page, cached after first read)
-        </label>
-        <div style="font-size:11px;color:var(--gray-500);margin-top:-4px;padding-left:24px;">
-          Variations come from the public listing page since Etsy’s API only exposes inventory for shops you own. Each listing costs 1 lifetime credit — re-pushes and pushes to additional stores are free.
+        <div>
+          <div style="font-weight:600;margin-bottom:6px;">Variants</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label style="display:flex;align-items:center;gap:8px;">
+              <input type="radio" name="esh-push-variants-mode" value="all" checked onchange="eshOnVariantsModeChange()">
+              All variants
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;">
+              <input type="radio" name="esh-push-variants-mode" value="pick" onchange="eshOnVariantsModeChange()">
+              Pick which variants
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;">
+              <input type="radio" name="esh-push-variants-mode" value="none" onchange="eshOnVariantsModeChange()">
+              No variants (single product, base price + listing title)
+            </label>
+          </div>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:6px;">
+            Variations come from the public Etsy listing page since Etsy’s API only exposes inventory for shops you own. Each listing costs 1 lifetime credit — re-pushes and pushes to additional stores are free.
+          </div>
+          <div id="esh-push-picker" style="display:none;margin-top:12px;border:1px solid var(--gray-200);border-radius:8px;padding:12px;background:var(--gray-50);max-height:340px;overflow:auto;">
+            <div style="font-size:13px;color:var(--gray-600);">Loading variant options…</div>
+          </div>
         </div>
       </div>
       <div id="esh-push-progress" style="margin-top:16px;display:none;"></div>
@@ -7312,6 +7328,105 @@ function eshUpdateTitleInput() {
   inp.placeholder = mode === 'prefix' ? 'Text before title' : (mode === 'suffix' ? 'Text after title' : '');
 }
 
+// ---- Variant picker ----
+// Cache fetched options per listing id so toggling radio modes doesn't refetch.
+_eshState.variantOptionsByListing = _eshState.variantOptionsByListing || {};
+
+async function eshOnVariantsModeChange() {
+  const mode = (document.querySelector('input[name="esh-push-variants-mode"]:checked') || {}).value || 'all';
+  const picker = document.getElementById('esh-push-picker');
+  if (mode !== 'pick') {
+    picker.style.display = 'none';
+    return;
+  }
+  picker.style.display = 'block';
+  const ids = Array.from(_eshState.selected || []);
+  if (!ids.length) {
+    picker.innerHTML = '<div style="font-size:13px;color:var(--gray-600);">No listings selected.</div>';
+    return;
+  }
+  // Determine which ids we still need to fetch.
+  const need = ids.filter(id => !_eshState.variantOptionsByListing[String(id)]);
+  if (need.length) {
+    picker.innerHTML = `<div style="font-size:13px;color:var(--gray-600);">Loading variant options for ${need.length} listing${need.length===1?'':'s'}… (first read of a listing costs ~1 ScrapingBee credit)</div>`;
+    try {
+      const r = await fetch('/api/etsy-shops/shopify/preview-variants', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({listing_ids: need}),
+      }).then(r=>r.json());
+      if (r && r.ok) {
+        for (const row of (r.listings || [])) {
+          _eshState.variantOptionsByListing[String(row.listing_id)] = row;
+        }
+      } else {
+        picker.innerHTML = `<div style="color:#dc2626;">Could not load variant options: ${escapeHtml((r&&r.error)||'unknown')}</div>`;
+        return;
+      }
+    } catch (e) {
+      picker.innerHTML = `<div style="color:#dc2626;">Network error loading variant options.</div>`;
+      return;
+    }
+  }
+  // Render.
+  picker.innerHTML = ids.map(id => eshRenderListingPicker(id)).join('');
+}
+
+function eshRenderListingPicker(listingId) {
+  const row = _eshState.variantOptionsByListing[String(listingId)];
+  if (!row) return '';
+  const headerStyle = 'font-weight:600;font-size:13px;margin-bottom:6px;';
+  const titleStr = row.title ? escapeHtml(row.title) : `Listing ${listingId}`;
+  if (!row.ok) {
+    return `<div style="margin-bottom:14px;"><div style="${headerStyle}">${titleStr}</div><div style="color:#dc2626;font-size:12px;">${escapeHtml(row.error||'failed')}</div></div>`;
+  }
+  if (!row.has_variants) {
+    return `<div style="margin-bottom:14px;"><div style="${headerStyle}">${titleStr}</div><div style="font-size:12px;color:var(--gray-600);">No variations on this listing — it will push as a single product.</div></div>`;
+  }
+  const groups = (row.options || []).map((opt, gi) => {
+    const checks = (opt.values || []).map((v, vi) => {
+      const elId = `esh-pick-${listingId}-${gi}-${vi}`;
+      return `<label style="display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--gray-300);border-radius:6px;background:#fff;font-size:12px;cursor:pointer;">
+        <input type="checkbox" id="${elId}" checked data-listing="${listingId}" data-prop="${escapeHtml(opt.name)}" data-value="${escapeHtml(v)}" class="esh-pick-cb">
+        ${escapeHtml(v)}
+      </label>`;
+    }).join('');
+    return `<div style="margin-bottom:8px;">
+      <div style="font-size:12px;color:var(--gray-700);margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <span><strong>${escapeHtml(opt.name)}</strong> — ${opt.values.length} option${opt.values.length===1?'':'s'}</span>
+        <span>
+          <button type="button" onclick="eshTogglePicker('${listingId}','${escapeHtml(opt.name)}',true)" style="font-size:11px;background:none;border:0;color:#2563eb;cursor:pointer;padding:2px 4px;">All</button>
+          <button type="button" onclick="eshTogglePicker('${listingId}','${escapeHtml(opt.name)}',false)" style="font-size:11px;background:none;border:0;color:#2563eb;cursor:pointer;padding:2px 4px;">None</button>
+        </span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">${checks}</div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--gray-200);">
+    <div style="${headerStyle}">${titleStr}</div>
+    ${groups}
+  </div>`;
+}
+
+function eshTogglePicker(listingId, propName, checked) {
+  document.querySelectorAll(`.esh-pick-cb[data-listing="${listingId}"][data-prop="${propName.replace(/"/g,'&quot;')}"]`).forEach(cb => { cb.checked = checked; });
+}
+
+function eshReadVariantSelections() {
+  // Returns {"<listing_id>": {propName: [allowed_values]}} keyed by string id.
+  const out = {};
+  document.querySelectorAll('.esh-pick-cb').forEach(cb => {
+    if (!cb.checked) return;
+    const lid = cb.getAttribute('data-listing');
+    const prop = cb.getAttribute('data-prop');
+    const val = cb.getAttribute('data-value');
+    if (!out[lid]) out[lid] = {};
+    if (!out[lid][prop]) out[lid][prop] = [];
+    out[lid][prop].push(val);
+  });
+  return out;
+}
+
 async function eshDoPush(forceDuplicate) {
   const ids = Array.from(_eshState.selected || []);
   if (!ids.length) return;
@@ -7323,7 +7438,20 @@ async function eshDoPush(forceDuplicate) {
   const extraTags = document.getElementById('esh-push-extra-tags').value;
   const vendor = document.getElementById('esh-push-vendor').value;
   const productType = document.getElementById('esh-push-product-type').value.trim();
-  const includeVariants = document.getElementById('esh-push-variants').checked;
+  const variantsMode = (document.querySelector('input[name="esh-push-variants-mode"]:checked') || {}).value || 'all';
+  const variantSelections = variantsMode === 'pick' ? eshReadVariantSelections() : null;
+
+  if (variantsMode === 'pick') {
+    // Refuse to push if user picked nothing for at least one listing.
+    const empty = ids.filter(id => {
+      const sel = (variantSelections || {})[String(id)] || {};
+      return !Object.values(sel).some(arr => Array.isArray(arr) && arr.length > 0);
+    });
+    if (empty.length === ids.length) {
+      alert('Pick at least one variant option before pushing.');
+      return;
+    }
+  }
 
   const options = {
     pricing_mode: pricingMode,
@@ -7335,7 +7463,8 @@ async function eshDoPush(forceDuplicate) {
     extra_tags: extraTags,
     vendor: vendor,
     product_type: productType,  // empty -> backend falls back to detected category
-    include_variants: includeVariants,
+    variants_mode: variantsMode,            // 'all' | 'pick' | 'none'
+    variant_selections: variantSelections,  // {listing_id: {property: [values]}}
     status: 'active',
   };
 

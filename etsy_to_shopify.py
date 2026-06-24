@@ -322,6 +322,114 @@ def _fetch_inventory(etsy_request_fn, listing_id):
         return None
 
 
+def _resolve_inventory(data_dir, etsy_request_fn, listing_id, listing_data):
+    """Get inventory for a listing using the same cascade as push_listing:
+    Etsy API first (free, owner-only), then ScrapingBee page extract (cached).
+
+    Returns None if no variations could be resolved.
+    """
+    inventory = _fetch_inventory(etsy_request_fn, listing_id)
+    if inventory and inventory.get('products'):
+        return inventory
+    try:
+        from etsy_page_extract import fetch_listing_variants
+        price_obj = listing_data.get('price') or {}
+        listing_url = (
+            listing_data.get('url')
+            or f'https://www.etsy.com/listing/{listing_id}/'
+        )
+        page_inv = fetch_listing_variants(
+            data_dir,
+            int(listing_id),
+            listing_url=listing_url,
+            base_price_amount=int(price_obj.get('amount') or 0),
+            base_price_divisor=int(price_obj.get('divisor') or 100),
+            base_currency=str(price_obj.get('currency_code') or 'USD'),
+        )
+        if page_inv and page_inv.get('products'):
+            return page_inv
+    except Exception as e:
+        log.warning('page-extract fallback failed for listing %s: %s',
+                    listing_id, e)
+    return None
+
+
+def summarize_inventory_options(inventory):
+    """Return a UI-friendly summary of the option groups in an inventory dict.
+
+    Output shape:
+        [
+          {'name': 'Gemstone', 'values': ['Rose quartz', 'Aventurine', ...]},
+          {'name': 'Finish',   'values': ['Antiqued Brass', 'Antiqued Silver']},
+        ]
+    Preserves first-seen order from inventory.products[].property_values.
+    """
+    if not inventory or not inventory.get('products'):
+        return []
+    order = []
+    seen_names = set()
+    values_by_name = {}
+    for p in inventory.get('products') or []:
+        for pv in p.get('property_values') or []:
+            name = (pv.get('property_name') or '').strip()
+            if not name:
+                continue
+            if name not in seen_names:
+                seen_names.add(name)
+                order.append(name)
+                values_by_name[name] = []
+            vals = pv.get('values') or []
+            v = (vals[0] if vals else '').strip()
+            if v and v not in values_by_name[name]:
+                values_by_name[name].append(v)
+    return [{'name': n, 'values': values_by_name.get(n, [])} for n in order[:3]]
+
+
+def _filter_inventory_by_selections(inventory, selections):
+    """Keep only inventory products whose property_values fall within the
+    user's selections.
+
+    Args:
+        inventory: dict, the resolved Etsy/page inventory shape
+        selections: dict mapping property_name -> list[allowed value strings]
+            Empty list or missing key means "keep all values for that property".
+
+    Returns a new inventory dict with .products filtered.
+    """
+    if not inventory:
+        return inventory
+    selections = selections or {}
+    # Normalize keys to stripped strings; values to sets for O(1) lookup.
+    allowed = {}
+    for k, vs in selections.items():
+        key = (k or '').strip()
+        if not key:
+            continue
+        if not vs:
+            continue  # empty list = keep all
+        allowed[key] = {str(v).strip() for v in vs if str(v).strip()}
+    if not allowed:
+        return inventory  # no constraints
+    kept = []
+    for p in inventory.get('products') or []:
+        ok = True
+        for pv in p.get('property_values') or []:
+            name = (pv.get('property_name') or '').strip()
+            if name not in allowed:
+                continue
+            vals = pv.get('values') or []
+            v = (vals[0] if vals else '').strip()
+            if v not in allowed[name]:
+                ok = False
+                break
+        if ok:
+            kept.append(p)
+    new_inv = dict(inventory)
+    new_inv['products'] = kept
+    new_inv['_filtered'] = True
+    return new_inv
+
+
 # ---------- mapping: Etsy -> Shopify product payload ----------
 
 def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suffix=''):
@@ -632,49 +740,40 @@ def push_listing(data_dir, etsy_request_fn, listing_id, target_store_id,
                 'category': cat,
             }
 
-    # Fetch variations. The Etsy v3 /listings/{id}/inventory endpoint is
-    # owner-only and returns 404 for any listing we don't own. So we cascade:
-    #   1) try the Etsy API (free, works if we own the listing)
-    #   2) on miss, read the public listing page via ScrapingBee (cached, so
-    #      every listing costs at most 1 lifetime ScrapingBee credit)
+    # Resolve variations based on variants_mode.
+    #   'all'  -> fetch via cascade (Etsy API -> ScrapingBee page) and use all
+    #   'pick' -> fetch via cascade, then filter to the user's selections
+    #   'none' -> skip variations entirely; single-variant product at base price
+    #
+    # Back-compat: legacy push payloads that only set include_variants=true/false
+    # map to 'all' / 'none' respectively.
+    variants_mode = (push_opts.get('variants_mode') or '').strip().lower()
+    if not variants_mode:
+        variants_mode = 'all' if push_opts.get('include_variants', True) else 'none'
+
     inventory = None
-    if push_opts.get('include_variants', True):
-        inventory = _fetch_inventory(etsy_request_fn, listing_id)
-        if not (inventory and inventory.get('products')):
-            try:
-                from etsy_page_extract import fetch_listing_variants
-                price_obj = listing_data.get('price') or {}
-                shop_data = listing_data.get('shop') or {}
-                seller_slug = (
-                    shop_data.get('shop_name')
-                    or listing_data.get('url', '').split('/')[-2] if listing_data.get('url') else ''
-                )
-                # Use the canonical /listing/{id}/ URL — Etsy 301s to the
-                # full slug-bearing URL, ScrapingBee follows redirects.
-                listing_url = (
-                    listing_data.get('url')
-                    or f'https://www.etsy.com/listing/{listing_id}/'
-                )
-                page_inv = fetch_listing_variants(
-                    data_dir,
-                    int(listing_id),
-                    listing_url=listing_url,
-                    base_price_amount=int(price_obj.get('amount') or 0),
-                    base_price_divisor=int(price_obj.get('divisor') or 100),
-                    base_currency=str(price_obj.get('currency_code') or 'USD'),
-                )
-                if page_inv and page_inv.get('products'):
-                    log.info(
-                        'push_listing %s: using page-extracted inventory '
-                        '(%d products) since Etsy API returned none',
-                        listing_id, len(page_inv.get('products') or []),
-                    )
-                    inventory = page_inv
-            except Exception as e:
-                log.warning(
-                    'page-extract fallback failed for listing %s: %s',
-                    listing_id, e,
-                )
+    if variants_mode in ('all', 'pick'):
+        inventory = _resolve_inventory(data_dir, etsy_request_fn, listing_id, listing_data)
+        if variants_mode == 'pick' and inventory:
+            selections_by_listing = push_opts.get('variant_selections') or {}
+            # variant_selections may be keyed by listing_id (multi-push) or
+            # a flat {property: [values]} dict (single-listing convenience).
+            sel = selections_by_listing.get(str(listing_id))
+            if sel is None:
+                sel = selections_by_listing.get(listing_id)
+            if sel is None and selections_by_listing and not any(
+                str(k).isdigit() for k in selections_by_listing.keys()
+            ):
+                sel = selections_by_listing
+            inventory = _filter_inventory_by_selections(inventory, sel or {})
+            if not (inventory and inventory.get('products')):
+                return {
+                    'ok': False,
+                    'skipped': True,
+                    'reason': 'no_variant_selection_match',
+                    'error': 'No variants matched the selected options; nothing to push.',
+                    'title': listing_data.get('title') or '',
+                }
 
     body, variant_image_links, detected_category = _build_shopify_product(
         listing_data, inventory, push_opts, store, handle_suffix=handle_suffix,
@@ -893,5 +992,46 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
     def _ets_shopify_pushes_for_listing(listing_id):
         return jsonify({'ok': True, 'success': True,
                         'pushes': list_pushes_for_listing(data_dir, listing_id)})
+
+    @app.route('/api/etsy-shops/shopify/preview-variants', methods=['POST'])
+    @login_required
+    def _ets_shopify_preview_variants():
+        """Return discovered variant options per listing, for the picker UI.
+
+        Cached listings are served free; the first preview for a listing
+        costs 1 ScrapingBee credit (same as the push fallback).
+        """
+        body = request.get_json(force=True, silent=True) or {}
+        listing_ids = body.get('listing_ids') or []
+        if not isinstance(listing_ids, list) or not listing_ids:
+            return jsonify({'ok': False, 'error': 'listing_ids required'}), 400
+        out = []
+        for lid in listing_ids:
+            try:
+                lid_int = int(lid)
+            except Exception:
+                out.append({'listing_id': lid, 'ok': False, 'error': 'bad listing_id'})
+                continue
+            cached = _load_cached_listing(data_dir, lid_int)
+            if not cached:
+                out.append({'listing_id': lid_int, 'ok': False,
+                            'error': 'Listing not in cache. Import the shop first.'})
+                continue
+            try:
+                inv = _resolve_inventory(data_dir, etsy_request_fn, lid_int, cached['data'])
+            except Exception as e:
+                log.exception('preview-variants crash for %s', lid_int)
+                out.append({'listing_id': lid_int, 'ok': False,
+                            'error': f'{type(e).__name__}: {e}'})
+                continue
+            options = summarize_inventory_options(inv) if inv else []
+            out.append({
+                'listing_id': lid_int,
+                'ok': True,
+                'title': (cached['data'].get('title') or '')[:160],
+                'has_variants': bool(options),
+                'options': options,
+            })
+        return jsonify({'ok': True, 'success': True, 'listings': out})
 
     log.info('Etsy -> Shopify push routes registered')
