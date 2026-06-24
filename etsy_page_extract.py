@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,49 @@ from bs4 import BeautifulSoup
 log = logging.getLogger('etsy_page_extract')
 
 SCRAPINGBEE_ENDPOINT = 'https://app.scrapingbee.com/api/v1/'
+
+# Etsy's public dropdowns append the per-option price in parens when prices
+# vary per option, e.g. "CZ Amethyst ($92.30)", "CZ Aquamarine ($91.98...)",
+# "Gold ($1,299.00)". We strip that trailing price tail before storing the
+# option label so Shopify variants show clean names like "CZ Amethyst".
+#
+# Pattern: optional whitespace, '(', optional currency symbol/code, a number
+# with thousands separators and optional decimals, optional truncation dots,
+# ')' at end-of-string. We loop in case of nested wrappers like " ($12.00) ".
+_PRICE_TAIL_RE = re.compile(
+    r'\s*[\(\[]\s*'
+    r'(?:[A-Z]{1,3}\s*)?'              # optional currency code like USD
+    r'[\$\u20ac\u00a3\u00a5]?\s*'      # optional $ € £ ¥
+    r'\d{1,3}(?:[,\.\s]\d{3})*'        # 1, 1,234, 1.234 (EU), 1 234
+    r'(?:[\.,]\d+)?'                   # optional decimals
+    r'(?:\s*\.{2,3})?'                 # optional truncation ellipsis inside the parens
+    r'\s*[\)\]]\s*$'
+)
+
+
+def clean_option_label(text: Any) -> str:
+    """Strip trailing parenthesized price from an Etsy variant option label.
+
+    Examples:
+        'CZ Amethyst ($92.30)'        -> 'CZ Amethyst'
+        'CZ Aquamarine ($91.98...)'   -> 'CZ Aquamarine'
+        'Gold ($1,299.00)'            -> 'Gold'
+        '14k Gold [€499]'              -> '14k Gold'
+        'Small'                       -> 'Small'
+
+    Safe on any input: returns '' for None, keeps the original string if no
+    price tail is found, and runs in a loop so chained tails are removed.
+    """
+    if text is None:
+        return ''
+    s = str(text).strip()
+    # Loop in case of stacked tails like "Gold ($1,299.00) ($1,499.00)".
+    for _ in range(3):
+        new = _PRICE_TAIL_RE.sub('', s).rstrip()
+        if new == s:
+            break
+        s = new
+    return s
 
 
 # ---------- sqlite cache ----------
@@ -181,7 +225,8 @@ def _parse_variations_from_html(html: str) -> List[Dict[str, Any]]:
             val = (o.get('value') or '').strip()
             if not val or o.has_attr('disabled'):
                 continue
-            label = o.get_text(strip=True)
+            raw_label = o.get_text(strip=True)
+            label = clean_option_label(raw_label)
             opt: Dict[str, Any] = {'value_id': val, 'label': label}
             # Etsy sometimes embeds per-option price/image hints as data-* attrs.
             for attr in ('data-price', 'data-image-id', 'data-quantity',

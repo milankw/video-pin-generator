@@ -41,6 +41,8 @@ import os
 import re
 import sqlite3
 import threading
+
+from etsy_page_extract import clean_option_label as _clean_option_label
 import time
 import uuid
 from typing import Any
@@ -460,7 +462,7 @@ def summarize_inventory_options(inventory):
                 order.append(name)
                 values_by_name[name] = []
             vals = pv.get('values') or []
-            v = (vals[0] if vals else '').strip()
+            v = _clean_option_label(vals[0] if vals else '')
             if v and v not in values_by_name[name]:
                 values_by_name[name].append(v)
     return [{'name': n, 'values': values_by_name.get(n, [])} for n in order[:3]]
@@ -499,7 +501,7 @@ def _filter_inventory_by_selections(inventory, selections):
             if name not in allowed:
                 continue
             vals = pv.get('values') or []
-            v = (vals[0] if vals else '').strip()
+            v = _clean_option_label(vals[0] if vals else '')
             if v not in allowed[name]:
                 ok = False
                 break
@@ -677,7 +679,7 @@ def _build_variants(inventory, listing_data, push_opts, base_price_str, image_id
                 continue
             idx = prop_order.index(name)
             vals = pv.get('values') or []
-            opt_vals[idx] = (vals[0] if vals else '').strip()
+            opt_vals[idx] = _clean_option_label(vals[0] if vals else '')
         # Fill missing slots with 'Default' so Shopify doesn't reject the variant.
         for i, v in enumerate(opt_vals):
             if not v:
