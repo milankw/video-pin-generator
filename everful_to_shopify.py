@@ -126,6 +126,130 @@ def summarize_inventory_options_with_images(inventory):
     return out
 
 
+# ---------- preset storage (data/everful_presets.json) ----------
+
+import tempfile
+from datetime import datetime
+
+_PRESETS_FILENAME = 'everful_presets.json'
+_LAST_USED_KEY = '__last_used__'
+
+
+def _presets_path(data_dir: str) -> str:
+    return os.path.join(data_dir, _PRESETS_FILENAME)
+
+
+def _load_presets_file(data_dir: str) -> dict:
+    p = _presets_path(data_dir)
+    if not os.path.exists(p):
+        return {'presets': {}, 'last_used_name': None}
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f) or {}
+    except Exception:
+        log.exception('Failed to read %s; starting with empty presets', p)
+        return {'presets': {}, 'last_used_name': None}
+    if 'presets' not in data or not isinstance(data['presets'], dict):
+        data['presets'] = {}
+    if 'last_used_name' not in data:
+        data['last_used_name'] = None
+    return data
+
+
+def _save_presets_file(data_dir: str, data: dict) -> None:
+    os.makedirs(data_dir, exist_ok=True)
+    p = _presets_path(data_dir)
+    # Atomic write so a crash mid-write doesn't corrupt the file.
+    fd, tmp = tempfile.mkstemp(prefix='.everful_presets.', dir=data_dir)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, p)
+    except Exception:
+        try: os.unlink(tmp)
+        except OSError: pass
+        raise
+
+
+def _sanitize_preset_payload(payload: dict) -> dict:
+    """Coerce a preset blob to safe primitives only."""
+    cat_prices_in = payload.get('category_prices') or {}
+    cat_prices = {}
+    for k in ('Earrings', 'Rings', 'Bracelets', 'Necklaces'):
+        v = cat_prices_in.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            cat_prices[k] = float(v)
+    return {
+        'store_id': str(payload.get('store_id') or '').strip(),
+        'vendor': str(payload.get('vendor') or '').strip(),
+        'extra_tags': str(payload.get('extra_tags') or '').strip(),
+        'category_prices': cat_prices,
+    }
+
+
+def list_presets(data_dir: str) -> dict:
+    data = _load_presets_file(data_dir)
+    presets = []
+    for name, blob in (data.get('presets') or {}).items():
+        if name == _LAST_USED_KEY:
+            continue
+        if not isinstance(blob, dict):
+            continue
+        item = dict(blob)
+        item['name'] = name
+        presets.append(item)
+    presets.sort(key=lambda x: (x.get('updated_at') or 0), reverse=True)
+    last_used_blob = (data.get('presets') or {}).get(_LAST_USED_KEY) or {}
+    return {
+        'presets': presets,
+        'last_used_name': data.get('last_used_name'),
+        'last_used': last_used_blob if isinstance(last_used_blob, dict) else {},
+    }
+
+
+def save_preset(data_dir: str, name: str, payload: dict) -> dict:
+    """Create or overwrite a named preset. Returns the saved blob."""
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('Preset name is required.')
+    if name == _LAST_USED_KEY:
+        raise ValueError('That preset name is reserved.')
+    if len(name) > 80:
+        raise ValueError('Preset name too long (max 80 chars).')
+    blob = _sanitize_preset_payload(payload)
+    blob['updated_at'] = int(time.time())
+    data = _load_presets_file(data_dir)
+    data['presets'][name] = blob
+    data['last_used_name'] = name
+    _save_presets_file(data_dir, data)
+    out = dict(blob); out['name'] = name
+    return out
+
+
+def delete_preset(data_dir: str, name: str) -> bool:
+    data = _load_presets_file(data_dir)
+    if name in (data.get('presets') or {}):
+        del data['presets'][name]
+        if data.get('last_used_name') == name:
+            data['last_used_name'] = None
+        _save_presets_file(data_dir, data)
+        return True
+    return False
+
+
+def snapshot_last_used(data_dir: str, payload: dict) -> None:
+    """Update the silent 'last used' snapshot whenever a push happens.
+    Does NOT touch the named presets dict."""
+    try:
+        data = _load_presets_file(data_dir)
+        blob = _sanitize_preset_payload(payload)
+        blob['updated_at'] = int(time.time())
+        data['presets'][_LAST_USED_KEY] = blob
+        _save_presets_file(data_dir, data)
+    except Exception:
+        log.exception('snapshot_last_used failed')
+
+
 # ---------- sqlite push-history table (parallel to etsy_shopify_push) ----------
 
 def _db_path(data_dir: str) -> str:
@@ -473,6 +597,15 @@ def register_routes(app, data_dir: str, login_required) -> None:
         push_opts = body.get('options') or {}
         force_duplicate = bool(body.get('force_duplicate'))
 
+        # Snapshot the choices as the new "last used" preset so the next
+        # modal open can pre-fill everything automatically.
+        snapshot_last_used(data_dir, {
+            'store_id': store_id,
+            'vendor': push_opts.get('vendor') or '',
+            'extra_tags': push_opts.get('extra_tags') or '',
+            'category_prices': push_opts.get('category_prices') or {},
+        })
+
         results = []
         for u in urls:
             try:
@@ -509,5 +642,34 @@ def register_routes(app, data_dir: str, login_required) -> None:
             'ok': True, 'success': True,
             'pushes': list_pushes_for_product(data_dir, handle),
         })
+
+    # ----- Presets: store + tags + prices the user wants reused -----
+
+    @app.route('/api/everful/presets', methods=['GET'])
+    @login_required
+    def _ev_presets_list():
+        return jsonify({'ok': True, 'success': True, **list_presets(data_dir)})
+
+    @app.route('/api/everful/presets', methods=['POST'])
+    @login_required
+    def _ev_presets_save():
+        body = request.get_json(force=True, silent=True) or {}
+        name = body.get('name') or ''
+        try:
+            saved = save_preset(data_dir, name, body)
+        except ValueError as e:
+            return jsonify({'ok': False, 'error': str(e)}), 400
+        except Exception as e:
+            log.exception('save_preset crash')
+            return jsonify({'ok': False, 'error': f'{type(e).__name__}: {e}'}), 500
+        return jsonify({'ok': True, 'success': True, 'preset': saved})
+
+    @app.route('/api/everful/presets/<path:name>', methods=['DELETE'])
+    @login_required
+    def _ev_presets_delete(name):
+        removed = delete_preset(data_dir, name)
+        if not removed:
+            return jsonify({'ok': False, 'error': 'Preset not found'}), 404
+        return jsonify({'ok': True, 'success': True})
 
     log.info('Everful -> Shopify push routes registered')

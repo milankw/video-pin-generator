@@ -7797,6 +7797,7 @@ function eshFmt(n) {
 const evPreviewed = new Map(); // handle -> {product_url, title, image, options, variant_count, category, price_low_minor}
 const evSelectedHandles = new Set();
 const evVariantSelections = {}; // handle -> {propName: [allowed values]}
+let evPresetsCache = {presets: [], last_used: {}, last_used_name: null};
 
 function evParseUrlList() {
   const raw = (document.getElementById('ev-urls')?.value || '').trim();
@@ -8081,6 +8082,13 @@ async function evOpenPushModal() {
     alert('No Shopify stores connected. Add one in the Stores tab first.');
     return;
   }
+  // Load presets in parallel — used to populate the dropdown + auto-apply.
+  let presetsData = {presets: [], last_used: {}, last_used_name: null};
+  try {
+    const r = await fetch('/api/everful/presets').then(r => r.json());
+    if (r && r.ok) presetsData = r;
+  } catch (e) {}
+  evPresetsCache = presetsData;
   const n = evSelectedHandles.size;
   let modal = document.getElementById('ev-push-modal');
   if (modal) modal.remove();
@@ -8088,11 +8096,25 @@ async function evOpenPushModal() {
   modal.id = 'ev-push-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;';
   const storeOpts = stores.map(s => '<option value="' + evEsc(s.id) + '">' + evEsc(s.name) + ' (' + evEsc(s.domain) + ')</option>').join('');
+  // Preset dropdown options (named presets only; "last used" is auto-applied silently)
+  const presetOpts = (presetsData.presets || [])
+    .map(p => '<option value="' + evEsc(p.name) + '">' + evEsc(p.name) + '</option>')
+    .join('');
   modal.innerHTML = `
     <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:90vh;overflow:auto;padding:24px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
         <h3 style="margin:0;font-size:18px;">Push ${n} Everful product${n===1?'':'s'} to Shopify</h3>
         <button onclick="document.getElementById('ev-push-modal').remove()" style="background:transparent;border:0;font-size:24px;cursor:pointer;color:var(--gray-500);">×</button>
+      </div>
+      <!-- Preset bar -->
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-bottom:14px;display:flex;gap:8px;align-items:center;font-size:13px;flex-wrap:wrap;">
+        <strong style="color:#1e3a8a;">Preset:</strong>
+        <select id="ev-preset-select" onchange="evApplyPreset(this.value)" style="flex:1;min-width:160px;padding:6px;border:1px solid #bfdbfe;border-radius:6px;background:#fff;">
+          <option value="">— none —</option>
+          ${presetOpts}
+        </select>
+        <button onclick="evSavePresetPrompt()" style="background:#1e3a8a;color:#fff;border:0;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Save current as…</button>
+        <button id="ev-preset-delete" onclick="evDeleteCurrentPreset()" style="background:#fff;color:#b91c1c;border:1px solid #fca5a5;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;display:none;">Delete</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;">
         <label>Target store
@@ -8136,6 +8158,19 @@ async function evOpenPushModal() {
   `;
   document.body.appendChild(modal);
 
+  // Auto-apply: prefer the user's most recently used named preset; else fall
+  // back to the silent "last used" snapshot from their last push.
+  const lastName = presetsData.last_used_name || '';
+  const lastNamed = (presetsData.presets || []).find(p => p.name === lastName);
+  if (lastNamed) {
+    document.getElementById('ev-preset-select').value = lastName;
+    evApplyPresetBlob(lastNamed);
+    const delBtn = document.getElementById('ev-preset-delete');
+    if (delBtn) delBtn.style.display = '';
+  } else if (presetsData.last_used && Object.keys(presetsData.last_used).length) {
+    evApplyPresetBlob(presetsData.last_used);
+  }
+
   // Fill the variants summary based on actual picker state
   const summary = document.getElementById('ev-vmode-summary');
   if (summary) {
@@ -8158,6 +8193,131 @@ async function evOpenPushModal() {
     msg += 'Shopify caps at 100 variants per product; anything over is truncated.';
     summary.innerHTML = '<strong>Variants:</strong> ' + evEsc(msg);
   }
+}
+
+// -------- Preset helpers --------
+
+function evCollectCurrentPreset() {
+  // Snapshot the current modal field values into a preset payload.
+  const get = id => (document.getElementById(id) || {}).value || '';
+  const num = id => {
+    const v = parseFloat(get(id));
+    return isFinite(v) ? v : null;
+  };
+  const cat_prices = {};
+  for (const k of ['Earrings', 'Rings', 'Bracelets', 'Necklaces']) {
+    const v = num('ev-cat-price-' + k);
+    if (v != null) cat_prices[k] = v;
+  }
+  return {
+    store_id: get('ev-push-store'),
+    vendor: get('ev-push-vendor'),
+    extra_tags: get('ev-push-extra-tags'),
+    category_prices: cat_prices,
+  };
+}
+
+function evApplyPresetBlob(blob) {
+  // Push preset values into the modal inputs. Missing values are left alone.
+  if (!blob) return;
+  if (blob.store_id) {
+    const sel = document.getElementById('ev-push-store');
+    if (sel) {
+      // Only set if the store is in the dropdown (it might have been removed).
+      const hit = Array.from(sel.options).some(o => o.value === blob.store_id);
+      if (hit) sel.value = blob.store_id;
+    }
+  }
+  const vendor = document.getElementById('ev-push-vendor');
+  if (vendor && typeof blob.vendor === 'string') vendor.value = blob.vendor;
+  const tags = document.getElementById('ev-push-extra-tags');
+  if (tags && typeof blob.extra_tags === 'string') tags.value = blob.extra_tags;
+  const cp = blob.category_prices || {};
+  for (const k of ['Earrings', 'Rings', 'Bracelets', 'Necklaces']) {
+    if (typeof cp[k] === 'number' && cp[k] > 0) {
+      const input = document.getElementById('ev-cat-price-' + k);
+      if (input) {
+        input.value = cp[k].toFixed(2);
+        evUpdateCmp(k);
+      }
+    }
+  }
+}
+
+function evApplyPreset(name) {
+  // Triggered by the preset dropdown.
+  const delBtn = document.getElementById('ev-preset-delete');
+  if (!name) {
+    if (delBtn) delBtn.style.display = 'none';
+    return;
+  }
+  const blob = (evPresetsCache.presets || []).find(p => p.name === name);
+  if (!blob) return;
+  evApplyPresetBlob(blob);
+  if (delBtn) delBtn.style.display = '';
+}
+
+async function evSavePresetPrompt() {
+  const existing = document.getElementById('ev-preset-select').value;
+  const suggested = existing || '';
+  const name = (prompt('Preset name:', suggested) || '').trim();
+  if (!name) return;
+  const payload = evCollectCurrentPreset();
+  payload.name = name;
+  let resp;
+  try {
+    resp = await fetch('/api/everful/presets', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+  } catch (e) {
+    alert('Save failed: ' + (e.message || e));
+    return;
+  }
+  if (!resp || !resp.ok) {
+    alert('Save failed: ' + ((resp && resp.error) || 'unknown'));
+    return;
+  }
+  // Refresh local cache + dropdown.
+  await evRefreshPresetDropdown(name);
+}
+
+async function evDeleteCurrentPreset() {
+  const sel = document.getElementById('ev-preset-select');
+  const name = sel && sel.value;
+  if (!name) return;
+  if (!confirm('Delete preset "' + name + '"?')) return;
+  let resp;
+  try {
+    resp = await fetch('/api/everful/presets/' + encodeURIComponent(name), {
+      method: 'DELETE',
+    }).then(r => r.json());
+  } catch (e) {
+    alert('Delete failed: ' + (e.message || e));
+    return;
+  }
+  if (!resp || !resp.ok) {
+    alert('Delete failed: ' + ((resp && resp.error) || 'unknown'));
+    return;
+  }
+  await evRefreshPresetDropdown('');
+}
+
+async function evRefreshPresetDropdown(selectName) {
+  try {
+    const r = await fetch('/api/everful/presets').then(r => r.json());
+    if (r && r.ok) evPresetsCache = r;
+  } catch (e) {}
+  const sel = document.getElementById('ev-preset-select');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— none —</option>' +
+    (evPresetsCache.presets || [])
+      .map(p => '<option value="' + evEsc(p.name) + '">' + evEsc(p.name) + '</option>')
+      .join('');
+  sel.value = selectName || '';
+  const delBtn = document.getElementById('ev-preset-delete');
+  if (delBtn) delBtn.style.display = (selectName ? '' : 'none');
 }
 
 function evUpdateCmp(cat) {
