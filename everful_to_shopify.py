@@ -47,6 +47,85 @@ from everful_page_extract import (
 log = logging.getLogger('everful_to_shopify')
 
 
+def summarize_inventory_options_with_images(inventory):
+    """Like ``summarize_inventory_options`` but each value carries its own
+    image URL and minor-unit wholesale price.
+
+    Everful's JSON-LD ProductGroup contains a per-variant ``image`` field; we
+    surface that into the picker UI so users can see what each color / style
+    actually looks like before choosing.
+
+    Output shape::
+
+        [
+          {
+            'name': 'Color',
+            'values': [
+              {'value': 'Gold (PBR-195G)', 'image': 'https://.../a.jpg',
+               'price_minor': 153},
+              ...
+            ],
+          },
+          ...
+        ]
+
+    First-seen image wins per value (variants with the same value share images
+    in practice). First-seen order preserved from inventory.products.
+    """
+    from etsy_page_extract import clean_option_label as _clean_option_label
+
+    if not inventory or not inventory.get('products'):
+        return []
+
+    order: List[str] = []
+    seen_names = set()
+    values_by_name: Dict[str, List[str]] = {}
+    seen_value_keys: Dict[str, set] = {}
+    img_by_name_value: Dict[tuple, str] = {}
+    price_by_name_value: Dict[tuple, int] = {}
+
+    for p in inventory.get('products') or []:
+        offerings = p.get('offerings') or []
+        off = offerings[0] if offerings else {}
+        variant_img = off.get('image_url') or ''
+        price_obj = off.get('price') or {}
+        amt_minor = price_obj.get('amount') if isinstance(price_obj, dict) else None
+        for pv in p.get('property_values') or []:
+            name = (pv.get('property_name') or '').strip()
+            if not name:
+                continue
+            if name not in seen_names:
+                seen_names.add(name)
+                order.append(name)
+                values_by_name[name] = []
+                seen_value_keys[name] = set()
+            raw_vals = pv.get('values') or []
+            v_clean = _clean_option_label(raw_vals[0] if raw_vals else '')
+            if not v_clean:
+                continue
+            if v_clean not in seen_value_keys[name]:
+                seen_value_keys[name].add(v_clean)
+                values_by_name[name].append(v_clean)
+            key = (name, v_clean)
+            if variant_img and key not in img_by_name_value:
+                img_by_name_value[key] = variant_img
+            if isinstance(amt_minor, int) and key not in price_by_name_value:
+                price_by_name_value[key] = amt_minor
+
+    out = []
+    for name in order[:3]:
+        rows = []
+        for v in values_by_name.get(name, []):
+            key = (name, v)
+            rows.append({
+                'value': v,
+                'image': img_by_name_value.get(key) or '',
+                'price_minor': price_by_name_value.get(key),
+            })
+        out.append({'name': name, 'values': rows})
+    return out
+
+
 # ---------- sqlite push-history table (parallel to etsy_shopify_push) ----------
 
 def _db_path(data_dir: str) -> str:
@@ -358,13 +437,21 @@ def register_routes(app, data_dir: str, login_required) -> None:
                             'error': 'Could not fetch/parse product page.'})
                 continue
             ld, inv = parsed
-            options = summarize_inventory_options(inv) if inv else []
+            options = summarize_inventory_options_with_images(inv) if inv else []
+            # All product-level gallery images so the card can show a small
+            # carousel / hero. First one is the primary hero.
+            gallery = [
+                img.get('url_fullxfull')
+                for img in (ld.get('images') or [])
+                if img.get('url_fullxfull')
+            ]
             out.append({
                 'product_url': u,
                 'handle': handle,
                 'ok': True,
                 'title': (ld.get('title') or '')[:160],
-                'image': (ld.get('images') or [{}])[0].get('url_fullxfull'),
+                'image': gallery[0] if gallery else None,
+                'gallery': gallery,
                 'has_variants': bool(options),
                 'options': options,
                 'variant_count': len((inv or {}).get('products') or []),
