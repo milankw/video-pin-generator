@@ -8125,13 +8125,7 @@ async function evOpenPushModal() {
         <label>Extra tags (comma-separated, optional)
           <input id="ev-push-extra-tags" type="text" placeholder="e.g. wholesale, jewelry" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
         </label>
-        <div>
-          <div style="font-weight:600;margin-bottom:6px;">Variants</div>
-          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="all" checked> All variants</label>
-          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="pick"> Pick (uses your per-product picker selections above)</label>
-          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="none"> No variants (single product at base price)</label>
-          <div style="font-size:11px;color:var(--gray-500);margin-top:6px;">Everful items can have 200+ variants; Shopify caps at 100. Anything over will be truncated to the first 100.</div>
-        </div>
+        <div id="ev-vmode-summary" style="background:var(--gray-50,#f9fafb);border:1px solid var(--gray-200);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--gray-700);"></div>
       </div>
       <div id="ev-push-progress" style="margin-top:16px;"></div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;">
@@ -8141,6 +8135,29 @@ async function evOpenPushModal() {
     </div>
   `;
   document.body.appendChild(modal);
+
+  // Fill the variants summary based on actual picker state
+  const summary = document.getElementById('ev-vmode-summary');
+  if (summary) {
+    let pickedCount = 0;
+    let allCount = 0;
+    for (const h of evSelectedHandles) {
+      if (evVariantSelections[h]) pickedCount++; else allCount++;
+    }
+    const total = evSelectedHandles.size;
+    let msg = '';
+    if (pickedCount === total) {
+      msg = '✓ Using your variant picks for all ' + total + ' product' + (total===1?'':'s') + '. ';
+    } else if (pickedCount > 0) {
+      msg = '✓ Using picker selections for ' + pickedCount + ' product' + (pickedCount===1?'':'s') +
+            '; pushing all variants for the other ' + allCount + '. ';
+    } else {
+      msg = 'Pushing all variants for ' + total + ' product' + (total===1?'':'s') +
+            ' (you didn\'t open the picker). ';
+    }
+    msg += 'Shopify caps at 100 variants per product; anything over is truncated.';
+    summary.innerHTML = '<strong>Variants:</strong> ' + evEsc(msg);
+  }
 }
 
 function evUpdateCmp(cat) {
@@ -8160,7 +8177,6 @@ async function evDoPush() {
     Bracelets: parseFloat(document.getElementById('ev-cat-price-Bracelets').value),
     Necklaces: parseFloat(document.getElementById('ev-cat-price-Necklaces').value),
   };
-  const vmode = (document.querySelector('input[name="ev-vmode"]:checked') || {}).value || 'all';
   const vendor = document.getElementById('ev-push-vendor').value || '';
   const extra_tags = document.getElementById('ev-push-extra-tags').value || '';
 
@@ -8171,13 +8187,16 @@ async function evDoPush() {
   }
   if (urls.length === 0) { alert('No products selected.'); return; }
 
+  // Auto-derive variants mode from picker state. If the user touched the
+  // picker for any selected product, send those selections; otherwise just
+  // push all variants.
   const variant_selections = {};
-  if (vmode === 'pick') {
-    for (const h of evSelectedHandles) {
-      const sel = evVariantSelections[h];
-      if (sel) variant_selections[h] = sel;
-    }
+  let anyPicked = false;
+  for (const h of evSelectedHandles) {
+    const sel = evVariantSelections[h];
+    if (sel) { variant_selections[h] = sel; anyPicked = true; }
   }
+  const vmode = anyPicked ? 'pick' : 'all';
 
   goBtn.disabled = true; goBtn.textContent = 'Pushing…';
   progress.innerHTML = '<div style="color:var(--gray-600);font-size:13px;">Pushing ' + urls.length + ' product' + (urls.length===1?'':'s') + '…</div>';
