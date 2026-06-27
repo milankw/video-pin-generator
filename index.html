@@ -1671,6 +1671,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="etsy">Etsy Winners <span class="badge badge-purple" id="etsy-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="jewelry-winners">Jewelry Winners <span class="badge badge-purple" id="jw-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="etsy-shops">Etsy Shops <span class="badge badge-purple" id="esh-badge" style="display:none">0</span></div>
+  <div class="tab" data-tab="everful">Everful</div>
 </div>
 
 <!-- Content -->
@@ -2535,6 +2536,42 @@ textarea { resize: vertical; min-height: 80px; }
     </div>
   </div>
   <!-- ===== END ETSY SHOPS TAB ===== -->
+
+  <!-- ===== EVERFUL TAB ===== -->
+  <div class="tab-panel" id="panel-everful">
+    <div class="section-card" style="padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0;font-size:18px;">Everful Wholesale Import</h2>
+          <div style="color:var(--gray-600);font-size:13px;margin-top:4px;max-width:680px;">Paste Everful Wholesale product URLs (one per line) and push them into a Shopify store using the same category pricing as the Etsy importer. No ScrapingBee credits used — Everful pages parse directly from public JSON-LD.</div>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top:14px;">
+        <label>Everful product URLs</label>
+        <textarea id="ev-urls" rows="5" placeholder="https://www.everfulwholesale.com/products/your-first-product&#10;https://www.everfulwholesale.com/products/your-second-product&#10;…" style="width:100%;padding:10px;border:1px solid var(--gray-300);border-radius:8px;font-family:monospace;font-size:13px;resize:vertical;"></textarea>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary" id="ev-preview-btn" onclick="evPreview()">Preview products</button>
+          <button class="btn btn-secondary" onclick="evClearAll()">Clear</button>
+          <span id="ev-status" style="color:var(--gray-600);font-size:13px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="ev-results" style="margin-top:14px;display:none;">
+      <div class="section-card" style="padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+          <div>
+            <h3 style="margin:0;font-size:15px;">Preview <span id="ev-preview-count" style="color:var(--gray-500);font-weight:normal;font-size:13px;"></span></h3>
+            <div id="ev-preview-summary" style="color:var(--gray-600);font-size:12px;margin-top:4px;"></div>
+          </div>
+          <button class="btn btn-primary" id="ev-push-btn" onclick="evOpenPushModal()" disabled>Push selected to Shopify</button>
+        </div>
+        <div id="ev-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;"></div>
+      </div>
+    </div>
+  </div>
+  <!-- ===== END EVERFUL TAB ===== -->
 
 </div>
 
@@ -7752,6 +7789,413 @@ function eshFmt(n) {
   return String(n);
 }
 // ===== END ETSY SHOPS TAB =====
+
+
+// ===== EVERFUL TAB =====
+// State for the Everful importer. evPreviewed is keyed by handle so we don't
+// re-fetch the same product if the user adjusts the URL list and re-previews.
+const evPreviewed = new Map(); // handle -> {product_url, title, image, options, variant_count, category, price_low_minor}
+const evSelectedHandles = new Set();
+const evVariantSelections = {}; // handle -> {propName: [allowed values]}
+
+function evParseUrlList() {
+  const raw = (document.getElementById('ev-urls')?.value || '').trim();
+  if (!raw) return [];
+  const matches = raw.match(/https?:\/\/[^\s,;]+/gi) || [];
+  const seen = new Set();
+  const out = [];
+  for (let u of matches) {
+    u = u.trim().replace(/[.,;]+$/, '');
+    if (!/everfulwholesale\.com/i.test(u)) continue;
+    if (seen.has(u)) continue;
+    seen.add(u);
+    out.push(u);
+  }
+  return out;
+}
+
+function evSetStatus(msg, isError) {
+  const el = document.getElementById('ev-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = isError ? 'var(--red-600,#dc2626)' : 'var(--gray-600)';
+}
+
+function evClearAll() {
+  document.getElementById('ev-urls').value = '';
+  document.getElementById('ev-results').style.display = 'none';
+  document.getElementById('ev-cards').innerHTML = '';
+  evPreviewed.clear();
+  evSelectedHandles.clear();
+  for (const k in evVariantSelections) delete evVariantSelections[k];
+  evSetStatus('');
+}
+
+async function evPreview() {
+  const urls = evParseUrlList();
+  if (urls.length === 0) {
+    evSetStatus('No valid Everful Wholesale URLs found. Paste one per line.', true);
+    return;
+  }
+  const btn = document.getElementById('ev-preview-btn');
+  btn.disabled = true; btn.textContent = 'Previewing…';
+  evSetStatus('Fetching ' + urls.length + ' product page' + (urls.length===1?'':'s') + '…');
+  try {
+    const r = await fetch('/api/everful/preview-variants', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urls})
+    }).then(r => r.json());
+    if (!r || !r.ok) {
+      evSetStatus('Preview failed: ' + (r && r.error || 'unknown error'), true);
+      return;
+    }
+    const listings = r.listings || [];
+    evPreviewed.clear();
+    evSelectedHandles.clear();
+    for (const k in evVariantSelections) delete evVariantSelections[k];
+    for (const l of listings) {
+      if (l.ok) {
+        evPreviewed.set(l.handle, l);
+        evSelectedHandles.add(l.handle); // select all by default
+      }
+    }
+    evRenderCards(listings);
+    const okCount = listings.filter(l => l.ok).length;
+    const failCount = listings.length - okCount;
+    evSetStatus(
+      okCount + ' product' + (okCount===1?'':'s') + ' previewed' +
+      (failCount ? ', ' + failCount + ' failed' : '')
+    );
+    document.getElementById('ev-results').style.display = '';
+    evUpdatePushButton();
+    evUpdateSummary();
+  } catch (e) {
+    evSetStatus('Preview crashed: ' + (e.message || e), true);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Preview products';
+  }
+}
+
+function evRenderCards(listings) {
+  const wrap = document.getElementById('ev-cards');
+  wrap.innerHTML = '';
+  for (const l of listings) {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--gray-200);border-radius:10px;padding:12px;background:#fff;display:flex;flex-direction:column;gap:8px;';
+    if (!l.ok) {
+      card.style.borderColor = 'var(--red-300,#fca5a5)';
+      card.innerHTML =
+        '<div style="font-size:11px;color:var(--red-600,#dc2626);font-weight:600;">Fetch failed</div>' +
+        '<div style="font-size:12px;word-break:break-all;color:var(--gray-700);">' + evEsc(l.product_url || '') + '</div>' +
+        '<div style="font-size:11px;color:var(--gray-500);">' + evEsc(l.error || '') + '</div>';
+      wrap.appendChild(card);
+      continue;
+    }
+    const checked = evSelectedHandles.has(l.handle) ? 'checked' : '';
+    const catColor = l.category ? '#10b981' : '#f59e0b';
+    const catLabel = l.category || 'no category match (will skip)';
+    const lowPrice = l.price_low_minor ? '$' + (l.price_low_minor / 100).toFixed(2) : '—';
+    card.innerHTML =
+      '<div style="display:flex;gap:10px;align-items:flex-start;">' +
+        '<input type="checkbox" data-handle="' + evEsc(l.handle) + '" ' + checked + ' onchange="evToggleSelected(this)" style="margin-top:2px;">' +
+        (l.image ? '<img src="' + evEsc(l.image) + '" style="width:64px;height:64px;border-radius:6px;object-fit:cover;background:var(--gray-100);">' : '') +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:13px;font-weight:600;line-height:1.3;" title="' + evEsc(l.title) + '">' + evEsc(l.title.length > 80 ? l.title.slice(0, 80) + '…' : l.title) + '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;font-size:11px;">' +
+            '<span style="background:' + catColor + ';color:#fff;padding:1px 6px;border-radius:4px;">' + evEsc(catLabel) + '</span>' +
+            '<span style="color:var(--gray-500);">wholesale ' + lowPrice + '</span>' +
+            '<span style="color:var(--gray-500);">' + l.variant_count + ' variant' + (l.variant_count===1?'':'s') + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      (l.has_variants
+        ? '<div><button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;" onclick="evTogglePicker(\'' + evEsc(l.handle) + '\', this)">Pick variants</button></div>' +
+          '<div id="ev-picker-' + evEsc(l.handle) + '" style="display:none;"></div>'
+        : '');
+    wrap.appendChild(card);
+  }
+}
+
+function evToggleSelected(input) {
+  const h = input.getAttribute('data-handle');
+  if (input.checked) evSelectedHandles.add(h); else evSelectedHandles.delete(h);
+  evUpdatePushButton();
+  evUpdateSummary();
+}
+
+function evUpdatePushButton() {
+  const btn = document.getElementById('ev-push-btn');
+  const n = evSelectedHandles.size;
+  btn.disabled = n === 0;
+  btn.textContent = 'Push ' + (n || '') + ' selected to Shopify';
+}
+
+function evUpdateSummary() {
+  const cnt = document.getElementById('ev-preview-count');
+  cnt.textContent = '(' + evSelectedHandles.size + ' of ' + evPreviewed.size + ' selected)';
+  const totals = {Earrings:0, Rings:0, Bracelets:0, Necklaces:0, none:0};
+  for (const h of evSelectedHandles) {
+    const l = evPreviewed.get(h);
+    if (!l) continue;
+    if (l.category) totals[l.category] = (totals[l.category]||0) + 1;
+    else totals.none++;
+  }
+  const parts = [];
+  for (const k of ['Earrings','Rings','Bracelets','Necklaces']) {
+    if (totals[k]) parts.push(totals[k] + ' × ' + k);
+  }
+  if (totals.none) parts.push(totals.none + ' will skip (no category match)');
+  document.getElementById('ev-preview-summary').textContent = parts.join(' • ');
+}
+
+function evTogglePicker(handle, btn) {
+  const wrap = document.getElementById('ev-picker-' + handle);
+  if (!wrap) return;
+  if (wrap.style.display !== 'none') {
+    wrap.style.display = 'none';
+    btn.textContent = 'Pick variants';
+    return;
+  }
+  const l = evPreviewed.get(handle);
+  if (!l) return;
+  const sel = evVariantSelections[handle] || {};
+  let html = '<div style="border-top:1px solid var(--gray-200);margin-top:8px;padding-top:8px;">';
+  html += '<div style="font-size:11px;color:var(--gray-600);margin-bottom:6px;">Uncheck values to exclude them. Leaving everything checked imports all variants.</div>';
+  for (const opt of l.options || []) {
+    const chosen = new Set(sel[opt.name] || opt.values); // default: all
+    html += '<div style="margin-bottom:8px;">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+    html +=   '<div style="font-size:12px;font-weight:600;">' + evEsc(opt.name) + ' <span style="color:var(--gray-500);font-weight:normal;">(' + opt.values.length + ')</span></div>';
+    html +=   '<div style="display:flex;gap:4px;">';
+    html +=     '<button onclick="evPickerAll(\'' + evEsc(handle) + '\',\'' + evEsc(opt.name) + '\',true)" style="font-size:10px;padding:2px 6px;border:1px solid var(--gray-300);background:#fff;border-radius:4px;cursor:pointer;">All</button>';
+    html +=     '<button onclick="evPickerAll(\'' + evEsc(handle) + '\',\'' + evEsc(opt.name) + '\',false)" style="font-size:10px;padding:2px 6px;border:1px solid var(--gray-300);background:#fff;border-radius:4px;cursor:pointer;">None</button>';
+    html +=   '</div>';
+    html += '</div>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;max-height:160px;overflow-y:auto;">';
+    for (const v of opt.values) {
+      const id = 'ev-pick-' + handle + '-' + opt.name + '-' + v.replace(/[^A-Za-z0-9_-]/g, '_');
+      const checked = chosen.has(v) ? 'checked' : '';
+      html += '<label style="display:inline-flex;align-items:center;gap:4px;padding:2px 6px;background:#fff;border:1px solid var(--gray-200);border-radius:12px;font-size:11px;cursor:pointer;">';
+      html += '<input type="checkbox" id="' + id + '" ' + checked + ' data-handle="' + evEsc(handle) + '" data-prop="' + evEsc(opt.name) + '" data-val="' + evEsc(v) + '" onchange="evPickerChange(this)" style="margin:0;">';
+      html += evEsc(v);
+      html += '</label>';
+    }
+    html += '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  wrap.innerHTML = html;
+  wrap.style.display = '';
+  btn.textContent = 'Hide picker';
+}
+
+function evPickerChange(input) {
+  const handle = input.getAttribute('data-handle');
+  const prop = input.getAttribute('data-prop');
+  const val = input.getAttribute('data-val');
+  if (!evVariantSelections[handle]) {
+    const l = evPreviewed.get(handle);
+    evVariantSelections[handle] = {};
+    for (const opt of (l.options || [])) {
+      evVariantSelections[handle][opt.name] = opt.values.slice();
+    }
+  }
+  const arr = evVariantSelections[handle][prop] || [];
+  const set = new Set(arr);
+  if (input.checked) set.add(val); else set.delete(val);
+  evVariantSelections[handle][prop] = Array.from(set);
+}
+
+function evPickerAll(handle, prop, all) {
+  const l = evPreviewed.get(handle);
+  if (!l) return;
+  const opt = (l.options || []).find(o => o.name === prop);
+  if (!opt) return;
+  if (!evVariantSelections[handle]) evVariantSelections[handle] = {};
+  evVariantSelections[handle][prop] = all ? opt.values.slice() : [];
+  // Update checkboxes in DOM.
+  document.querySelectorAll('input[data-handle="' + handle + '"][data-prop="' + prop + '"]').forEach(cb => {
+    cb.checked = all;
+  });
+}
+
+function evEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function evOpenPushModal() {
+  // Load Shopify stores for the dropdown.
+  let stores = [];
+  try {
+    const r = await fetch('/api/etsy-shops/shopify/stores').then(r => r.json());
+    if (r && r.ok) stores = r.stores || [];
+  } catch (e) {}
+  if (!stores.length) {
+    alert('No Shopify stores connected. Add one in the Stores tab first.');
+    return;
+  }
+  const n = evSelectedHandles.size;
+  let modal = document.getElementById('ev-push-modal');
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = 'ev-push-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:10000;padding:20px;';
+  const storeOpts = stores.map(s => '<option value="' + evEsc(s.id) + '">' + evEsc(s.name) + ' (' + evEsc(s.domain) + ')</option>').join('');
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;max-height:90vh;overflow:auto;padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="margin:0;font-size:18px;">Push ${n} Everful product${n===1?'':'s'} to Shopify</h3>
+        <button onclick="document.getElementById('ev-push-modal').remove()" style="background:transparent;border:0;font-size:24px;cursor:pointer;color:var(--gray-500);">×</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;">
+        <label>Target store
+          <select id="ev-push-store" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">${storeOpts}</select>
+        </label>
+        <div style="border:1px solid var(--gray-200);border-radius:8px;padding:10px;background:#f9fafb;">
+          <div style="font-size:12px;color:var(--gray-700);margin-bottom:8px;"><strong>Category pricing</strong> (sale = fixed, compare-at = 2× rounded to whole dollar)</div>
+          <div style="display:grid;grid-template-columns:1fr 110px 110px;gap:6px 10px;align-items:center;font-size:12px;">
+            <div style="font-weight:600;color:var(--gray-600);"></div>
+            <div style="font-weight:600;color:var(--gray-600);">Sale</div>
+            <div style="font-weight:600;color:var(--gray-600);">Compare-at</div>
+            <div>Earrings</div>
+            <input id="ev-cat-price-Earrings"  type="number" step="0.01" value="26.99" oninput="evUpdateCmp('Earrings')"  style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+            <input id="ev-cat-cmp-Earrings"    type="text" readonly value="54" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+            <div>Rings</div>
+            <input id="ev-cat-price-Rings"     type="number" step="0.01" value="29.99" oninput="evUpdateCmp('Rings')"     style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+            <input id="ev-cat-cmp-Rings"       type="text" readonly value="60" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+            <div>Bracelets</div>
+            <input id="ev-cat-price-Bracelets" type="number" step="0.01" value="32.99" oninput="evUpdateCmp('Bracelets')" style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+            <input id="ev-cat-cmp-Bracelets"   type="text" readonly value="66" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+            <div>Necklaces</div>
+            <input id="ev-cat-price-Necklaces" type="number" step="0.01" value="36.99" oninput="evUpdateCmp('Necklaces')" style="padding:6px;border:1px solid var(--gray-300);border-radius:6px;">
+            <input id="ev-cat-cmp-Necklaces"   type="text" readonly value="74" style="padding:6px;border:1px solid var(--gray-200);border-radius:6px;background:#fff;color:var(--gray-600);">
+          </div>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:8px;">Products whose title doesn't match any category will be <strong>skipped</strong>.</div>
+        </div>
+        <label>Vendor name (optional, defaults to store name)
+          <input id="ev-push-vendor" type="text" placeholder="" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+        </label>
+        <label>Extra tags (comma-separated, optional)
+          <input id="ev-push-extra-tags" type="text" placeholder="e.g. wholesale, jewelry" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
+        </label>
+        <div>
+          <div style="font-weight:600;margin-bottom:6px;">Variants</div>
+          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="all" checked> All variants</label>
+          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="pick"> Pick (uses your per-product picker selections above)</label>
+          <label style="display:flex;align-items:center;gap:8px;"><input type="radio" name="ev-vmode" value="none"> No variants (single product at base price)</label>
+          <div style="font-size:11px;color:var(--gray-500);margin-top:6px;">Everful items can have 200+ variants; Shopify caps at 100. Anything over will be truncated to the first 100.</div>
+        </div>
+      </div>
+      <div id="ev-push-progress" style="margin-top:16px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;">
+        <button onclick="document.getElementById('ev-push-modal').remove()" class="btn btn-secondary" style="padding:8px 16px;">Cancel</button>
+        <button id="ev-push-go" onclick="evDoPush()" style="background:#10b981;color:#fff;border:0;padding:8px 20px;border-radius:8px;font-weight:600;cursor:pointer;">Push to Shopify</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+function evUpdateCmp(cat) {
+  const sale = parseFloat(document.getElementById('ev-cat-price-' + cat).value);
+  if (isNaN(sale)) return;
+  const cmp = Math.round(sale * 2);
+  document.getElementById('ev-cat-cmp-' + cat).value = cmp;
+}
+
+async function evDoPush() {
+  const goBtn = document.getElementById('ev-push-go');
+  const progress = document.getElementById('ev-push-progress');
+  const store = document.getElementById('ev-push-store').value;
+  const cat_prices = {
+    Earrings: parseFloat(document.getElementById('ev-cat-price-Earrings').value),
+    Rings: parseFloat(document.getElementById('ev-cat-price-Rings').value),
+    Bracelets: parseFloat(document.getElementById('ev-cat-price-Bracelets').value),
+    Necklaces: parseFloat(document.getElementById('ev-cat-price-Necklaces').value),
+  };
+  const vmode = (document.querySelector('input[name="ev-vmode"]:checked') || {}).value || 'all';
+  const vendor = document.getElementById('ev-push-vendor').value || '';
+  const extra_tags = document.getElementById('ev-push-extra-tags').value || '';
+
+  const urls = [];
+  for (const h of evSelectedHandles) {
+    const l = evPreviewed.get(h);
+    if (l) urls.push(l.product_url);
+  }
+  if (urls.length === 0) { alert('No products selected.'); return; }
+
+  const variant_selections = {};
+  if (vmode === 'pick') {
+    for (const h of evSelectedHandles) {
+      const sel = evVariantSelections[h];
+      if (sel) variant_selections[h] = sel;
+    }
+  }
+
+  goBtn.disabled = true; goBtn.textContent = 'Pushing…';
+  progress.innerHTML = '<div style="color:var(--gray-600);font-size:13px;">Pushing ' + urls.length + ' product' + (urls.length===1?'':'s') + '…</div>';
+
+  let resp;
+  try {
+    resp = await fetch('/api/everful/shopify/push', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        urls,
+        target_store_id: store,
+        options: {
+          pricing_mode: 'category',
+          category_prices: cat_prices,
+          variants_mode: vmode,
+          variant_selections,
+          vendor,
+          extra_tags,
+        },
+      }),
+    }).then(r => r.json());
+  } catch (e) {
+    progress.innerHTML = '<div style="color:var(--red-600);font-size:13px;">Network error: ' + evEsc(e.message || e) + '</div>';
+    goBtn.disabled = false; goBtn.textContent = 'Push to Shopify';
+    return;
+  }
+  if (!resp || !resp.ok) {
+    progress.innerHTML = '<div style="color:var(--red-600);font-size:13px;">Push failed: ' + evEsc((resp && resp.error) || 'unknown error') + '</div>';
+    goBtn.disabled = false; goBtn.textContent = 'Push to Shopify';
+    return;
+  }
+
+  const results = resp.results || [];
+  let html = '<div style="font-size:13px;color:var(--gray-700);margin-bottom:8px;">';
+  html += '<strong>' + resp.pushed + '</strong> pushed';
+  if (resp.conflicts) html += ', <strong>' + resp.conflicts + '</strong> already in store';
+  if (resp.skipped) html += ', <strong>' + resp.skipped + '</strong> skipped';
+  if (resp.failed) html += ', <strong style="color:var(--red-600);">' + resp.failed + '</strong> failed';
+  html += '</div>';
+  html += '<div style="max-height:260px;overflow:auto;border:1px solid var(--gray-200);border-radius:6px;">';
+  for (const r of results) {
+    let bg = '#fff', label = '', extra = '';
+    if (r.ok) { bg = '#f0fdf4'; label = '✓ ' + (r.category || '') + (r.variant_count ? ' • ' + r.variant_count + ' variants' : ''); extra = r.shopify_admin_url ? ' <a href="' + evEsc(r.shopify_admin_url) + '" target="_blank" style="color:#2563eb;">view↗</a>' : ''; }
+    else if (r.conflict) { bg = '#fefce8'; label = 'already pushed'; extra = r.existing && r.existing.shopify_admin_url ? ' <a href="' + evEsc(r.existing.shopify_admin_url) + '" target="_blank" style="color:#2563eb;">existing↗</a>' : ''; }
+    else if (r.skipped) { bg = '#fef3c7'; label = 'skipped: ' + (r.reason || r.error || ''); }
+    else { bg = '#fee2e2'; label = 'failed: ' + (r.error || ''); }
+    html += '<div style="padding:8px 10px;border-bottom:1px solid var(--gray-100);background:' + bg + ';font-size:12px;">';
+    html += '<div style="font-weight:600;">' + evEsc((r.title || r.handle || r.product_url || '').slice(0, 80)) + '</div>';
+    html += '<div style="color:var(--gray-600);margin-top:2px;">' + evEsc(label) + extra + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  progress.innerHTML = html;
+  goBtn.textContent = 'Done';
+  goBtn.disabled = true;
+  // Show toast if available.
+  if (typeof showToast === 'function') {
+    showToast('Everful: ' + resp.pushed + '/' + urls.length + ' pushed', resp.failed ? 'warning' : 'success');
+  }
+}
+// ===== END EVERFUL TAB =====
 
 </script>
 </body>

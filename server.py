@@ -6776,6 +6776,20 @@ try:
     log.info('Etsy -> Shopify push routes registered')
 except Exception as _es2_e:
     log.exception('Etsy -> Shopify push routes failed to register: %s', _es2_e)
+
+# Everful Wholesale -> Shopify push routes. Mirrors the Etsy push pipeline
+# but uses plain HTTP (no ScrapingBee credits) and parses JSON-LD ProductGroup
+# from everfulwholesale.com product pages. See everful_to_shopify.py.
+try:
+    import everful_to_shopify as _everful_to_shopify
+    _everful_to_shopify.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        login_required=login_required,
+    )
+    log.info('Everful -> Shopify push routes registered')
+except Exception as _ev_e:
+    log.exception('Everful -> Shopify push routes failed to register: %s', _ev_e)
 # ===== End Etsy Shops tab ======================================================
 
 
