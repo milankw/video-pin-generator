@@ -6790,6 +6790,20 @@ try:
     log.info('Everful -> Shopify push routes registered')
 except Exception as _ev_e:
     log.exception('Everful -> Shopify push routes failed to register: %s', _ev_e)
+
+# Shopify bulk title rename via AI rewriter. Endpoints:
+#   POST /api/shopify/bulk-rename/preview  body: {store_id}
+#   POST /api/shopify/bulk-rename/apply    body: {store_id, items:[{id,new_title}]}
+try:
+    import shopify_bulk_rename as _shopify_bulk_rename
+    _shopify_bulk_rename.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        login_required=login_required,
+    )
+    log.info('Shopify bulk-rename routes registered')
+except Exception as _br_e:
+    log.exception('Shopify bulk-rename routes failed to register: %s', _br_e)
 # ===== End Etsy Shops tab ======================================================
 
 
