@@ -7345,6 +7345,10 @@ async function eshOpenPushModal() {
         <label>Extra tags (comma-separated, optional)
           <input id="esh-push-extra-tags" type="text" placeholder="e.g. trending, jewelry, gift" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
         </label>
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;cursor:pointer;">
+          <input id="esh-ai-title" type="checkbox" checked style="margin-top:2px;">
+          <span><strong style="color:#5b21b6;">✨ AI title rewrite</strong> <span style="color:var(--gray-600);font-size:12px;">— use Claude to shorten long Etsy titles. Cached, so repeat pushes are free.</span></span>
+        </label>
         <label>Vendor name (optional, defaults to store name)
           <input id="esh-push-vendor" type="text" placeholder="" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
         </label>
@@ -7631,6 +7635,7 @@ async function eshDoPush(forceDuplicate) {
     } catch (e) { /* preflight is best-effort */ }
   }
 
+  const aiTitleCb = document.getElementById('esh-ai-title');
   const options = {
     pricing_mode: pricingMode,
     pricing_value: pricingValue,
@@ -7638,6 +7643,7 @@ async function eshDoPush(forceDuplicate) {
     title_mode: titleMode,
     title_prefix: titleMode === 'prefix' ? titleExtra : '',
     title_suffix: titleMode === 'suffix' ? titleExtra : '',
+    ai_title_rewrite: aiTitleCb ? !!aiTitleCb.checked : true,
     extra_tags: extraTags,
     vendor: vendor,
     product_type: productType,  // empty -> backend falls back to detected category
@@ -8157,6 +8163,10 @@ async function evOpenPushModal() {
         <label>Extra tags (comma-separated, optional)
           <input id="ev-push-extra-tags" type="text" placeholder="e.g. wholesale, jewelry" style="width:100%;padding:8px;border:1px solid var(--gray-300);border-radius:6px;margin-top:4px;">
         </label>
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;cursor:pointer;">
+          <input id="ev-ai-title" type="checkbox" checked style="margin-top:2px;">
+          <span><strong style="color:#5b21b6;">✨ AI title rewrite</strong> <span style="color:var(--gray-600);font-size:12px;">— use Claude to shorten long, keyword-stuffed titles into clean Shopify titles. Cached, so repeat pushes are free.</span></span>
+        </label>
         <div id="ev-vmode-summary" style="background:var(--gray-50,#f9fafb);border:1px solid var(--gray-200);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--gray-700);"></div>
       </div>
       <div id="ev-push-progress" style="margin-top:16px;"></div>
@@ -8219,11 +8229,13 @@ function evCollectCurrentPreset() {
     const v = num('ev-cat-price-' + k);
     if (v != null) cat_prices[k] = v;
   }
+  const aiCb = document.getElementById('ev-ai-title');
   return {
     store_id: get('ev-push-store'),
     vendor: get('ev-push-vendor'),
     extra_tags: get('ev-push-extra-tags'),
     category_prices: cat_prices,
+    ai_title_rewrite: aiCb ? !!aiCb.checked : true,
   };
 }
 
@@ -8251,6 +8263,10 @@ function evApplyPresetBlob(blob) {
         evUpdateCmp(k);
       }
     }
+  }
+  if (typeof blob.ai_title_rewrite === 'boolean') {
+    const aiCb = document.getElementById('ev-ai-title');
+    if (aiCb) aiCb.checked = blob.ai_title_rewrite;
   }
 }
 
@@ -8367,6 +8383,7 @@ async function evDoPush() {
     if (sel) { variant_selections[h] = sel; anyPicked = true; }
   }
   const vmode = anyPicked ? 'pick' : 'all';
+  const aiTitle = !!(document.getElementById('ev-ai-title') || {}).checked;
 
   goBtn.disabled = true; goBtn.textContent = 'Pushing…';
   progress.innerHTML = '<div style="color:var(--gray-600);font-size:13px;">Pushing ' + urls.length + ' product' + (urls.length===1?'':'s') + '…</div>';
@@ -8386,6 +8403,7 @@ async function evDoPush() {
           variant_selections,
           vendor,
           extra_tags,
+          ai_title_rewrite: aiTitle,
         },
       }),
     }).then(r => r.json());

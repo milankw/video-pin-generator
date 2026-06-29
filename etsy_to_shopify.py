@@ -523,15 +523,31 @@ def _build_shopify_product(listing_data, inventory, push_opts, store, handle_suf
     returned so the caller can use it for diagnostics.
     """
     raw_title = listing_data.get('title') or ''
-    title = _apply_title_mode(raw_title,
+
+    # Detect from the original title before any AI rewrite, since the raw
+    # title is what carries the searchable keywords for category detection.
+    category = _detect_category(raw_title)
+
+    # Optional Claude rewrite. Default ON. Falls back to original on any error
+    # so a push can never be blocked by AI issues.
+    title_for_pipeline = raw_title
+    if push_opts.get('ai_title_rewrite', True):
+        try:
+            from ai_title_rewriter import rewrite_title
+            data_dir = push_opts.get('_data_dir') or 'data'
+            ai_title, ai_source = rewrite_title(data_dir, raw_title, category=category)
+            if ai_title and ai_source != 'fallback':
+                title_for_pipeline = ai_title
+        except Exception:
+            log.exception('AI title rewrite failed; using original title')
+
+    title = _apply_title_mode(title_for_pipeline,
                               push_opts.get('title_mode') or 'as_is',
                               push_opts.get('title_prefix') or '',
                               push_opts.get('title_suffix') or '')
 
     pricing_mode = push_opts.get('pricing_mode') or 'as_is'
     category_prices = push_opts.get('category_prices') or None
-    # Detect from the original Etsy title, which has the keywords.
-    category = _detect_category(raw_title)
     compare_at_str = None
     if pricing_mode == 'category':
         compare_at_str = _compare_at_for_category(category, category_prices)
@@ -1039,6 +1055,7 @@ def register_routes(app, data_dir, etsy_request_fn, login_required):
         if not store_id:
             return jsonify({'ok': False, 'error': 'target_store_id required'}), 400
         push_opts = body.get('options') or {}
+        push_opts['_data_dir'] = data_dir
         force_duplicate = bool(body.get('force_duplicate'))
 
         results = []

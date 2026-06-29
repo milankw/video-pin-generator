@@ -179,11 +179,15 @@ def _sanitize_preset_payload(payload: dict) -> dict:
         v = cat_prices_in.get(k)
         if isinstance(v, (int, float)) and v > 0:
             cat_prices[k] = float(v)
+    ai_flag = payload.get('ai_title_rewrite')
+    if ai_flag is None:
+        ai_flag = True
     return {
         'store_id': str(payload.get('store_id') or '').strip(),
         'vendor': str(payload.get('vendor') or '').strip(),
         'extra_tags': str(payload.get('extra_tags') or '').strip(),
         'category_prices': cat_prices,
+        'ai_title_rewrite': bool(ai_flag),
     }
 
 
@@ -595,6 +599,7 @@ def register_routes(app, data_dir: str, login_required) -> None:
         if not store_id:
             return jsonify({'ok': False, 'error': 'target_store_id required'}), 400
         push_opts = body.get('options') or {}
+        push_opts['_data_dir'] = data_dir
         force_duplicate = bool(body.get('force_duplicate'))
 
         # Snapshot the choices as the new "last used" preset so the next
@@ -604,6 +609,7 @@ def register_routes(app, data_dir: str, login_required) -> None:
             'vendor': push_opts.get('vendor') or '',
             'extra_tags': push_opts.get('extra_tags') or '',
             'category_prices': push_opts.get('category_prices') or {},
+            'ai_title_rewrite': bool(push_opts.get('ai_title_rewrite', True)),
         })
 
         results = []
