@@ -46,6 +46,9 @@ _SYSTEM_PROMPT = (
     "- Drop fluff words: 'Exquisite', 'Luxury', 'Elegant', 'For Women', "
     "'Accessories', 'Fine Jewelry', 'Fashion', etc.\n"
     "- Drop SKU codes, supplier names, and color codes like '(PBR-195G)'.\n"
+    "- Drop any carat/karat/weight/measurement tokens (e.g. '0.5ct', "
+    "'2 CTW', '14k', '925', '18kt', '5mm', '3 grams'). Never add a 'c', "
+    "'ct', 'kt', or similar suffix on your own.\n"
     "- Use Title Case.\n"
     "- Do not invent attributes that are not in the source.\n"
 )
@@ -148,6 +151,24 @@ _STRIP_PREAMBLES = [
 ]
 
 
+# Tokens that look like carat / karat / weight / measurement units. We strip
+# these as whole words from the AI output as a belt-and-braces safety net.
+_UNIT_TOKEN_RE = re.compile(
+    r'(?<![A-Za-z])'                          # not part of a longer word
+    r'(?:'
+      r'\d+(?:\.\d+)?\s*'                     # optional number prefix
+      r'(?:ctw|cttw|ct|cts|carat|carats|'      # carat-like units
+        r'kt|k|karat|karats|'                  # karat / gold purity
+        r'mm|cm|inch|inches|in|"|\″|'      # length units
+        r'g|gr|gram|grams|oz)'                 # weight units
+      r'|'                                     # OR a bare unit with no number,
+      r'(?:ctw|cttw)'                          # only if it is one of the most
+    r')'                                       # carat-specific bare forms.
+    r'(?![A-Za-z])',
+    re.IGNORECASE,
+)
+
+
 def _clean_output(text: str) -> str:
     t = (text or '').strip()
     # Anthropic occasionally echoes a "Here's the title:" prefix; strip.
@@ -156,6 +177,10 @@ def _clean_output(text: str) -> str:
     # Drop surrounding quotes if present.
     if len(t) >= 2 and t[0] in '"\'\u201c\u2018' and t[-1] in '"\'\u201d\u2019':
         t = t[1:-1].strip()
+    # Strip carat / karat / measurement tokens (e.g. '0.5ct', '2 CTW', '14k',
+    # '925' alone is a sterling silver marker that user wants gone, but we
+    # only strip it if attached to common phrases like '925 Sterling').
+    t = _UNIT_TOKEN_RE.sub('', t)
     # Collapse whitespace; strip trailing punctuation.
     t = re.sub(r'\s+', ' ', t)
     t = t.rstrip('.,;:!?-\u2013\u2014 ').strip()
