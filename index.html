@@ -3256,11 +3256,11 @@ async function loadStoresTable() {
       <td><div class="platform-toggles">${platToggles}</div></td>
       <td>${statusBadge}</td>
       <td style="color:var(--gray-500);">${productCount}</td>
-      <td style="display:flex;gap:6px;align-items:center;">
+      <td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-secondary btn-sm" onclick="openStorePrompts('${escAttr(s.id)}','${escAttr(s.name)}')">Prompts <span style="font-weight:400;color:var(--gray-400);">(${promptCountLabel})</span></button>
-        ${platform === 'shopify' && isConnected ? `<button class="btn btn-secondary btn-sm" style="background:#f5f3ff;color:#5b21b6;border-color:#ddd6fe;" onclick="openBulkRename('${escAttr(s.id)}','${escAttr(s.name)}')" title="Rewrite product titles with AI">Rename titles ✨</button>` : ''}
+        ${platform === 'shopify' && isConnected ? `<button class="btn btn-secondary btn-sm" style="background:#f5f3ff;color:#5b21b6;border-color:#ddd6fe;white-space:nowrap;" onclick="openBulkRename('${escAttr(s.id)}','${escAttr(s.name)}')" title="Rewrite product titles with AI">Rename titles ✨</button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="reAuthShopifyStore('${escAttr(s.id)}','${escAttr(s.name)}')" title="Re-authenticate Shopify OAuth">Re-auth</button>
-      </td>
+      </div></td>
     `;
     tbody.appendChild(tr);
   });
