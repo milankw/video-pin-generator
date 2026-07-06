@@ -1879,6 +1879,7 @@ textarea { resize: vertical; min-height: 80px; }
       <button class="btn btn-primary" onclick="fetchWinners()" id="fetch-btn">Fetch Winners</button>
       <div class="toolbar-spacer"></div>
       <button class="btn btn-secondary btn-sm" onclick="toggleSelectAll()" id="select-all-btn" style="display:none;">Select All</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportWinnersCsv()" id="export-csv-btn" style="display:none;" title="Download selected products as CSV">Export CSV</button>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:center;gap:6px;display:none;" id="video-model-group">
         <label style="margin-bottom:0;white-space:nowrap;">Model:</label>
         <select id="winners-video-model" style="width:200px;">
@@ -3995,6 +3996,65 @@ function toggleSelectAll() {
   renderProducts();
 }
 
+// Export selected winning products to CSV — one row per product with URL,
+// title, price, sales, revenue, status. Uses the same URL-resolution logic
+// as the card renderer (productUrl > store.domain + handle fallback).
+function exportWinnersCsv() {
+  if (!selectedProducts.size) {
+    toast('No products selected', 'warning');
+    return;
+  }
+  const store = stores.find(s => s.id === document.getElementById('store-select').value);
+  const platform = (store && store.platform || 'shopify').toLowerCase();
+  const storeDomain = platform === 'shoplazza'
+    ? (store && store.shoplazzaDomain) || ''
+    : (store && store.domain) || '';
+
+  const rows = [];
+  rows.push(['url','title','price','sales','revenue','status','handle','product_id']);
+
+  winners.forEach(p => {
+    if (!selectedProducts.has(p.id)) return;
+    let url = p.productUrl || '';
+    if (!url && storeDomain && p.handle) url = `https://${storeDomain}/products/${p.handle}`;
+    const price = p.price != null ? p.price : (p.variantSales && p.variantSales[0]?.price) || '';
+    rows.push([
+      url,
+      p.title || '',
+      price,
+      p.sales != null ? p.sales : '',
+      p.revenue != null ? p.revenue : '',
+      p.shopifyStatus || p.status || '',
+      p.handle || '',
+      p.id || '',
+    ]);
+  });
+
+  const csv = rows.map(row => row.map(cell => {
+    const s = String(cell == null ? '' : cell);
+    // Excel-safe CSV: quote anything containing quote, comma, newline, or CR
+    if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }).join(',')).join('\r\n');
+
+  const storeName = (store && store.name || 'store').replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '') || 'store';
+  const ts = new Date().toISOString().slice(0,10);
+  const filename = `winners_${storeName}_${ts}.csv`;
+
+  // Prepend UTF-8 BOM so Excel opens accented characters correctly
+  const blob = new Blob(['\uFEFF' + csv], {type: 'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  toast(`Exported ${selectedProducts.size} products`, 'success');
+}
+
 function selectVariant(event, productId, imageUrl) {
   event.stopPropagation();
   selectedVariantImages.set(productId, imageUrl);
@@ -4014,6 +4074,8 @@ function updateSelectionUI() {
   const count = selectedProducts.size;
   document.getElementById('selected-count').textContent = count;
   document.getElementById('generate-btn').style.display = count > 0 ? 'inline-flex' : 'none';
+  const exportBtn = document.getElementById('export-csv-btn');
+  if (exportBtn) exportBtn.style.display = count > 0 ? 'inline-flex' : 'none';
   document.getElementById('select-all-btn').textContent = allSelectState && count === winners.length ? 'Deselect All' : 'Select All';
 
   // Update button label with prompt count if available
