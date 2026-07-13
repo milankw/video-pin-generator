@@ -1914,6 +1914,17 @@ textarea { resize: vertical; min-height: 80px; }
     <!-- Sync status banner (needs sync / syncing / cached) -->
     <div id="winners-sync-banner" class="winners-sync-banner" style="display:none;"></div>
 
+    <!-- Product URL sales lookup -->
+    <div class="card" style="padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label style="font-weight:600;font-size:13px;color:var(--gray-700);margin:0;white-space:nowrap;">Look up sales by URL:</label>
+        <input type="text" id="product-lookup-url" placeholder="https://store.com/products/handle" style="flex:1;min-width:280px;padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;" onkeydown="if(event.key==='Enter'){event.preventDefault();lookupProductByUrl();}">
+        <button class="btn btn-primary btn-sm" onclick="lookupProductByUrl()" id="product-lookup-btn">Look up</button>
+        <button class="btn btn-secondary btn-sm" onclick="clearProductLookup()" id="product-lookup-clear" style="display:none;">Clear</button>
+      </div>
+      <div id="product-lookup-result" style="display:none;margin-top:12px;"></div>
+    </div>
+
     <div class="loading-overlay" id="winners-loading"><div class="spinner"></div> Fetching winning products...</div>
     <div class="empty-state" id="winners-empty">
       <div class="empty-state-icon">&#128640;</div>
@@ -4053,6 +4064,118 @@ function exportWinnersCsv() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 
   toast(`Exported ${selectedProducts.size} products`, 'success');
+}
+
+// ===== Product URL sales lookup =====
+// Paste a product URL, get back total units sold + revenue + per-variant
+// breakdown. Reads from the same winner-cache the Winners tab uses. If the
+// product isn't in the cache but the store's Shopify/Shoplazza API confirms
+// it exists, we report 0 sales.
+async function lookupProductByUrl() {
+  const input = document.getElementById('product-lookup-url');
+  const btn = document.getElementById('product-lookup-btn');
+  const resultEl = document.getElementById('product-lookup-result');
+  const clearBtn = document.getElementById('product-lookup-clear');
+  const url = (input?.value || '').trim();
+  if (!url) {
+    toast('Paste a product URL first', 'warning');
+    input?.focus();
+    return;
+  }
+  const selectedStoreId = document.getElementById('store-select')?.value || '';
+  btn.disabled = true; btn.textContent = 'Looking up…';
+  resultEl.style.display = 'block';
+  resultEl.innerHTML = '<div style="color:var(--gray-500);font-size:13px;">Resolving product across connected stores…</div>';
+  try {
+    const res = await fetch('/api/product-lookup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, store_id: selectedStoreId}),
+    });
+    const data = await res.json();
+    if (!data?.ok) {
+      resultEl.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:12px 14px;border-radius:8px;font-size:13px;">${escHtml(data?.error || 'Lookup failed')}</div>`;
+      clearBtn.style.display = 'inline-flex';
+      return;
+    }
+    renderProductLookupResult(data);
+    clearBtn.style.display = 'inline-flex';
+  } catch (e) {
+    resultEl.innerHTML = `<div style="color:#b91c1c;font-size:13px;">Network error: ${escHtml(String(e))}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Look up';
+  }
+}
+
+function renderProductLookupResult(data) {
+  const el = document.getElementById('product-lookup-result');
+  const p = data.product || {};
+  const s = data.store || {};
+  const qty = Number(p.quantity || 0);
+  const rev = Number(p.revenue || 0);
+  const currency = ''; // we don't store currency per store yet
+  const variants = (p.variant_sales || []).filter(v => Number(v.quantity||0) > 0);
+
+  // Freshness label
+  let freshness = '';
+  if (data.sync_meta?.last_sync_at) {
+    try {
+      const ago = Math.round((Date.now() - new Date(data.sync_meta.last_sync_at).getTime()) / 60000);
+      freshness = ago < 60 ? `${ago}m ago` : ago < 1440 ? `${Math.round(ago/60)}h ago` : `${Math.round(ago/1440)}d ago`;
+    } catch (e) {}
+  }
+
+  const zeroState = !data.in_cache;
+  const qtyColor = zeroState ? '#6b7280' : (qty >= 10 ? '#10b981' : qty >= 3 ? '#0369a1' : '#6b7280');
+
+  const imgHtml = p.image
+    ? `<img src="${escAttr(p.image)}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;flex-shrink:0;" alt="">`
+    : `<div style="width:80px;height:80px;background:var(--gray-100);border-radius:8px;flex-shrink:0;"></div>`;
+
+  const variantsHtml = variants.length
+    ? `<div style="margin-top:12px;"><div style="font-size:12px;font-weight:600;color:var(--gray-600);margin-bottom:6px;">Variant breakdown</div>
+         <table style="width:100%;font-size:12px;border-collapse:collapse;">
+           <thead><tr style="text-align:left;color:var(--gray-500);"><th style="padding:4px 8px;">Variant</th><th style="padding:4px 8px;text-align:right;">Units</th><th style="padding:4px 8px;text-align:right;">Revenue</th></tr></thead>
+           <tbody>${variants.map(v => `<tr style="border-top:1px solid var(--gray-100);">
+             <td style="padding:6px 8px;">${escHtml(v.title || v.variant_title || 'Default')}</td>
+             <td style="padding:6px 8px;text-align:right;font-weight:600;">${Number(v.quantity||0)}</td>
+             <td style="padding:6px 8px;text-align:right;color:var(--gray-600);">$${Number(v.revenue||0).toFixed(2)}</td>
+           </tr>`).join('')}</tbody>
+         </table></div>`
+    : '';
+
+  const zeroBanner = zeroState
+    ? `<div style="background:#f9fafb;border:1px solid var(--gray-200);color:var(--gray-600);padding:8px 12px;border-radius:6px;font-size:12px;margin-top:8px;">This product isn't in the winners cache for <strong>${escHtml(s.name||'')}</strong>. That usually means <strong>0 paid-order sales</strong> in the synced window. If you just added it, re-sync orders on that store to refresh.</div>`
+    : '';
+
+  const freshnessLabel = freshness ? `<span style="color:var(--gray-500);font-size:11px;margin-left:8px;">• synced ${escHtml(freshness)}</span>` : '';
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid var(--gray-200);border-radius:10px;padding:14px;display:flex;gap:14px;align-items:flex-start;">
+      ${imgHtml}
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div style="font-weight:600;font-size:15px;color:var(--gray-800);">${escHtml(p.title || p.handle || 'Product')}</div>
+          ${p.url ? `<a href="${escAttr(p.url)}" target="_blank" rel="noopener" style="font-size:12px;color:#0369a1;text-decoration:none;">Open ↗</a>` : ''}
+        </div>
+        <div style="font-size:12px;color:var(--gray-500);margin-top:2px;">${escHtml(s.name || '')} • ${escHtml((s.platform||'').toUpperCase())}${freshnessLabel}</div>
+        <div style="display:flex;gap:24px;margin-top:10px;align-items:baseline;">
+          <div><div style="font-size:11px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;">Units sold</div><div style="font-size:26px;font-weight:700;color:${qtyColor};line-height:1.1;">${qty}</div></div>
+          <div><div style="font-size:11px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;">Revenue</div><div style="font-size:26px;font-weight:700;color:var(--gray-700);line-height:1.1;">$${rev.toFixed(2)}</div></div>
+        </div>
+        ${variantsHtml}
+        ${zeroBanner}
+      </div>
+    </div>
+  `;
+}
+
+function clearProductLookup() {
+  document.getElementById('product-lookup-url').value = '';
+  document.getElementById('product-lookup-result').style.display = 'none';
+  document.getElementById('product-lookup-result').innerHTML = '';
+  document.getElementById('product-lookup-clear').style.display = 'none';
+  document.getElementById('product-lookup-url').focus();
 }
 
 function selectVariant(event, productId, imageUrl) {

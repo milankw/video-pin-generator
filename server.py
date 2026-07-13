@@ -6804,6 +6804,19 @@ try:
     log.info('Shopify bulk-rename routes registered')
 except Exception as _br_e:
     log.exception('Shopify bulk-rename routes failed to register: %s', _br_e)
+
+# Product URL -> sales lookup (Winners tab search box).
+try:
+    import product_lookup as _product_lookup
+    _product_lookup.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        login_required=login_required,
+        http_requests=http_requests,
+        shoplazza_api_version=SHOPLAZZA_API_VERSION,
+    )
+except Exception as _pl_e:
+    log.exception('Product-lookup route failed to register: %s', _pl_e)
 # ===== End Etsy Shops tab ======================================================
 
 
