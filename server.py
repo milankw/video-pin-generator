@@ -6777,6 +6777,20 @@ try:
 except Exception as _es2_e:
     log.exception('Etsy -> Shopify push routes failed to register: %s', _es2_e)
 
+# Single-listing Etsy importer: paste a listing URL, get one row inserted
+# into etsy_listing so the existing push flow can target it. Endpoint:
+#   POST /api/etsy-shops/import-listing-by-url  body: {url}
+try:
+    import etsy_import_single as _etsy_import_single
+    _etsy_import_single.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        etsy_request_fn=_etsy_shops_request,
+        login_required=login_required,
+    )
+except Exception as _eis_e:
+    log.exception('Etsy single-listing importer failed to register: %s', _eis_e)
+
 # Everful Wholesale -> Shopify push routes. Mirrors the Etsy push pipeline
 # but uses plain HTTP (no ScrapingBee credits) and parses JSON-LD ProductGroup
 # from everfulwholesale.com product pages. See everful_to_shopify.py.

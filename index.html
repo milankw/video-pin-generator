@@ -2471,6 +2471,24 @@ textarea { resize: vertical; min-height: 80px; }
         </div>
       </div>
       <div id="esh-import-status" style="color:var(--gray-600);font-size:13px;margin-top:4px;"></div>
+
+      <!-- Single-listing quick-push. Costs 1 Etsy API call and no ScrapingBee
+           credits (variant preview may still hit ScrapingBee). -->
+      <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--gray-200);">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="font-weight:600;font-size:13px;color:var(--gray-700);">Or push a single listing by URL</div>
+          <span style="font-size:11px;color:var(--gray-500);">— no shop import needed</span>
+        </div>
+        <div class="form-row" style="align-items:flex-end;">
+          <div class="form-group" style="flex:1;">
+            <input type="text" id="esh-single-input" placeholder="https://www.etsy.com/listing/1234567890/... or bare listing ID" onkeydown="if(event.key==='Enter'){event.preventDefault();eshImportSingle();}">
+          </div>
+          <div class="form-group" style="flex:0 0 auto;">
+            <button class="btn btn-primary" id="esh-single-btn" onclick="eshImportSingle()">Fetch & push</button>
+          </div>
+        </div>
+        <div id="esh-single-status" style="color:var(--gray-600);font-size:13px;margin-top:4px;"></div>
+      </div>
     </div>
 
     <div style="display:grid;grid-template-columns:280px 1fr;gap:14px;margin-top:14px;">
@@ -7386,6 +7404,50 @@ async function eshImport() {
     console.error(e);
     status.textContent = 'Import failed: ' + e.message;
     btn.disabled = false; btn.textContent = 'Import shop';
+  }
+}
+
+// Single-listing importer. Fetches one listing via Etsy /listings/batch,
+// stores it in the same etsy_listing sqlite cache the shop importer writes
+// to, and then opens the standard push modal with only that listing selected.
+async function eshImportSingle() {
+  const inp = document.getElementById('esh-single-input');
+  const btn = document.getElementById('esh-single-btn');
+  const status = document.getElementById('esh-single-status');
+  const val = (inp.value || '').trim();
+  if (!val) {
+    status.textContent = 'Paste an Etsy listing URL or ID first.';
+    inp.focus();
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  status.textContent = 'Fetching listing from Etsy…';
+  try {
+    const r = await api('/api/etsy-shops/import-listing-by-url', 'POST', { url: val });
+    if (!r || !r.ok) {
+      status.textContent = (r && r.error) || 'Fetch failed';
+      toast(status.textContent, 'error');
+      return;
+    }
+    const lid = r.listing_id;
+    const L = r.listing || {};
+    status.innerHTML = `Loaded <strong>${escHtml(L.title || ('Listing ' + lid))}</strong> — opening push modal…`;
+    inp.value = '';
+    // Reuse the existing push-modal path: it reads _eshState.selected.
+    if (!_eshState) window._eshState = {};
+    _eshState.selected = new Set([lid]);
+    // Save details so the modal can render a preview thumbnail even though
+    // the listing isn't in the currently-open shop grid.
+    _eshState.singleListingCache = _eshState.singleListingCache || {};
+    _eshState.singleListingCache[lid] = L;
+    await eshOpenPushModal();
+    setTimeout(() => { status.textContent = ''; }, 4000);
+  } catch (e) {
+    console.error(e);
+    status.textContent = 'Fetch failed: ' + (e && e.message || e);
+    toast(status.textContent, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Fetch & push';
   }
 }
 
