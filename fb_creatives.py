@@ -61,81 +61,144 @@ log = logging.getLogger(__name__)
 # --- Preset ad angles -------------------------------------------------------
 # Each preset seeds Claude with a strong point of view so the 5 variants feel
 # genuinely different, not five safe near-duplicates.
+# The Goth Society tested ad angles. Each preset is written the way the brand
+# actually talks to its audience — not generic marketer language.
 PRESETS: Dict[str, Dict[str, str]] = {
     'auto_mix': {
-        'label': 'Auto mix — 5 different angles',
-        'brief': 'Give me 5 wildly different ad angles across these six styles: '
-                 'lifestyle close-up, editorial luxe, UGC raw testimonial, '
-                 'problem→solution, social proof + scarcity, and emotional gift story. '
-                 'Do NOT repeat angles.',
+        'label': 'Auto mix — rotate the 7 proven angles',
+        'brief': 'Rotate through The Goth Society\'s 7 proven angles. Pick a mix that gives me '
+                 'DIFFERENT emotional territories — do not do 5 versions of the same idea. '
+                 'Available angles: Corporate Goth, Anti-Consumerism, Baby Bats, 7-for-$85 Bundle, '
+                 'Identity Confirmation, Outcast, Gothic Memes. Pick the N most distinct.',
     },
-    'lifestyle': {
-        'label': 'Lifestyle close-up (hand/neck worn)',
-        'brief': 'Aspirational close-up of the jewelry worn on hand, neck, or ear. '
-                 'Natural daylight, soft background bokeh, real skin, minimal styling. '
-                 'The piece is the hero; the person is anonymous (no full face).',
+    'corporate_goth': {
+        'label': 'Corporate Goth — goth in the office / meeting',
+        'brief': 'Angle: goth aesthetics inside the 9-to-5. The character wears a black blazer, '
+                 'muted business attire, but keeps subtle goth signals — the ring, the choker, '
+                 'the black manicure. Setting: an office, coffee shop, conference room, or '
+                 'commuter train. Copy hits the tension between "having to look normal" and '
+                 '"staying true to the aesthetic". Hooks like: "How I stayed goth through 3 years '
+                 'in corporate." / "The one ring my boss never noticed." / "Business casual, '
+                 'privately unholy." Never mention being fired or corporate abuse — keep it '
+                 'empowering, not victim-y.',
     },
-    'editorial': {
-        'label': 'Editorial luxe (magazine cover)',
-        'brief': 'High-fashion editorial. Dark or moody background, dramatic side lighting, '
-                 'jewelry photographed like it belongs in Vogue. Copy is confident, minimal, '
-                 'aspirational. Feels expensive.',
+    'anti_consumerism': {
+        'label': 'Anti-Consumerism — anti fast fashion / child labor',
+        'brief': 'Angle: real goth culture rejects fast fashion, sweatshops, and disposable '
+                 'trend-chasing. Position The Goth Society as jewelry that lasts, made for the '
+                 'lifestyle, not the algorithm. Copy is confident and slightly confrontational, '
+                 'not preachy. Reference the ethos: quality, longevity, culture-over-clout. '
+                 'Example energy: "Real goth culture was never about who could buy the most — '
+                 'it\'s about what you stand for. Mine\'s linked below." Never make specific '
+                 'unverifiable claims about competitors (no "brand X uses child labor"). Focus '
+                 'on WHAT WE DO: solid materials, no throwaway pieces, aesthetic that outlasts '
+                 'trends.',
     },
-    'ugc': {
-        'label': 'UGC raw (just-bought testimonial)',
-        'brief': 'Amateur phone-camera aesthetic. Slightly imperfect framing, natural window '
-                 'light, honest testimonial-style copy. First-person hook like "I did NOT '
-                 'expect this to look this good in real life." Feels like a friend recommending it.',
+    'baby_bats': {
+        'label': 'Baby Bats — new to goth, welcoming starter energy',
+        'brief': 'Angle: written for someone new to goth ("baby bat" is the community\'s '
+                 'affectionate term for a newcomer). Copy is warm, insider, welcoming — like a '
+                 'friend who has been in the scene for years showing them the ropes. Hooks like: '
+                 '"7 pieces every baby bat needs before their first event." / "New to the scene? '
+                 'Start here." / "Me before finding this brand vs me now." Lean into the "Baby Bat '
+                 'arc complete" transformation-story energy. Never condescend — baby bats know '
+                 'they are new and are proud of it.',
     },
-    'problem_solution': {
-        'label': 'Problem → solution',
-        'brief': 'Hook opens with a specific pain point about jewelry (tarnishing, allergies, '
-                 'losing pieces, boring gifts, cheap-looking stuff) and positions this piece as '
-                 'the solution. Copy is direct, punchy, ends with a clear reason to click today.',
+    'bundle_deal': {
+        'label': '7 for $85 Bundle — the offer, hard',
+        'brief': 'Angle: promote the flagship offer — "Any 7 for $85 • Free Delivery." This is a '
+                 'straight commercial hitter. Copy is short, benefit-forward, urgency without lies. '
+                 'Hook opens with the math: "$12 per ring. Seven picks. One flat price." or '
+                 '"Build your set — any 7 for $85." Headline hammers the offer. Image should feel '
+                 'like a product hero shot: dramatic single spotlight, purple smoke, dark stone '
+                 'pedestal, jewelry glinting. Include "ANY 7 FOR $85" as bold text on the image '
+                 '(this is a proven layout for the brand).',
     },
-    'social_proof': {
-        'label': 'Social proof + scarcity',
-        'brief': 'Lead with numbers: how many customers bought, star rating, best-seller status. '
-                 'Combine with genuine scarcity if honest ("selling out weekly", "restocked twice '
-                 'this month"). Image is clean, product-forward, with a subtle "best-seller" feel.',
+    'identity': {
+        'label': 'Identity Confirmation — "this is who you are"',
+        'brief': 'Angle: the ad reads like a permission slip / identity confirmation. Copy hits '
+                 '"you already know" energy. Hooks like: "You\'re not going through a phase." / '
+                 '"Confirmed goth. Move to checkout." / "You didn\'t choose this aesthetic — it '
+                 'chose you." / "Some people are just wired darker." The reader should feel seen, '
+                 'not sold to. Copy in first-person or direct-address ("you"). No cringe — no '
+                 '"embrace your dark side" cliches. Feel like a mirror, not a pitch.',
     },
-    'gift': {
-        'label': 'Emotional gift story',
-        'brief': 'Position the piece as the perfect gift for a specific relationship '
-                 '(anniversary, birthday, "for her", self-gift after a milestone). Copy tells a '
-                 'micro-story in 2 sentences. Ends with an emotional CTA, not a discount.',
+    'outcast': {
+        'label': 'Outcast — not for the normies',
+        'brief': 'Angle: gatekeep in a fun, community-building way. The ad is FOR people who never '
+                 'fit in with the "normies" (the community\'s in-group word for basic mainstream '
+                 'people). Hooks like: "Not for normies." / "If you have to ask, this brand isn\'t '
+                 'for you." / "The normies stare. Let them." / "Made for the ones who never fit in '
+                 'the first place." Empowering, tribal, tongue-in-cheek. Never punch down at any '
+                 'group — just create insider/outsider dynamics around aesthetic taste. Copy '
+                 'should reward the reader for being different.',
+    },
+    'gothic_memes': {
+        'label': 'Gothic Memes — comic-panel meme humor',
+        'brief': 'Angle: meme-format humor that lands with goth Twitter / TikTok. Comic-panel '
+                 'style, before/after, POV captions, or overheard jokes. Examples: "Ordered a '
+                 'skull ring. Now grandma prays for me daily." / "POV: your mom sees your ring '
+                 'collection for the first time." / "Coworkers: nice ring! Me (internally): '
+                 'it\'s a sigil of hexed protection but okay." Image style: comic-panel with '
+                 'blackletter title "[SETUP]" and speech-bubble caption. Copy is genuinely '
+                 'funny, self-aware, in-group. Never mock actual religion, family, or '
+                 'individuals — the humor is at the wholesome-shock contrast.',
     },
 }
 
 
-CLAUDE_SYSTEM_PROMPT = """You are a senior Facebook Ads creative director for a jewelry DTC brand.
-You produce ads that STOP THE SCROLL. You know Meta's rules, Meta's algorithm, and jewelry buyers' psychology.
+CLAUDE_SYSTEM_PROMPT = """You are the creative director for THE GOTH SOCIETY, a DTC goth jewelry brand selling skull rings, spider rings, chokers, wrap rings, dragon rings and layered chains. You write Facebook ads that stop the scroll for goths, alt kids, metalheads, witchy communities. You know the subculture from the inside — not as an outsider marketer.
 
-Rules for every ad you write:
-- Format is ALWAYS 4:5 vertical single-image (feed).
-- Primary text: 90-120 words. First line MUST be a scroll-stopper (question, bold claim, curiosity gap, or emotional hook).
-- Headline: max 40 characters. Punchy. No brand name unless requested.
-- Description: max 30 characters. Reinforces urgency or benefit.
-- CTA: pick ONE from SHOP_NOW, LEARN_MORE, GET_OFFER, ORDER_NOW.
-- Hook alternatives: 3 short (5-12 word) alternate first-lines with DIFFERENT emotional angles (curiosity, pain, aspiration).
-- Never claim medical benefits. Never use "cures", "guaranteed", "best price".
-- Use sensory, concrete language — "brushed gold catches the sunset light" beats "beautiful jewelry".
-- Emojis: max 2, only if they add meaning.
+=== BRAND CONTEXT ===
+- Flagship offer: ANY 7 FOR $85 • FREE DELIVERY. Reference it when the angle asks for it.
+- Founder voice: first-person, casual, slightly conspiratorial. Sign-offs like "mine's linked below 🤍" work.
+- Audience: goth / alt / darkwave / metal / witchy — mostly women 18-40, some men. They ALREADY identify as goth. Do not explain what goth is to them.
+- In-group words to use CORRECTLY: baby bat (newcomer to goth), normies (mainstream / basic people), the scene, the aesthetic, coven, spooky. Use sparingly, never in every ad.
+- BANNED cringe phrases (never use): "embrace your dark side", "unleash your inner goth", "dark elegance", "unique statement piece", "turn heads", "gothic vibes", "express yourself", "gothic beauty". These mark you as a fake.
+- Never preach. Values (anti-fast-fashion, culture-over-clout) can be HINTED, never lectured.
+- Never mock religion, family, or named individuals. Meme humor is at wholesome-shock contrast ("grandma prays for me daily"), never real hate.
 
-For the image_prompt (which will be sent to Google Nano Banana 2):
-- Start with: "4:5 vertical Facebook ad. Photorealistic."
-- Then describe the exact scene: lighting, background, composition, mood.
-- IMPORTANT: The reference image(s) provided show the ACTUAL jewelry piece. Describe the piece faithfully — same shape, metal color, gemstones, engraving — so the AI renders THE product, not a random ring.
-- Include the phrase "the exact piece shown in the reference image" once.
-- End with: "Sharp focus on the jewelry. Ad-quality composition. No text overlays."
-- Never request text overlays in the image (we add copy in Meta Ads Manager).
+=== FACEBOOK-ADS HARD RULES ===
+- Format: 4:5 vertical single image, feed placement.
+- Primary text: 60-110 words. First line is the scroll-stopper. Insert blank lines for mobile readability.
+- Headline: MAX 40 characters. Punchy. Usually the offer or the angle payoff.
+- Description: MAX 30 characters. Reinforces urgency / offer / identity.
+- CTA: exactly ONE of SHOP_NOW, LEARN_MORE, GET_OFFER, ORDER_NOW.
+- Emojis: max 2 per ad. On-brand: 🤍 🕷️ 🕯️ 🌙 ⚰️. Off-brand: ✨ 💫 🔥 💜.
+- Never: "cures", "guaranteed", "best price", "unbeatable", unverifiable competitor claims, medical/protective claims stated as fact.
 
-You will be given: {N} = number of variants required, a preset angle brief, an optional user prompt, extra notes about audience/offer, and 1-{max_refs} reference product images.
-Return STRICT JSON with this exact shape:
+=== HOOK ALTERNATIVES (3 per variant) ===
+Each hook is 5-14 words. Each hook pulls a DIFFERENT lever from the others: curiosity gap, identity confirmation, contrarian statement, insider-language, price/math shock, before/after transformation, POV meme setup, gentle callout of the reader.
+
+=== IMAGE PROMPT RULES (for Nano Banana 2 / gemini-2.5-flash-image) ===
+This is the critical piece. Follow this structure exactly — weak image prompts kill winning copy.
+
+1. Start every image_prompt with: "4:5 vertical Facebook ad, photorealistic, ad-quality composition." (For meme comic-panel angle: use "4:5 vertical Facebook ad, comic-panel illustration, ad-quality composition." instead.)
+2. State the SCENE in ONE sentence — who, where, what lighting, what mood. Working examples for this brand:
+   - "A pale dark-haired woman in her early 20s, smokey eyeliner slightly smudged, standing in a purple-lit underground club, shallow depth of field, cinematic."
+   - "Close-up hand of a goth model resting on a black lace sleeve, moody window light, muted tones."
+   - "Product hero shot: two rings on a jagged black stone pedestal, single overhead spotlight, wisps of purple smoke, deep black background."
+   - "Comic-panel illustration, black-and-white ink with one purple accent, two panels stacked (before / after), thick black borders."
+3. Describe the JEWELRY with specificity taken from the reference image(s) — metal color (oxidized silver / stainless / brushed), stone color (blood-red garnet / obsidian / green cats-eye), motif (skull / spider / thorn / snake / tentacle / bat / dragon / rose). This is how Nano Banana renders THE actual piece and not a generic ring.
+4. Include the phrase "the exact piece shown in the reference image" once. Use "pieces" / "reference images" if multiple.
+5. TEXT ON IMAGE IS REQUIRED for this brand — The Goth Society's winning ads have bold headline text baked into the image. Specify:
+   - Verbatim text in quotes, e.g.: On-image text: "7 PIECES EVERY BABY BAT NEEDS".
+   - Position: "top third centered" / "bottom bar white text on black background" / "as a comic speech bubble".
+   - Font style, exactly ONE of: "heavy sans-serif condensed impact font" (headline overlays), "blackletter gothic font" (meme titles / brand-heritage), "clean sans-serif caption" (comic panels), "handwritten scrawl" (intimate founder-voice only).
+   - Color: high contrast — white on dark, or black on light. No gradients.
+   - Length: 4-10 words for headline overlays, 12-20 for meme captions. Longer copy belongs in Meta primary text, not the image.
+6. Aesthetic anchors to mix into images (pick 2-3, not all): purple club lighting, black lace, oxidized silver, dim brick alleys, candlelight, moonlight, underground club, low-light editorial, film grain, wet-look skin, kohl liner, graffiti wall backdrop.
+7. End every image_prompt with this exact NEGATIVE line: "Avoid: AI-fantasy artifacts, plastic skin, cartoon eyes, oversaturated purple, stock-photo product-on-white, sparkles, emojis inside the image, text watermarks. Sharp focus on the jewelry, natural texture, editorial magazine quality."
+
+=== ANGLE DIVERSITY (when N > 1) ===
+Each variant MUST use a different angle. Draw from the preset brief — never produce 5 near-duplicates. angle_name must match one of: "Corporate Goth", "Anti-Consumerism", "Baby Bats", "7 for $85 Bundle", "Identity Confirmation", "Outcast", "Gothic Memes" — or a specific sub-angle within the requested preset.
+
+=== OUTPUT (STRICT JSON, NO MARKDOWN) ===
+You receive: {N} = variants required, a preset brief, an optional user prompt, extra notes, 1-{max_refs} reference product images. Return ONLY this JSON structure, no commentary, no ```json fences:
 {
   "variants": [
     {
-      "angle_name": "...",
+      "angle_name": "Corporate Goth",
       "image_prompt": "...",
       "primary_text": "...",
       "headline": "...",
@@ -144,8 +207,7 @@ Return STRICT JSON with this exact shape:
       "hook_alternatives": ["...", "...", "..."]
     }
   ]
-}
-No commentary outside the JSON."""
+}"""
 
 
 # ---------------------------------------------------------------------------
@@ -247,11 +309,37 @@ def _download_image_bytes(url: str) -> Tuple[bytes, str]:
     return data, mime
 
 
+# Rotating creative-provocation lines. On every Generate, one is picked at
+# random and injected into the user turn so Claude cannot lazily replay its
+# previous output. Each line pushes toward a slightly different creative axis.
+_PROVOCATIONS = [
+    'Make the hooks feel like something a real goth would text her best friend, not something an ad agency wrote.',
+    'Ban any headline you would have written last year. Push into 2026 goth-TikTok cadence.',
+    'Assume the reader has already seen 20 goth-jewelry ads today. What breaks through?',
+    'One variant should feel confrontational. One should feel intimate. One should feel funny. Do not blur the lines.',
+    'Steal energy from doomscroll-era text-only tweets: short, cutting, self-aware.',
+    'Write like a founder who is annoyed at how bad other goth brands look. Not preachy — just superior.',
+    'Lean into specificity: name real situations (the office kitchen, mom\'s Sunday dinner, the metal show line).',
+    'Make each headline sound like a thought the reader was already having, not a pitch.',
+    'One variant must have a hook that makes the reader laugh out loud. Comic-panel meme energy.',
+    'Push the on-image text further — bigger, ruder, more confident. Weak on-image text is a dead ad.',
+    'Avoid any word you have used in the last 20 ads. Fresh vocabulary this run.',
+    'One variant should read like a diary entry, not an ad.',
+]
+
+
 def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: str,
                                   extra_notes: str, reference_images: List[Tuple[bytes, str]],
-                                  variant_count: int) -> Dict[str, Any]:
+                                  variant_count: int,
+                                  creative_seed: Optional[str] = None) -> Dict[str, Any]:
     """Call Claude Haiku 4.5 with the reference product images inline and get a
-    strict-JSON plan of N variants back."""
+    strict-JSON plan of N variants back.
+
+    `creative_seed` is a short random string used to force variation between
+    otherwise-identical Generate clicks. It is combined with a rotating
+    provocation line and a non-zero temperature so back-to-back runs cannot
+    return the same output.
+    """
     if not anthropic_key:
         raise RuntimeError('Anthropic API key missing in settings.json')
 
@@ -272,21 +360,44 @@ def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: 
             },
         })
 
-    user_text_parts = [f'REFERENCE PRODUCT IMAGES: {max_refs} attached above. These are '
-                       f'the jewelry pieces the ads must feature.']
+    import random as _rnd
+    provocation = _rnd.choice(_PROVOCATIONS)
+    seed = creative_seed or uuid.uuid4().hex[:10]
+
+    user_text_parts = [
+        f'REFERENCE PRODUCT IMAGES: {max_refs} attached above. These are the '
+        f'jewelry pieces the ads must feature.',
+    ]
     if preset_brief:
-        user_text_parts.append(f'PRESET ANGLE: {preset_brief}')
+        user_text_parts.append(f'PRESET ANGLE (baseline direction): {preset_brief}')
     if prompt:
-        user_text_parts.append(f'USER PROMPT: {prompt}')
+        # The user\'s extra prompt is CREATIVE FUEL for this specific run, not
+        # a soft suggestion. Instruct Claude to actually use it.
+        user_text_parts.append(
+            "USER'S CREATIVE DIRECTION FOR THIS RUN (weight this HIGH — it is "
+            "the fresh idea driving this batch, not a footnote):\n" + prompt
+        )
     if extra_notes:
         user_text_parts.append(f'EXTRA NOTES (audience, offer, brand voice): {extra_notes}')
-    user_text_parts.append(f'PRODUCE EXACTLY {variant_count} VARIANTS. Return only JSON.')
+
+    user_text_parts.extend([
+        f'CREATIVE SEED FOR THIS RUN: {seed}. Use this to force variation. '
+        f'Even if the preset, prompt, and reference images are identical to a '
+        f'previous run, the OUTPUT MUST BE DIFFERENT — different hooks, '
+        f'different image scenes, different on-image text, different angle mix. '
+        f'Do not repeat prior outputs.',
+        f'PROVOCATION FOR THIS RUN: {provocation}',
+        f'PRODUCE EXACTLY {variant_count} VARIANTS. Each variant must be a '
+        f'distinct angle. Return only JSON.',
+    ])
 
     user_content.append({'type': 'text', 'text': '\n\n'.join(user_text_parts)})
 
     body = {
         'model': 'claude-haiku-4-5',
         'max_tokens': 4000,
+        # Non-zero temperature is the second lever that guarantees variation.
+        'temperature': 1.0,
         'system': sys_prompt,
         'messages': [{'role': 'user', 'content': user_content}],
     }
@@ -320,6 +431,12 @@ def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: 
         raise RuntimeError(f'Claude JSON decode failed: {e}. Raw: {text[:400]}')
     if 'variants' not in parsed or not isinstance(parsed['variants'], list):
         raise RuntimeError(f'Claude response missing variants[]: {text[:400]}')
+    # Attach token usage so caller can compute $ cost.
+    usage = data.get('usage') or {}
+    parsed['_usage'] = {
+        'input_tokens': int(usage.get('input_tokens') or 0),
+        'output_tokens': int(usage.get('output_tokens') or 0),
+    }
     return parsed
 
 
@@ -546,7 +663,18 @@ def register_routes(app, data_dir, login_required, http_requests):
                 v['error'] = str(e)
                 v['index'] = i
 
-        # 3) Zip
+        # 3) Cost math.
+        # Claude Haiku 4.5 (Nov 2025 GA): $1 / 1M input, $5 / 1M output.
+        # Nano Banana 2 (gemini-2.5-flash-image): $0.039 / image at 4:5.
+        usage = plan.get('_usage') or {}
+        claude_in = int(usage.get('input_tokens') or 0)
+        claude_out = int(usage.get('output_tokens') or 0)
+        claude_cost = round((claude_in * 1.0 + claude_out * 5.0) / 1_000_000, 4)
+        nano_calls = successes  # only successful renders bill
+        nano_cost = round(nano_calls * 0.039, 4)
+        total_cost = round(claude_cost + nano_cost, 4)
+
+        # 4) Zip
         metadata = {
             'run_id': run_id,
             'created_at': int(started),
@@ -557,6 +685,21 @@ def register_routes(app, data_dir, login_required, http_requests):
             'variant_count': variant_count,
             'successes': successes,
             'ref_image_count': len(refs),
+            'cost': {
+                'claude': {
+                    'model': 'claude-haiku-4-5',
+                    'input_tokens': claude_in,
+                    'output_tokens': claude_out,
+                    'usd': claude_cost,
+                },
+                'nano_banana': {
+                    'model': 'gemini-2.5-flash-image',
+                    'image_calls': nano_calls,
+                    'usd_per_image': 0.039,
+                    'usd': nano_cost,
+                },
+                'total_usd': total_cost,
+            },
         }
         _build_zip(run_dir, run_id, variants, metadata)
 

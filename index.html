@@ -2197,7 +2197,7 @@ textarea { resize: vertical; min-height: 80px; }
         <h2 style="margin:0;font-size:22px;">Facebook Creatives ✨</h2>
         <div style="color:var(--gray-600);font-size:13px;margin-top:2px;">Claude Haiku 4.5 briefs + Nano Banana 2 renders. 4:5 vertical, ready for Meta.</div>
       </div>
-      <div style="font-size:12px;color:var(--gray-500);">Cost per 5-variant run: <strong>~$0.22</strong></div>
+      <div style="font-size:12px;color:var(--gray-500);text-align:right;">Est. per 5-variant run: <strong>~$0.22</strong><br><span style="font-size:11px;">actual cost shown after each run</span></div>
     </div>
 
     <!-- Step 1: pick reference products -->
@@ -2236,10 +2236,12 @@ textarea { resize: vertical; min-height: 80px; }
           <option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option>
         </select>
       </div>
-      <textarea id="fbc-prompt" placeholder="Optional prompt — e.g. 'Push our anniversary gift angle. Audience is women 35-55 in the US. Emphasise lifetime warranty.'" style="width:100%;min-height:70px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
-      <textarea id="fbc-notes" placeholder="Extra notes (offer, brand voice, must-mention, must-avoid)" style="width:100%;min-height:50px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;margin-top:8px;"></textarea>
+      <div style="font-size:12px;color:var(--gray-600);margin-top:4px;margin-bottom:4px;font-weight:600;">Your creative direction for this run — fresh idea, hook seed, or angle push:</div>
+      <textarea id="fbc-prompt" placeholder="e.g. 'Play off the recent goth-office TikTok trend — quiet quitters wearing skull rings under long sleeves.' or 'Lean into Halloween-week urgency. This drop is our restocked spider rings.' or 'One variant should be a Sunday-dinner meme — grandma prays, I wear the ring anyway.'" style="width:100%;min-height:80px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
+      <div style="font-size:12px;color:var(--gray-600);margin-top:8px;margin-bottom:4px;font-weight:600;">Extra notes (optional — offer, must-mention, must-avoid):</div>
+      <textarea id="fbc-notes" placeholder="e.g. 'Mention free UK delivery. Do NOT mention discounts. Audience: UK + Ireland.'" style="width:100%;min-height:50px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
-        <div style="font-size:12px;color:var(--gray-500);" id="fbc-brief-hint">Pick at least one reference image and either a preset or a prompt.</div>
+        <div style="font-size:12px;color:var(--gray-500);" id="fbc-brief-hint">Each Generate returns different creative even with identical inputs (temperature + creative seed).</div>
         <button class="btn btn-primary" onclick="fbcGenerate()" id="fbc-generate-btn">Generate ads</button>
       </div>
     </div>
@@ -4301,9 +4303,23 @@ async function fbcGenerate() {
 function fbcRenderResults(d) {
   const out = document.getElementById('fbc-results');
   const meta = d.metadata || {};
-  const header = `<div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-    <div style="font-size:13px;color:var(--gray-600);">Generated <strong>${meta.successes}/${meta.variant_count}</strong> ads in ${meta.duration_sec}s • run <code style="background:var(--gray-100);padding:1px 6px;border-radius:4px;">${escHtml(d.run_id)}</code></div>
-    <a href="${escAttr(d.download_url)}" class="btn btn-primary btn-sm" download style="text-decoration:none;">⬇ Download ZIP (images + copy)</a>
+  const cost = meta.cost || {};
+  const cCla = cost.claude || {};
+  const cNan = cost.nano_banana || {};
+  const total = (cost.total_usd != null) ? `$${Number(cost.total_usd).toFixed(3)}` : '';
+  const costBreakdown = total ? `<div style="font-size:11px;color:var(--gray-500);margin-top:4px;">
+      Claude Haiku 4.5: $${Number(cCla.usd||0).toFixed(3)} (${cCla.input_tokens||0} in / ${cCla.output_tokens||0} out) •
+      Nano Banana 2: $${Number(cNan.usd||0).toFixed(3)} (${cNan.image_calls||0} × $${(cNan.usd_per_image||0.039).toFixed(3)})
+    </div>` : '';
+  const header = `<div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+    <div>
+      <div style="font-size:13px;color:var(--gray-600);">Generated <strong>${meta.successes}/${meta.variant_count}</strong> ads in ${meta.duration_sec}s • run <code style="background:var(--gray-100);padding:1px 6px;border-radius:4px;">${escHtml(d.run_id)}</code></div>
+      ${costBreakdown}
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      ${total ? `<div style="font-size:13px;color:var(--gray-700);">Actual cost: <strong style="color:#5b21b6;">${total}</strong></div>` : ''}
+      <a href="${escAttr(d.download_url)}" class="btn btn-primary btn-sm" download style="text-decoration:none;">⬇ Download ZIP (images + copy)</a>
+    </div>
   </div>`;
 
   const cards = (d.variants || []).map(v => {
