@@ -2838,6 +2838,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.tab === 'etsy') { etsyOnTabOpen(); }
     if (tab.dataset.tab === 'jewelry-winners') { jwOnTabOpen(); }
     if (tab.dataset.tab === 'etsy-shops') { eshOnTabOpen(); }
+    if (tab.dataset.tab === 'fb-creatives') { fbcInit(); }
   });
 });
 
@@ -4158,32 +4159,42 @@ const _fbc = {
   currentRun: null,
 };
 
-// Populate the store dropdown from window.stores whenever the tab is shown.
-// The Stores tab already loads window.stores on boot.
-function fbcInit() {
+// Populate the store dropdown every time the tab opens. Uses the module-scoped
+// `stores` list (populated by loadStoresTable on the Stores tab). If it is
+// empty, fetch fresh from /api/stores so the tab works even when the user
+// jumped straight here on page load.
+async function fbcInit() {
   const sel = document.getElementById('fbc-store');
-  if (!sel || sel.dataset.populated === '1') return;
-  const stores = (window.stores || []).filter(s =>
-    (s.platform || 'shopify').toLowerCase() === 'shopify' && s.shopifyStatus === 'connected');
-  sel.innerHTML = '<option value="">Select store…</option>' + stores.map(s =>
-    `<option value="${escAttr(s.id)}">${escHtml(s.name)}</option>`).join('');
-  sel.dataset.populated = '1';
-  // Load presets
+  if (!sel) return;
+
+  // Presets: load once.
   if (!_fbc.presetsLoaded) {
-    fetch('/api/fb-creatives/presets').then(r => r.json()).then(d => {
-      if (!d?.ok) return;
-      const psel = document.getElementById('fbc-preset');
-      psel.innerHTML = d.presets.map(p => `<option value="${escAttr(p.key)}">${escHtml(p.label)}</option>`).join('');
-      _fbc.presetsLoaded = true;
-    });
+    try {
+      const d = await (await fetch('/api/fb-creatives/presets')).json();
+      if (d?.ok) {
+        const psel = document.getElementById('fbc-preset');
+        psel.innerHTML = d.presets.map(p =>
+          `<option value="${escAttr(p.key)}">${escHtml(p.label)}</option>`).join('');
+        _fbc.presetsLoaded = true;
+      }
+    } catch (_) { /* keep default option */ }
   }
+
+  // Ensure we have a store list. `stores` is the module-scoped list.
+  let list = (typeof stores !== 'undefined' && Array.isArray(stores)) ? stores : [];
+  if (!list.length) {
+    try {
+      const d = await api('/api/stores');
+      if (d?.success && Array.isArray(d.stores)) list = d.stores;
+    } catch (_) { /* leave empty */ }
+  }
+
+  const connected = list.filter(s => s && s.shopifyStatus === 'connected');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Select store…</option>' + connected.map(s =>
+    `<option value="${escAttr(s.id)}">${escHtml(s.name || s.id)}</option>`).join('');
+  if (prev && connected.some(s => s.id === prev)) sel.value = prev;
 }
-// Wire tab activation.
-document.addEventListener('DOMContentLoaded', () => {
-  document.querySelectorAll('[data-tab="fb-creatives"]').forEach(t => {
-    t.addEventListener('click', () => setTimeout(fbcInit, 50));
-  });
-});
 
 async function fbcLoadTopSellers() {
   const storeId = document.getElementById('fbc-store').value;
