@@ -6831,6 +6831,25 @@ try:
     )
 except Exception as _pl_e:
     log.exception('Product-lookup route failed to register: %s', _pl_e)
+
+# Facebook Creatives tab: Claude briefs + Nano Banana 2 (gemini-2.5-flash-image)
+# generates 4:5 jewelry ads with reference product images. Endpoints:
+#   POST /api/fb-creatives/top-sellers  {store_id, limit}
+#   POST /api/fb-creatives/generate     {store_id, prompt, preset,
+#                                        reference_images, variant_count}
+#   GET  /api/fb-creatives/image/<id>/<i>.png
+#   GET  /api/fb-creatives/download/<id>
+#   GET  /api/fb-creatives/presets
+try:
+    import fb_creatives as _fb_creatives
+    _fb_creatives.register_routes(
+        app=app,
+        data_dir=DATA_DIR,
+        login_required=login_required,
+        http_requests=http_requests,
+    )
+except Exception as _fbc_e:
+    log.exception('Facebook Creatives routes failed to register: %s', _fbc_e)
 # ===== End Etsy Shops tab ======================================================
 
 

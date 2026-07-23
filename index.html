@@ -1668,6 +1668,7 @@ textarea { resize: vertical; min-height: 80px; }
   <div class="tab" data-tab="studio">Studio</div>
   <div class="tab" data-tab="collections">Collections</div>
   <div class="tab" data-tab="analytics">Analytics</div>
+  <div class="tab" data-tab="fb-creatives">FB Creatives</div>
   <div class="tab" data-tab="etsy">Etsy Winners <span class="badge badge-purple" id="etsy-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="jewelry-winners">Jewelry Winners <span class="badge badge-purple" id="jw-badge" style="display:none">0</span></div>
   <div class="tab" data-tab="etsy-shops">Etsy Shops <span class="badge badge-purple" id="esh-badge" style="display:none">0</span></div>
@@ -2186,6 +2187,69 @@ textarea { resize: vertical; min-height: 80px; }
       <div class="empty-state-icon">&#128200;</div>
       <div class="empty-state-text">No connected stores</div>
       <div class="empty-state-sub">Sync your Shopify stores in the Stores tab first.</div>
+    </div>
+  </div>
+
+  <!-- ===== FACEBOOK CREATIVES TAB ===== -->
+  <div class="tab-panel" id="panel-fb-creatives">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <h2 style="margin:0;font-size:22px;">Facebook Creatives ✨</h2>
+        <div style="color:var(--gray-600);font-size:13px;margin-top:2px;">Claude Haiku 4.5 briefs + Nano Banana 2 renders. 4:5 vertical, ready for Meta.</div>
+      </div>
+      <div style="font-size:12px;color:var(--gray-500);">Cost per 5-variant run: <strong>~$0.22</strong></div>
+    </div>
+
+    <!-- Step 1: pick reference products -->
+    <div class="card" style="padding:16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-weight:600;">1. Pick reference product images</div>
+        <span style="font-size:12px;color:var(--gray-500);">— top sellers pulled from your Shopify winners cache</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="fbc-store" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;min-width:220px;">
+          <option value="">Select store…</option>
+        </select>
+        <select id="fbc-limit" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;">
+          <option value="12">Top 12</option>
+          <option value="24" selected>Top 24</option>
+          <option value="50">Top 50</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="fbcLoadTopSellers()" id="fbc-load-btn">Load top sellers</button>
+        <div id="fbc-selected-count" style="font-size:12px;color:var(--gray-600);margin-left:auto;"></div>
+      </div>
+      <div id="fbc-topsellers" style="margin-top:12px;display:none;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;" id="fbc-topsellers-grid"></div>
+      </div>
+    </div>
+
+    <!-- Step 2: brief -->
+    <div class="card" style="padding:16px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:10px;">2. Choose a preset or write your own</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+        <label style="font-size:13px;color:var(--gray-600);">Preset:</label>
+        <select id="fbc-preset" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;min-width:280px;">
+          <option value="auto_mix">Auto mix — 5 different angles</option>
+        </select>
+        <label style="font-size:13px;color:var(--gray-600);margin-left:8px;">Variants:</label>
+        <select id="fbc-variants" style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;">
+          <option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option>
+        </select>
+      </div>
+      <textarea id="fbc-prompt" placeholder="Optional prompt — e.g. 'Push our anniversary gift angle. Audience is women 35-55 in the US. Emphasise lifetime warranty.'" style="width:100%;min-height:70px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
+      <textarea id="fbc-notes" placeholder="Extra notes (offer, brand voice, must-mention, must-avoid)" style="width:100%;min-height:50px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;margin-top:8px;"></textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
+        <div style="font-size:12px;color:var(--gray-500);" id="fbc-brief-hint">Pick at least one reference image and either a preset or a prompt.</div>
+        <button class="btn btn-primary" onclick="fbcGenerate()" id="fbc-generate-btn">Generate ads</button>
+      </div>
+    </div>
+
+    <!-- Step 3: results -->
+    <div id="fbc-results" style="display:none;"></div>
+    <div id="fbc-empty" class="empty-state">
+      <div class="empty-state-icon">✨</div>
+      <div class="empty-state-title">No ads generated yet</div>
+      <div class="empty-state-sub">Pick reference products above, choose a preset, then click Generate ads.</div>
     </div>
   </div>
 
@@ -4082,6 +4146,181 @@ function exportWinnersCsv() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 
   toast(`Exported ${selectedProducts.size} products`, 'success');
+}
+
+// ===== Facebook Creatives tab =====
+// State: reference-image selection, cached top-sellers, and last run.
+const _fbc = {
+  topSellers: [],
+  selected: new Set(),
+  storeId: '',
+  presetsLoaded: false,
+  currentRun: null,
+};
+
+// Populate the store dropdown from window.stores whenever the tab is shown.
+// The Stores tab already loads window.stores on boot.
+function fbcInit() {
+  const sel = document.getElementById('fbc-store');
+  if (!sel || sel.dataset.populated === '1') return;
+  const stores = (window.stores || []).filter(s =>
+    (s.platform || 'shopify').toLowerCase() === 'shopify' && s.shopifyStatus === 'connected');
+  sel.innerHTML = '<option value="">Select store…</option>' + stores.map(s =>
+    `<option value="${escAttr(s.id)}">${escHtml(s.name)}</option>`).join('');
+  sel.dataset.populated = '1';
+  // Load presets
+  if (!_fbc.presetsLoaded) {
+    fetch('/api/fb-creatives/presets').then(r => r.json()).then(d => {
+      if (!d?.ok) return;
+      const psel = document.getElementById('fbc-preset');
+      psel.innerHTML = d.presets.map(p => `<option value="${escAttr(p.key)}">${escHtml(p.label)}</option>`).join('');
+      _fbc.presetsLoaded = true;
+    });
+  }
+}
+// Wire tab activation.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('[data-tab="fb-creatives"]').forEach(t => {
+    t.addEventListener('click', () => setTimeout(fbcInit, 50));
+  });
+});
+
+async function fbcLoadTopSellers() {
+  const storeId = document.getElementById('fbc-store').value;
+  const limit = parseInt(document.getElementById('fbc-limit').value, 10) || 24;
+  if (!storeId) {
+    toast('Select a store first', 'warning');
+    return;
+  }
+  _fbc.storeId = storeId;
+  const btn = document.getElementById('fbc-load-btn');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  const wrap = document.getElementById('fbc-topsellers');
+  const grid = document.getElementById('fbc-topsellers-grid');
+  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--gray-500);">Fetching top sellers and product images…</div>';
+  wrap.style.display = 'block';
+  try {
+    const r = await fetch('/api/fb-creatives/top-sellers', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({store_id: storeId, limit}),
+    });
+    const d = await r.json();
+    if (!d?.ok) throw new Error(d?.error || 'load failed');
+    _fbc.topSellers = d.products || [];
+    _fbc.selected.clear();
+    fbcRenderGrid();
+  } catch (e) {
+    grid.innerHTML = `<div style="grid-column:1/-1;color:#b91c1c;padding:14px;">${escHtml(String(e.message || e))}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load top sellers';
+  }
+}
+
+function fbcRenderGrid() {
+  const grid = document.getElementById('fbc-topsellers-grid');
+  if (!_fbc.topSellers.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:20px;color:var(--gray-500);">No top sellers yet. Run a winners sync on this store first.</div>';
+    fbcUpdateSelectedCount();
+    return;
+  }
+  grid.innerHTML = _fbc.topSellers.map(p => {
+    const selected = _fbc.selected.has(p.id);
+    const img = p.image ? `<img src="${escAttr(p.image)}" style="width:100%;height:140px;object-fit:cover;display:block;">` : `<div style="height:140px;background:var(--gray-100);"></div>`;
+    return `<div onclick="fbcToggle('${escAttr(p.id)}')" style="cursor:pointer;border:2px solid ${selected?'#10b981':'var(--gray-200)'};border-radius:8px;overflow:hidden;background:#fff;position:relative;transition:border-color .12s;">
+      ${img}
+      <div style="padding:6px 8px;">
+        <div style="font-size:12px;font-weight:600;color:var(--gray-800);line-height:1.3;max-height:32px;overflow:hidden;">${escHtml(p.title)}</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:2px;">${p.sales} sold • $${Number(p.revenue||0).toFixed(0)}</div>
+      </div>
+      ${selected ? '<div style="position:absolute;top:6px;right:6px;background:#10b981;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;">✓</div>' : ''}
+    </div>`;
+  }).join('');
+  fbcUpdateSelectedCount();
+}
+
+function fbcToggle(id) {
+  if (_fbc.selected.has(id)) _fbc.selected.delete(id);
+  else {
+    if (_fbc.selected.size >= 5) { toast('Max 5 reference images', 'warning'); return; }
+    _fbc.selected.add(id);
+  }
+  fbcRenderGrid();
+}
+
+function fbcUpdateSelectedCount() {
+  const el = document.getElementById('fbc-selected-count');
+  const n = _fbc.selected.size;
+  el.textContent = n ? `${n} reference image${n===1?'':'s'} selected (max 5)` : '';
+}
+
+async function fbcGenerate() {
+  if (!_fbc.selected.size) { toast('Pick at least one reference product image', 'warning'); return; }
+  const refUrls = _fbc.topSellers.filter(p => _fbc.selected.has(p.id)).map(p => p.image).filter(Boolean);
+  if (!refUrls.length) { toast('Selected products have no images', 'error'); return; }
+  const body = {
+    store_id: _fbc.storeId,
+    preset: document.getElementById('fbc-preset').value,
+    prompt: document.getElementById('fbc-prompt').value.trim(),
+    extra_notes: document.getElementById('fbc-notes').value.trim(),
+    variant_count: parseInt(document.getElementById('fbc-variants').value, 10) || 5,
+    reference_images: refUrls,
+  };
+  const btn = document.getElementById('fbc-generate-btn');
+  btn.disabled = true; btn.textContent = 'Generating… (60-90s)';
+  document.getElementById('fbc-empty').style.display = 'none';
+  const out = document.getElementById('fbc-results');
+  out.style.display = 'block';
+  out.innerHTML = `<div style="padding:40px;text-align:center;color:var(--gray-500);"><div class="spinner" style="margin:0 auto 16px;"></div>Claude is briefing ${body.variant_count} ad angles and Nano Banana 2 is rendering each 4:5 image… typically 60-90s.</div>`;
+  try {
+    const r = await fetch('/api/fb-creatives/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!d?.ok) throw new Error(d?.error || 'generation failed');
+    _fbc.currentRun = d;
+    fbcRenderResults(d);
+  } catch (e) {
+    out.innerHTML = `<div style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;padding:14px;border-radius:8px;">${escHtml(String(e.message || e))}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Generate ads';
+  }
+}
+
+function fbcRenderResults(d) {
+  const out = document.getElementById('fbc-results');
+  const meta = d.metadata || {};
+  const header = `<div class="card" style="padding:14px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+    <div style="font-size:13px;color:var(--gray-600);">Generated <strong>${meta.successes}/${meta.variant_count}</strong> ads in ${meta.duration_sec}s • run <code style="background:var(--gray-100);padding:1px 6px;border-radius:4px;">${escHtml(d.run_id)}</code></div>
+    <a href="${escAttr(d.download_url)}" class="btn btn-primary btn-sm" download style="text-decoration:none;">⬇ Download ZIP (images + copy)</a>
+  </div>`;
+
+  const cards = (d.variants || []).map(v => {
+    if (v.error) {
+      return `<div class="card" style="padding:14px;background:#fef2f2;border-color:#fecaca;"><strong>Variant ${v.index} failed:</strong> ${escHtml(v.error)}</div>`;
+    }
+    const hooks = (v.hook_alternatives || []).map(h => `<li style="margin:2px 0;">${escHtml(h)}</li>`).join('');
+    return `<div class="card" style="padding:0;overflow:hidden;">
+      <img src="${escAttr(v.image_url)}" style="width:100%;aspect-ratio:4/5;object-fit:cover;display:block;background:var(--gray-100);">
+      <div style="padding:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:8px;">
+          <div style="font-weight:600;font-size:14px;color:#5b21b6;">${escHtml(v.angle_name || 'Variant ' + v.index)}</div>
+          <div style="font-size:11px;color:var(--gray-500);">#${v.index}</div>
+        </div>
+        <div style="font-size:12px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px;">Primary text</div>
+        <div style="font-size:13px;line-height:1.45;color:var(--gray-800);margin-bottom:10px;white-space:pre-wrap;">${escHtml(v.primary_text || '')}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
+          <div><div style="font-size:11px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;">Headline</div><div style="font-size:13px;font-weight:600;color:var(--gray-800);">${escHtml(v.headline || '')}</div></div>
+          <div><div style="font-size:11px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;">Description</div><div style="font-size:13px;font-weight:600;color:var(--gray-800);">${escHtml(v.description || '')}</div></div>
+        </div>
+        <div style="display:inline-block;font-size:11px;background:#0369a1;color:#fff;padding:3px 8px;border-radius:4px;font-weight:600;letter-spacing:0.5px;">${escHtml(v.cta || 'SHOP_NOW')}</div>
+        <div style="margin-top:10px;font-size:11px;color:var(--gray-500);text-transform:uppercase;letter-spacing:0.5px;">Hook alternatives</div>
+        <ul style="font-size:12px;color:var(--gray-700);padding-left:18px;margin:4px 0 0 0;">${hooks}</ul>
+      </div>
+    </div>`;
+  }).join('');
+
+  out.innerHTML = header + `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;">${cards}</div>`;
 }
 
 // ===== Product URL sales lookup =====
