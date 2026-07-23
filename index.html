@@ -2236,8 +2236,11 @@ textarea { resize: vertical; min-height: 80px; }
           <option>1</option><option>2</option><option>3</option><option>4</option><option selected>5</option><option>6</option><option>7</option><option>8</option>
         </select>
       </div>
-      <div style="font-size:12px;color:var(--gray-600);margin-top:4px;margin-bottom:4px;font-weight:600;">Your creative direction for this run — fresh idea, hook seed, or angle push:</div>
-      <textarea id="fbc-prompt" placeholder="e.g. 'Play off the recent goth-office TikTok trend — quiet quitters wearing skull rings under long sleeves.' or 'Lean into Halloween-week urgency. This drop is our restocked spider rings.' or 'One variant should be a Sunday-dinner meme — grandma prays, I wear the ring anyway.'" style="width:100%;min-height:80px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
+      <div style="font-size:12px;color:var(--gray-600);margin-top:4px;margin-bottom:6px;font-weight:600;">Your creative direction for this run — fresh idea, hook seed, or angle push:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;" id="fbc-prompt-chips">
+        <div style="font-size:11px;color:var(--gray-500);align-self:center;margin-right:2px;">One-click ideas:</div>
+      </div>
+      <textarea id="fbc-prompt" placeholder="Click an idea above to autofill, or type your own — e.g. 'Play off the office-goth quiet-quitter meme this week.'" style="width:100%;min-height:80px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
       <div style="font-size:12px;color:var(--gray-600);margin-top:8px;margin-bottom:4px;font-weight:600;">Extra notes (optional — offer, must-mention, must-avoid):</div>
       <textarea id="fbc-notes" placeholder="e.g. 'Mention free UK delivery. Do NOT mention discounts. Audience: UK + Ireland.'" style="width:100%;min-height:50px;padding:10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;font-family:inherit;"></textarea>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;">
@@ -4161,6 +4164,51 @@ const _fbc = {
   currentRun: null,
 };
 
+// Prompt-library chips — one click autofills the creative-direction textarea.
+// Each chip is a battle-tested angle push for The Goth Society.
+const _fbcPromptChips = [
+  {label: 'Office quiet-quitter', text: "Play off the office quiet-quitter meme. The character keeps her goth signals hidden under a blazer — skull ring on the finger nobody notices. Copy is dry, self-aware, tribal."},
+  {label: 'Mom sees the collection', text: "POV / meme angle: mom sees her ring collection for the first time. Comic-panel image. Copy is funny, wholesome-shock, one variant should genuinely make the reader laugh."},
+  {label: 'Grandma prays daily', text: "Meme angle: 'Ordered a skull ring, now grandma prays for me daily.' Comic-panel, blackletter title. Warm, self-aware, community-in-joke."},
+  {label: 'You\'re not going through a phase', text: "Identity confirmation. Copy addresses the reader directly — 'you\'re not going through a phase, you\'re just wired this way.' Feels like a mirror, not a pitch."},
+  {label: 'Any 7 for $85 hard push', text: "Full commercial hitter on the 7-for-$85 bundle. Hero product shot, dramatic single spotlight, purple smoke, bold on-image text 'ANY 7 FOR $85 • FREE DELIVERY'. Copy short and math-first: '$12 per ring. Seven picks. One flat price.'"},
+  {label: 'Baby bat starter kit', text: "Baby-bat welcome angle. Position these pieces as the starter kit for someone new to the scene. Warm, insider tone. Reference 'first event', 'building the aesthetic', 'me before this brand vs me now'."},
+  {label: 'Not for normies', text: "Outcast angle. Gatekeep in a fun, community-building way. 'Not for normies.' / 'If you have to ask, this isn\'t for you.' Rewarding the reader for being different — never punching down."},
+  {label: 'Real goth culture', text: "Anti-consumerism angle in the founder's voice. 'Real goth culture was never about who could buy the most — it\'s about what you stand for. Mine\'s linked below.' Confident, slightly superior, never preachy."},
+  {label: 'Halloween week urgency', text: "Halloween-week urgency. This is the drop week — restocked spider rings, bat rings, skull rings. Honest scarcity, not fake countdown lies."},
+  {label: 'Metal show line meme', text: "Meme angle: the guy in the metal show line who spots your ring and gives you the nod. Comic-panel, POV caption, warm community energy."},
+  {label: 'Sunday dinner ring reveal', text: "POV meme: wearing the ring to Sunday dinner. Comic-panel style, blackletter title, wholesome-shock humor. Aunt gasps. Reader laughs."},
+  {label: 'Confirmed goth. Checkout.', text: "Identity-confirmation angle. Hook: 'Confirmed goth. Move to checkout.' Copy is short, cutting, self-aware — doomscroll-era Twitter cadence."},
+  {label: 'Diary entry ad', text: "One variant should read like a diary entry, not an ad. First-person, intimate, handwritten scrawl font on the image. About finally finding jewelry that fits how you already dress."},
+  {label: 'Restock alert', text: "Restock-alert angle. The best-sellers just came back. Honest, direct, product-forward. Bold on-image text 'BACK IN STOCK'. One variant should feel like a scarcity heads-up from a friend."},
+];
+
+function fbcRenderPromptChips() {
+  const host = document.getElementById('fbc-prompt-chips');
+  if (!host || host.dataset.rendered === '1') return;
+  const chipHtml = _fbcPromptChips.map((c, i) =>
+    `<button type="button" data-idx="${i}" class="fbc-chip" style="font-size:11px;padding:4px 10px;background:#f5f3ff;color:#5b21b6;border:1px solid #ddd6fe;border-radius:12px;cursor:pointer;font-family:inherit;">${escHtml(c.label)}</button>`
+  ).join('');
+  host.insertAdjacentHTML('beforeend', chipHtml);
+  host.querySelectorAll('.fbc-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      const ta = document.getElementById('fbc-prompt');
+      const chip = _fbcPromptChips[idx];
+      if (!chip || !ta) return;
+      // If textarea empty, replace. Otherwise append on a new line so the user
+      // can stack ideas.
+      ta.value = ta.value.trim() ? ta.value.trim() + '\n\n' + chip.text : chip.text;
+      ta.focus();
+      // Visual flash so the user sees which chip they clicked.
+      btn.style.background = '#5b21b6';
+      btn.style.color = '#fff';
+      setTimeout(() => { btn.style.background = '#f5f3ff'; btn.style.color = '#5b21b6'; }, 400);
+    });
+  });
+  host.dataset.rendered = '1';
+}
+
 // Populate the store dropdown every time the tab opens. Uses the module-scoped
 // `stores` list (populated by loadStoresTable on the Stores tab). If it is
 // empty, fetch fresh from /api/stores so the tab works even when the user
@@ -4168,6 +4216,9 @@ const _fbc = {
 async function fbcInit() {
   const sel = document.getElementById('fbc-store');
   if (!sel) return;
+
+  // Render click-to-fill prompt chips (once).
+  fbcRenderPromptChips();
 
   // Presets: load once.
   if (!_fbc.presetsLoaded) {
