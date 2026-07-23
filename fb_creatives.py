@@ -397,6 +397,122 @@ _PROVOCATIONS = [
 ]
 
 
+def _parse_claude_json(text: str, stop_reason: str = '') -> Optional[Dict[str, Any]]:
+    """Robust extraction of the {variants: [...]} JSON from Claude's response.
+
+    Handles three common failure modes:
+      1. ```json ... ``` code fences even when told not to use them.
+      2. Leading commentary before the opening `{`.
+      3. Response truncated mid-string when stop_reason == 'max_tokens' — in
+         that case, we salvage every fully-closed variant object.
+    """
+    if not text:
+        return None
+
+    # Strip code fences if present.
+    fence = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+    if fence:
+        body = fence.group(1)
+    else:
+        # Find first `{`, take from there.
+        start = text.find('{')
+        if start < 0:
+            return None
+        body = text[start:]
+
+    # Try a straight parse first (fast path).
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        pass
+
+    # Try trimming trailing junk after the outer object.
+    depth = 0
+    end = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(body):
+        if esc:
+            esc = False
+            continue
+        if ch == '\\' and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end > 0:
+        try:
+            return json.loads(body[:end])
+        except json.JSONDecodeError:
+            pass
+
+    # Truncated response — salvage every complete variant object we can find.
+    # This handles stop_reason=='max_tokens' and any other mid-stream cutoff.
+    variants: List[Dict[str, Any]] = []
+    # Locate the "variants": [ ... array and walk objects inside it.
+    marr = re.search(r'"variants"\s*:\s*\[', body)
+    if not marr:
+        return None
+    scan = body[marr.end():]
+    i = 0
+    while i < len(scan):
+        # skip whitespace / commas
+        while i < len(scan) and scan[i] in ' \t\r\n,':
+            i += 1
+        if i >= len(scan) or scan[i] != '{':
+            break
+        # Find matching close for this variant.
+        depth = 0
+        in_str = False
+        esc = False
+        start = i
+        found_end = -1
+        for j in range(i, len(scan)):
+            c = scan[j]
+            if esc:
+                esc = False
+                continue
+            if c == '\\' and in_str:
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    found_end = j + 1
+                    break
+        if found_end < 0:
+            break  # incomplete final variant — discard it
+        try:
+            v = json.loads(scan[start:found_end])
+            if isinstance(v, dict):
+                variants.append(v)
+        except json.JSONDecodeError:
+            break
+        i = found_end
+    if variants:
+        log.warning('Claude response truncated (stop_reason=%s); salvaged %d complete variants',
+                    stop_reason, len(variants))
+        return {'variants': variants}
+    return None
+
+
 def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: str,
                                   extra_notes: str, reference_images: List[Tuple[bytes, str]],
                                   variant_count: int,
@@ -462,9 +578,13 @@ def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: 
 
     user_content.append({'type': 'text', 'text': '\n\n'.join(user_text_parts)})
 
+    # Each variant with the new 3-zone image_prompt is ~500-700 tokens of
+    # output. 8 variants therefore need ~5-6k tokens. Give it 8k with headroom
+    # so we never truncate mid-JSON.
+    dynamic_max_tokens = min(16000, max(4000, 900 * variant_count + 1000))
     body = {
         'model': 'claude-haiku-4-5',
-        'max_tokens': 4000,
+        'max_tokens': dynamic_max_tokens,
         # Non-zero temperature is the second lever that guarantees variation.
         'temperature': 1.0,
         'system': sys_prompt,
@@ -489,16 +609,16 @@ def _generate_briefs_with_claude(anthropic_key: str, prompt: str, preset_brief: 
         if block.get('type') == 'text':
             text += block.get('text', '')
 
-    # Extract JSON — Claude sometimes wraps in ```json fences even when told not to.
+    # Extract JSON — Claude sometimes wraps in ```json fences even when told
+    # not to, and (rarely) truncates mid-string when max_tokens is exceeded.
     text = text.strip()
-    m = re.search(r'\{.*\}', text, re.DOTALL)
-    if not m:
-        raise RuntimeError(f'Claude returned no JSON: {text[:400]}')
-    try:
-        parsed = json.loads(m.group(0))
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f'Claude JSON decode failed: {e}. Raw: {text[:400]}')
-    if 'variants' not in parsed or not isinstance(parsed['variants'], list):
+    stop_reason = data.get('stop_reason') or ''
+    parsed = _parse_claude_json(text, stop_reason)
+    if parsed is None:
+        raise RuntimeError(
+            f'Claude JSON parse failed (stop_reason={stop_reason}). Raw head: {text[:400]}'
+        )
+    if 'variants' not in parsed or not isinstance(parsed['variants'], list) or not parsed['variants']:
         raise RuntimeError(f'Claude response missing variants[]: {text[:400]}')
     # Attach token usage so caller can compute $ cost.
     usage = data.get('usage') or {}
