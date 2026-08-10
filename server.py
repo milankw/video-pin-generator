@@ -193,6 +193,7 @@ _EMPLOYEE_ALLOWED_EXACT = {
     '/login', '/logout', '/goth-winners', '/favicon.svg', '/health',
     '/api/session-role',
     '/api/goth-winners', '/api/goth-winners/export.csv',
+    '/api/goth-winners/sync', '/api/goth-winners/sync/status',
 }
 
 
@@ -3378,6 +3379,20 @@ def _build_goth_winners_payload(min_sales: int):
         rev = float(p.get('revenue', 0) or 0)
         total_revenue += rev
         total_units_qualified += qty
+        # Per-variant breakdown (e.g. ring sizes, bracelet lengths). Sorted by
+        # units sold desc so the top-selling size shows first on the card.
+        # 'Default' single-variant products get flattened by the UI so they
+        # don't display a redundant chip.
+        variant_sales = p.get('variant_sales') or {}
+        variants_out = []
+        for vid, vdata in variant_sales.items():
+            variants_out.append({
+                'id': str(vid),
+                'title': vdata.get('title', '') or 'Default',
+                'sales': vdata.get('quantity', 0),
+                'revenue': round(float(vdata.get('revenue', 0) or 0), 2),
+            })
+        variants_out.sort(key=lambda v: v['sales'], reverse=True)
         results.append({
             'id': str(pid),
             'name': title,
@@ -3388,6 +3403,7 @@ def _build_goth_winners_payload(min_sales: int):
             'productUrl': product_url,
             'productType': detail.get('product_type', ''),
             'shopifyStatus': detail.get('status', 'unknown'),
+            'variants': variants_out,
         })
 
     return {
@@ -3423,6 +3439,41 @@ def api_goth_winners():
     return jsonify(payload), status
 
 
+@app.route('/api/goth-winners/sync', methods=['POST'])
+@employee_or_higher_required
+def api_goth_winners_sync():
+    """Trigger a background paid-order sync for the pinned Goth Society store.
+    Reuses the same worker the admin Winners tab uses — no duplicate logic.
+    Employees can start a refresh but the actual token/domain/threading path
+    is identical to the admin flow.
+    """
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == GOTH_WINNERS_STORE_ID), None)
+    if not store:
+        return jsonify({'success': False, 'error': 'Goth Society store not found'}), 404
+
+    platform, domain, token = _get_store_credentials(store)
+    if not domain or not token:
+        return jsonify({'success': False, 'error': f'{platform.title()} not connected'}), 400
+
+    meta = _load_winner_meta(GOTH_WINNERS_STORE_ID)
+    if meta.get('status') == 'running':
+        return jsonify({'success': True, 'status': 'already_running', 'meta': meta})
+
+    worker = _run_shoplazza_winner_sync if platform == 'shoplazza' else _run_winner_sync
+    thread = threading.Thread(target=worker, args=(GOTH_WINNERS_STORE_ID, domain, token), daemon=True)
+    thread.start()
+    return jsonify({'success': True, 'status': 'started', 'platform': platform})
+
+
+@app.route('/api/goth-winners/sync/status', methods=['GET'])
+@employee_or_higher_required
+def api_goth_winners_sync_status():
+    """Poll progress of the current or last sync."""
+    meta = _load_winner_meta(GOTH_WINNERS_STORE_ID)
+    return jsonify({'success': True, 'meta': meta})
+
+
 @app.route('/api/goth-winners/export.csv', methods=['GET'])
 @employee_or_higher_required
 def api_goth_winners_csv():
@@ -3438,29 +3489,47 @@ def api_goth_winners_csv():
     import io
     buf = io.StringIO()
     writer = csv.writer(buf)
+    # One row per variant. Product-level totals are repeated on every row of
+    # the same product so Allison can pivot / group in Excel without extra
+    # lookups. Products with only a single Default variant emit exactly one
+    # row with Variant Title = 'Default'.
     writer.writerow([
         'Product Title',
-        'Units Sold',
-        'Revenue (USD)',
+        'Variant Title',
+        'Variant Units Sold',
+        'Variant Revenue (USD)',
+        'Product Total Units',
+        'Product Total Revenue (USD)',
         'Product URL',
         'Image URL',
         'Shopify Status',
         'Product Type',
         'Product ID',
+        'Variant ID',
         'Handle',
     ])
     for row in payload.get('products', []):
-        writer.writerow([
-            row.get('name', ''),
-            row.get('sales', 0),
-            f"{row.get('revenue', 0):.2f}",
-            row.get('productUrl', ''),
-            row.get('image', ''),
-            row.get('shopifyStatus', ''),
-            row.get('productType', ''),
-            row.get('id', ''),
-            row.get('handle', ''),
-        ])
+        variants = row.get('variants') or [{
+            'id': '', 'title': 'Default',
+            'sales': row.get('sales', 0),
+            'revenue': row.get('revenue', 0),
+        }]
+        for v in variants:
+            writer.writerow([
+                row.get('name', ''),
+                v.get('title', ''),
+                v.get('sales', 0),
+                f"{v.get('revenue', 0):.2f}",
+                row.get('sales', 0),
+                f"{row.get('revenue', 0):.2f}",
+                row.get('productUrl', ''),
+                row.get('image', ''),
+                row.get('shopifyStatus', ''),
+                row.get('productType', ''),
+                row.get('id', ''),
+                v.get('id', ''),
+                row.get('handle', ''),
+            ])
 
     csv_body = buf.getvalue()
     ts = datetime.datetime.now().strftime('%Y-%m-%d_%H%M')

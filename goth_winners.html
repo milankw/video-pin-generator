@@ -149,6 +149,18 @@
     color: var(--gray-700);
   }
   .btn-ghost:hover { background: var(--gray-100); }
+  .btn-refresh {
+    background: #fff;
+    border: 1px solid var(--purple);
+    color: var(--purple);
+  }
+  .btn-refresh:hover { background: var(--purple-light); }
+  .btn-refresh:disabled {
+    background: var(--gray-100);
+    color: var(--gray-500);
+    border-color: var(--gray-300);
+    cursor: not-allowed;
+  }
   .grow { flex: 1; }
   .synced-note {
     font-size: 12px;
@@ -272,6 +284,65 @@
   .card-sales { font-size: 13px; font-weight: 700; color: var(--gray-900); }
   .card-sales span { color: var(--gray-500); font-weight: 500; }
   .card-rev { font-size: 12px; font-weight: 600; color: var(--green); }
+  .variants {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin: 6px 0 2px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--gray-200);
+  }
+  .variants-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gray-500);
+    margin-bottom: 2px;
+  }
+  .variant-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.3;
+    background: var(--gray-50);
+  }
+  .variant-row.top {
+    background: var(--purple-light);
+  }
+  .variant-row .v-label {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+    color: var(--gray-900);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .variant-row .v-qty {
+    font-weight: 700;
+    color: var(--gray-900);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .variant-row .v-qty small {
+    font-weight: 500;
+    color: var(--gray-500);
+    font-size: 10.5px;
+    margin-left: 2px;
+  }
+  .variant-row.top .v-label,
+  .variant-row.top .v-qty { color: var(--purple-dark); }
+  .variant-row.more {
+    justify-content: center;
+    background: transparent;
+    color: var(--gray-500);
+    font-size: 11px;
+    padding: 3px 8px;
+  }
   .card-link-row {
     display: flex;
     gap: 6px;
@@ -357,6 +428,9 @@
     .card-title { font-size: 12px; }
     .card-sales { font-size: 12px; }
     .card-rev { font-size: 11px; }
+    .variant-row { font-size: 11.5px; padding: 4px 7px; gap: 6px; }
+    .variant-row .v-qty small { font-size: 10px; }
+    .variants-title { font-size: 9.5px; }
     .link-btn { font-size: 10px; padding: 7px 6px; min-height: 32px; }
     header { padding: 10px 14px calc(10px) 14px; padding-top: calc(10px + env(safe-area-inset-top)); }
     .brand { font-size: 14px; gap: 8px; }
@@ -387,6 +461,9 @@
     <input type="number" id="minSales" min="0" value="5" inputmode="numeric" enterkeyhint="go">
     <button class="btn btn-primary" id="loadBtn">
       <span id="loadLabel">Apply</span>
+    </button>
+    <button class="btn btn-refresh" id="refreshBtn" title="Fetch the latest paid orders from Shopify">
+      <span id="refreshLabel">↻ Refresh from Shopify</span>
     </button>
     <span class="grow synced-note" id="syncedNote"></span>
     <button class="btn btn-ghost" id="csvBtn">⬇ Export CSV</button>
@@ -435,8 +512,15 @@ function fmtMoney(n) {
 
 function fmtRelative(ts) {
   if (!ts) return '';
-  const t = new Date(ts).getTime();
-  if (!t) return '';
+  // Backend sends a Python time.time() unix-seconds float. Accept ISO strings
+  // too for safety.
+  let t;
+  if (typeof ts === 'number') {
+    t = ts < 1e12 ? ts * 1000 : ts;  // seconds vs milliseconds
+  } else {
+    t = new Date(ts).getTime();
+  }
+  if (!t || isNaN(t)) return '';
   const diff = Date.now() - t;
   if (diff < 60_000) return 'just now';
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
@@ -487,6 +571,46 @@ window.copyProductUrl = async function(btn, url) {
   }, 1300);
 };
 
+// A variant title from Shopify might already be a bare size like "7", or
+// contain the option name like "Size 7", or be qualitative like "Adjustable".
+// To make it unambiguous we prefix bare numeric/short sizes with "Size" so
+// Allison never has to guess whether "7 5" means size 7 sold 5 times.
+function labelVariant(title) {
+  const t = String(title || '').trim();
+  if (!t) return 'Default';
+  // Already labelled (has a letter word before the value) — keep as-is.
+  if (/[a-z]{2,}/i.test(t)) return t;
+  // Bare numeric size like "7", "7.5", "8.70\"", "18cm", "20cm" — add "Size".
+  return 'Size ' + t;
+}
+
+function renderVariants(variants) {
+  if (!variants || !variants.length) return '';
+  // Hide the row when there's a single "Default" variant (product has no
+  // options like size/color — nothing to break down).
+  if (variants.length === 1 && /^default$/i.test(variants[0].title || '')) return '';
+  // Show up to 5 rows; fold the rest into a "+N more" summary line.
+  const MAX = 5;
+  const shown = variants.slice(0, MAX);
+  const rest = variants.slice(MAX);
+  const restQty = rest.reduce((sum, v) => sum + (Number(v.sales) || 0), 0);
+  const rows = shown.map((v, i) => {
+    const cls = 'variant-row' + (i === 0 ? ' top' : '');
+    const label = labelVariant(v.title);
+    return `<div class="${cls}" title="${escapeHtml(label)}: ${fmtNum(v.sales)} sold">
+              <span class="v-label">${escapeHtml(label)}</span>
+              <span class="v-qty">${fmtNum(v.sales)}<small>sold</small></span>
+            </div>`;
+  });
+  if (rest.length) {
+    rows.push(`<div class="variant-row more">+${rest.length} more · ${fmtNum(restQty)} sold</div>`);
+  }
+  return `<div class="variants">
+            <div class="variants-title">Sales by size / option</div>
+            ${rows.join('')}
+          </div>`;
+}
+
 function renderCard(p) {
   const status = (p.shopifyStatus || 'unknown').toLowerCase();
   const statusClass = status === 'active' ? 'status-active'
@@ -511,6 +635,7 @@ function renderCard(p) {
           <div class="card-sales">${fmtNum(p.sales)} <span>sales</span></div>
           <div class="card-rev">${fmtMoney(p.revenue)}</div>
         </div>
+        ${renderVariants(p.variants)}
         ${hasUrl ? `
         <div class="card-link-row">
           <a class="link-btn" href="${escapeHtml(url)}" target="_blank" rel="noopener">Open ↗</a>
@@ -588,6 +713,79 @@ async function loadWinners() {
   }
 }
 
+let syncPollTimer = null;
+
+function setRefreshBusy(busy, label) {
+  const btn = $('refreshBtn');
+  btn.disabled = busy;
+  $('refreshLabel').innerHTML = busy
+    ? `<span class="spinner"></span>&nbsp; ${escapeHtml(label || 'Refreshing…')}`
+    : '↻ Refresh from Shopify';
+}
+
+async function pollSyncStatus() {
+  try {
+    const r = await fetch('/api/goth-winners/sync/status', { credentials: 'same-origin' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    const meta = data.meta || {};
+    const status = meta.status || 'idle';
+    if (status === 'running') {
+      const pages = meta.pages_scanned || 0;
+      const orders = meta.orders_scanned || meta.orders_processed || 0;
+      const label = orders
+        ? `Syncing… ${fmtNum(orders)} orders`
+        : (pages ? `Syncing… page ${fmtNum(pages)}` : 'Syncing…');
+      setRefreshBusy(true, label);
+      syncPollTimer = setTimeout(pollSyncStatus, 2000);
+      return;
+    }
+    // Sync finished (or was never running). Clear the busy state and reload.
+    clearTimeout(syncPollTimer);
+    syncPollTimer = null;
+    setRefreshBusy(false);
+    if (status === 'error' || meta.error) {
+      toast('Sync failed: ' + (meta.error || 'unknown error'), true);
+    } else if (status === 'done' || status === 'completed' || status === 'idle') {
+      const parts = [];
+      if (meta.total_orders) parts.push(`${fmtNum(meta.total_orders)} orders`);
+      if (meta.total_products) parts.push(`${fmtNum(meta.total_products)} products`);
+      toast('Sync complete' + (parts.length ? ' — ' + parts.join(', ') : ''));
+      loadWinners();
+    } else {
+      loadWinners();
+    }
+  } catch (e) {
+    clearTimeout(syncPollTimer);
+    syncPollTimer = null;
+    setRefreshBusy(false);
+    toast('Sync status check failed: ' + e.message, true);
+  }
+}
+
+async function startRefresh() {
+  if ($('refreshBtn').disabled) return;
+  setRefreshBusy(true, 'Starting sync…');
+  try {
+    const r = await fetch('/api/goth-winners/sync', { method: 'POST', credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (!data.success) throw new Error(data.error || 'Sync could not start');
+    if (data.status === 'already_running') {
+      toast('A sync is already running — tracking progress');
+    } else {
+      toast('Refreshing orders from Shopify…');
+    }
+    // Start polling for completion.
+    clearTimeout(syncPollTimer);
+    syncPollTimer = setTimeout(pollSyncStatus, 1000);
+  } catch (e) {
+    setRefreshBusy(false);
+    toast('Could not start refresh: ' + e.message, true);
+  }
+}
+
 async function exportCSV() {
   const minSales = Math.max(0, parseInt($('minSales').value || '0', 10) || 0);
   const url = `/api/goth-winners/export.csv?min_sales=${minSales}`;
@@ -604,13 +802,29 @@ async function exportCSV() {
 // Event wiring
 $('loadBtn').addEventListener('click', loadWinners);
 $('csvBtn').addEventListener('click', exportCSV);
+$('refreshBtn').addEventListener('click', startRefresh);
 $('minSales').addEventListener('keydown', e => { if (e.key === 'Enter') loadWinners(); });
 
-// Initial load
-document.addEventListener('DOMContentLoaded', loadWinners);
-// If the DOMContentLoaded already fired before the listener attached (rare in modern browsers), fallback:
-if (document.readyState === 'complete' || document.readyState === 'interactive') {
+async function initialLoad() {
+  // If a sync happens to be running when the page opens (e.g. someone else
+  // kicked one off), pick up its progress rather than showing empty data.
+  try {
+    const r = await fetch('/api/goth-winners/sync/status', { credentials: 'same-origin' });
+    if (r.ok) {
+      const data = await r.json();
+      if ((data.meta || {}).status === 'running') {
+        setRefreshBusy(true, 'Sync in progress…');
+        syncPollTimer = setTimeout(pollSyncStatus, 1500);
+      }
+    }
+  } catch (_) { /* non-fatal */ }
   loadWinners();
+}
+
+// Initial load
+document.addEventListener('DOMContentLoaded', initialLoad);
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+  initialLoad();
 }
 </script>
 </body>
