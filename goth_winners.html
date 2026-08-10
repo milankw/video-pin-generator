@@ -314,13 +314,70 @@
     background: var(--purple-light);
   }
   .variant-row .v-label {
-    flex: 1;
-    min-width: 0;
     font-weight: 600;
     color: var(--gray-900);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .variant-row .v-sku {
+    flex: 1;
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--gray-600);
+    background: rgba(255, 255, 255, 0.7);
+    padding: 2px 6px 2px 7px;
+    border-radius: 4px;
+    border: 1px solid var(--gray-200);
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    transition: background 0.15s, color 0.15s;
+    max-width: 100%;
+  }
+  .variant-row .v-sku:hover {
+    background: #fff;
+    color: var(--purple);
+    border-color: var(--purple);
+  }
+  .variant-row .v-sku:active { transform: scale(0.97); }
+  .variant-row .v-sku.copied {
+    background: var(--green);
+    color: #fff;
+    border-color: var(--green);
+  }
+  .variant-row .v-sku .sku-icon {
+    font-size: 9px;
+    opacity: 0.55;
+    flex-shrink: 0;
+  }
+  .variant-row .v-sku .sku-prefix {
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--gray-400);
+    background: var(--gray-100);
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.03em;
+    flex-shrink: 0;
+  }
+  .variant-row .v-sku-fallback {
+    color: var(--gray-500);
+    font-size: 9.5px;
+  }
+  .variant-row .v-sku-fallback .sku-prefix {
+    background: var(--gray-200);
+  }
+  .variant-row .v-sku-empty {
+    flex: 1;
+    font-size: 10.5px;
+    color: var(--gray-400);
+    font-style: italic;
   }
   .variant-row .v-qty {
     font-weight: 700;
@@ -336,6 +393,7 @@
   }
   .variant-row.top .v-label,
   .variant-row.top .v-qty { color: var(--purple-dark); }
+  .variant-row.top .v-sku { background: rgba(255, 255, 255, 0.85); }
   .variant-row.more {
     justify-content: center;
     background: transparent;
@@ -430,6 +488,7 @@
     .card-rev { font-size: 11px; }
     .variant-row { font-size: 11.5px; padding: 4px 7px; gap: 6px; }
     .variant-row .v-qty small { font-size: 10px; }
+    .variant-row .v-sku { font-size: 10px; padding: 2px 5px; }
     .variants-title { font-size: 9.5px; }
     .link-btn { font-size: 10px; padding: 7px 6px; min-height: 32px; }
     header { padding: 10px 14px calc(10px) 14px; padding-top: calc(10px + env(safe-area-inset-top)); }
@@ -571,6 +630,24 @@ window.copyProductUrl = async function(btn, url) {
   }, 1300);
 };
 
+window.copySku = async function(el, value, kind) {
+  const ok = await copyToClipboard(value);
+  const orig = el.innerHTML;
+  const label = kind || 'SKU';
+  if (ok) {
+    el.classList.add('copied');
+    el.innerHTML = `<span class="sku-icon">✓</span> Copied!`;
+    toast(`${label} copied: ${value}`);
+  } else {
+    el.innerHTML = `<span class="sku-icon">✗</span> Failed`;
+    toast(`Could not copy ${label}`, true);
+  }
+  setTimeout(() => {
+    el.classList.remove('copied');
+    el.innerHTML = orig;
+  }, 1500);
+};
+
 // A variant title from Shopify might already be a bare size like "7", or
 // contain the option name like "Size 7", or be qualitative like "Adjustable".
 // To make it unambiguous we prefix bare numeric/short sizes with "Size" so
@@ -597,8 +674,31 @@ function renderVariants(variants) {
   const rows = shown.map((v, i) => {
     const cls = 'variant-row' + (i === 0 ? ' top' : '');
     const label = labelVariant(v.title);
+    // Prefer SKU (set by merchant in Shopify admin). Fall back to Shopify's
+    // internal variant ID so Allison always has SOMETHING copyable to paste
+    // into supplier orders, spreadsheets, or Shopify API calls. Store has
+    // no SKUs set today (Aug 2026) so this fallback is what she'll see
+    // until an admin fills them in.
+    const sku = (v.sku || '').trim();
+    const copyValue = sku || v.id || '';
+    const isFallback = !sku && !!v.id;
+    const skuLabelPrefix = sku ? 'SKU' : 'ID';
+    const skuTooltip = sku
+      ? `Click to copy SKU: ${sku}`
+      : `No SKU set in Shopify — click to copy the Shopify variant ID (${v.id})`;
+    const skuHtml = copyValue
+      ? `<span class="v-sku${isFallback ? ' v-sku-fallback' : ''}"
+               data-sku="${escapeHtml(copyValue)}"
+               data-kind="${skuLabelPrefix}"
+               onclick="event.stopPropagation();copySku(this, this.getAttribute('data-sku'), this.getAttribute('data-kind'));"
+               title="${escapeHtml(skuTooltip)}">
+           <span class="sku-icon">⎘</span>
+           <span class="sku-prefix">${skuLabelPrefix}</span>${escapeHtml(copyValue)}
+         </span>`
+      : `<span class="v-sku-empty" title="No SKU or ID available">no SKU</span>`;
     return `<div class="${cls}" title="${escapeHtml(label)}: ${fmtNum(v.sales)} sold">
               <span class="v-label">${escapeHtml(label)}</span>
+              ${skuHtml}
               <span class="v-qty">${fmtNum(v.sales)}<small>sold</small></span>
             </div>`;
   });

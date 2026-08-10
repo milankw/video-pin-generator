@@ -3340,7 +3340,7 @@ def _build_goth_winners_payload(min_sales: int):
             try:
                 pr = http_requests.get(
                     f'{base_url}/products.json?ids={batch_ids}&limit=250'
-                    f'&fields=id,title,handle,images,status,product_type',
+                    f'&fields=id,title,handle,images,status,product_type,variants',
                     headers=headers, timeout=30,
                 )
                 if pr.status_code == 200:
@@ -3350,12 +3350,22 @@ def _build_goth_winners_payload(min_sales: int):
                             continue
                         imgs = prod.get('images', []) or []
                         image = imgs[0].get('src', '') if imgs else ''
+                        # Build a variant_id -> SKU lookup so we can attach a
+                        # SKU to each order-line variant. Keys stored as str
+                        # since the cache normalises variant_id to str.
+                        variant_skus = {}
+                        for v in (prod.get('variants') or []):
+                            vid = v.get('id')
+                            if vid is None:
+                                continue
+                            variant_skus[str(vid)] = v.get('sku', '') or ''
                         product_details[pid] = {
                             'title': prod.get('title', ''),
                             'handle': prod.get('handle', ''),
                             'image': image,
                             'status': prod.get('status', 'unknown'),
                             'product_type': prod.get('product_type', ''),
+                            'variant_skus': variant_skus,
                         }
                 time.sleep(0.2)
             except Exception as e:
@@ -3384,11 +3394,14 @@ def _build_goth_winners_payload(min_sales: int):
         # 'Default' single-variant products get flattened by the UI so they
         # don't display a redundant chip.
         variant_sales = p.get('variant_sales') or {}
+        variant_skus = detail.get('variant_skus') or {}
         variants_out = []
         for vid, vdata in variant_sales.items():
+            vid_str = str(vdata.get('variant_id') or vid)
             variants_out.append({
-                'id': str(vid),
+                'id': vid_str,
                 'title': vdata.get('title', '') or 'Default',
+                'sku': variant_skus.get(vid_str, ''),
                 'sales': vdata.get('quantity', 0),
                 'revenue': round(float(vdata.get('revenue', 0) or 0), 2),
             })
@@ -3496,6 +3509,7 @@ def api_goth_winners_csv():
     writer.writerow([
         'Product Title',
         'Variant Title',
+        'SKU',
         'Variant Units Sold',
         'Variant Revenue (USD)',
         'Product Total Units',
@@ -3510,7 +3524,7 @@ def api_goth_winners_csv():
     ])
     for row in payload.get('products', []):
         variants = row.get('variants') or [{
-            'id': '', 'title': 'Default',
+            'id': '', 'title': 'Default', 'sku': '',
             'sales': row.get('sales', 0),
             'revenue': row.get('revenue', 0),
         }]
@@ -3518,6 +3532,7 @@ def api_goth_winners_csv():
             writer.writerow([
                 row.get('name', ''),
                 v.get('title', ''),
+                v.get('sku', ''),
                 v.get('sales', 0),
                 f"{v.get('revenue', 0):.2f}",
                 row.get('sales', 0),
