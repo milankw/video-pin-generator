@@ -57,8 +57,10 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 # ===== Auth =====
 PASSWORD_HASH_FILE = os.path.join(BASE_DIR, '.password_hash')
 VIEWER_HASH_FILE = os.path.join(BASE_DIR, '.viewer_password_hash')
+EMPLOYEE_HASH_FILE = os.path.join(BASE_DIR, '.employee_password_hash')
 DEFAULT_PASSWORD = os.environ.get('VPG_PASSWORD', 'videopins2026!')
 DEFAULT_VIEWER_PASSWORD = os.environ.get('VPG_VIEWER_PASSWORD', 'analytics2026!')
+DEFAULT_EMPLOYEE_PASSWORD = os.environ.get('VPG_EMPLOYEE_PASSWORD', 'Allison')
 
 def _get_password_hash():
     if os.path.exists(PASSWORD_HASH_FILE):
@@ -78,8 +80,18 @@ def _get_viewer_hash():
         f.write(hashed.decode('utf-8'))
     return hashed
 
+def _get_employee_hash():
+    if os.path.exists(EMPLOYEE_HASH_FILE):
+        with open(EMPLOYEE_HASH_FILE, 'r') as f:
+            return f.read().strip().encode('utf-8')
+    hashed = bcrypt.hashpw(DEFAULT_EMPLOYEE_PASSWORD.encode('utf-8'), bcrypt.gensalt(rounds=12))
+    with open(EMPLOYEE_HASH_FILE, 'w') as f:
+        f.write(hashed.decode('utf-8'))
+    return hashed
+
 PASSWORD_HASH = _get_password_hash()
 VIEWER_PASSWORD_HASH = _get_viewer_hash()
+EMPLOYEE_PASSWORD_HASH = _get_employee_hash()
 
 def verify_password(password):
     return bcrypt.checkpw(password.encode('utf-8'), PASSWORD_HASH)
@@ -138,6 +150,68 @@ def admin_required(f):
             return jsonify({'success': False, 'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated
+
+
+def non_employee_required(f):
+    """Blocks the 'employee' role but allows admin + viewer.
+
+    Used to lock down every route the employee should not see. Employees
+    only get access to the Goth Winners page and its dedicated endpoints.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('authenticated'):
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+            return redirect('/login')
+        if session.get('role') == 'employee':
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Not authorized'}), 403
+            return redirect('/goth-winners')
+        return f(*args, **kwargs)
+    return decorated
+
+
+def employee_or_higher_required(f):
+    """Allows admin, viewer, and employee. Used to guard the Goth Winners page
+    and its endpoints so all three roles can view/export."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('authenticated'):
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated
+
+
+# Every path an employee (Allison) is allowed to reach. Everything else is
+# blocked at the request layer, regardless of whether the route uses
+# @login_required, @admin_required, or nothing. Belt-and-braces: even if a new
+# route is added later without a decorator, employees still can't see it.
+_EMPLOYEE_ALLOWED_EXACT = {
+    '/login', '/logout', '/goth-winners', '/favicon.svg', '/health',
+    '/api/session-role',
+    '/api/goth-winners', '/api/goth-winners/export.csv',
+}
+
+
+@app.before_request
+def _restrict_employee_routes():
+    """Enforce path allowlist for the employee role.
+
+    Runs before every request. If the caller is authenticated as an employee
+    and the requested path isn't in the allowlist, redirect (for HTML) or 403
+    (for API). Non-employees pass through untouched.
+    """
+    if session.get('role') != 'employee':
+        return None
+    path = request.path or '/'
+    if path in _EMPLOYEE_ALLOWED_EXACT:
+        return None
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'error': 'Not authorized'}), 403
+    return redirect('/goth-winners')
 
 
 # ===== Data helpers =====
@@ -938,12 +1012,16 @@ def login_submit():
     import random
     time.sleep(random.uniform(0.2, 0.5))
 
-    # Check admin password first, then viewer password
+    # Check admin, then viewer, then employee. Order matters so a common
+    # password (unlikely, we use unique ones) would resolve to the highest
+    # role first.
     role = None
     if verify_password(password):
         role = 'admin'
     elif bcrypt.checkpw(password.encode('utf-8'), VIEWER_PASSWORD_HASH):
         role = 'viewer'
+    elif bcrypt.checkpw(password.encode('utf-8'), EMPLOYEE_PASSWORD_HASH):
+        role = 'employee'
 
     if role:
         _clear_attempts(ip)
@@ -952,7 +1030,8 @@ def login_submit():
         session.permanent = True
         app.permanent_session_lifetime = datetime.timedelta(days=30)
         session.modified = True
-        return redirect('/')
+        # Employees land on the Goth Winners page; everyone else on the app root.
+        return redirect('/goth-winners' if role == 'employee' else '/')
 
     _record_failed_attempt(ip)
     allowed_after, remaining_after = _check_rate_limit(ip)
@@ -973,7 +1052,7 @@ def session_role():
     return jsonify({'success': True, 'role': session.get('role', 'admin')})
 
 @app.route('/')
-@login_required
+@non_employee_required
 def index():
     return send_file('index.html')
 
@@ -3192,6 +3271,205 @@ def shopify_winners(store_id):
         return jsonify({'success': False, 'error': 'Shopify request timed out'}), 504
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ===== Routes: Goth Winners (employee-visible read-only view) =====
+# Pinned store the employee tab reads from. "Goth Society Shopify (general)"
+# per user's explicit choice on 2026-08-10. Kept in one place so a future
+# store swap is a one-line change.
+GOTH_WINNERS_STORE_ID = 'store_1782824738325'
+
+
+def _build_goth_winners_payload(min_sales: int):
+    """Read the cached paid-order sales for the pinned Goth Society store,
+    filter by min_sales, and enrich with live Shopify product info (title,
+    handle, image, status).
+
+    Read-only: never triggers a sync. If the cache is empty or the sync has
+    never run, returns success=True with empty products and a message so the
+    UI can show 'No data yet, ask an admin to sync'.
+    """
+    stores = _load_stores()
+    store = next((s for s in stores if s['id'] == GOTH_WINNERS_STORE_ID), None)
+    if not store:
+        return {'success': False, 'error': 'Goth Society store not found on this instance'}, 404
+
+    platform, domain, token = _get_store_credentials(store)
+    if not domain or not token:
+        return {'success': False, 'error': 'Shopify not connected for this store'}, 400
+
+    meta = _load_winner_meta(GOTH_WINNERS_STORE_ID)
+    cache = _load_winner_cache(GOTH_WINNERS_STORE_ID)
+
+    if cache is None:
+        # Show empty state — employee cannot trigger a sync.
+        return {
+            'success': True,
+            'products': [],
+            'stats': {
+                'qualifiedCount': 0,
+                'totalProducts': 0,
+                'totalUnitsSold': 0,
+                'totalRevenue': 0.0,
+                'orderPages': meta.get('pages_scanned', 0),
+            },
+            'meta': meta,
+            'thresholdUsed': min_sales,
+            'store': store.get('name', ''),
+            'noData': True,
+        }, 200
+
+    # Filter + sort cached products.
+    all_products = list(cache.values())
+    total_units_all = sum(p.get('quantity', 0) for p in all_products)
+    total_products = len(all_products)
+
+    sorted_products = sorted(all_products, key=lambda x: x.get('quantity', 0), reverse=True)
+    if min_sales > 0:
+        sorted_products = [p for p in sorted_products if p.get('quantity', 0) >= min_sales]
+
+    # Live-enrich with product data (title corrections, handle, image, status).
+    product_details = {}
+    if sorted_products:
+        all_pids = [p['product_id'] for p in sorted_products]
+        headers = {'X-Shopify-Access-Token': token, 'Content-Type': 'application/json'}
+        base_url = f'https://{domain}/admin/api/2024-01'
+        for i in range(0, len(all_pids), 250):
+            batch_ids = ','.join(str(pid) for pid in all_pids[i:i + 250])
+            try:
+                pr = http_requests.get(
+                    f'{base_url}/products.json?ids={batch_ids}&limit=250'
+                    f'&fields=id,title,handle,images,status,product_type',
+                    headers=headers, timeout=30,
+                )
+                if pr.status_code == 200:
+                    for prod in pr.json().get('products', []):
+                        pid = prod.get('id')
+                        if not pid:
+                            continue
+                        imgs = prod.get('images', []) or []
+                        image = imgs[0].get('src', '') if imgs else ''
+                        product_details[pid] = {
+                            'title': prod.get('title', ''),
+                            'handle': prod.get('handle', ''),
+                            'image': image,
+                            'status': prod.get('status', 'unknown'),
+                            'product_type': prod.get('product_type', ''),
+                        }
+                time.sleep(0.2)
+            except Exception as e:
+                log.warning(f'goth_winners: shopify enrich batch failed: {e}')
+
+    # Build response rows.
+    results = []
+    total_revenue = 0.0
+    total_units_qualified = 0
+    for p in sorted_products:
+        pid = p['product_id']
+        detail = product_details.get(pid) or product_details.get(int(pid) if str(pid).isdigit() else pid) or {}
+        handle = detail.get('handle', '')
+        image_url = detail.get('image', '') or p.get('fallback_image', '') or ''
+        if image_url and image_url.startswith('//'):
+            image_url = 'https:' + image_url
+        product_url = f'https://{domain}/products/{handle}' if handle else ''
+        # Prefer live title (in case merchant renamed the product post-order).
+        title = detail.get('title', '') or p.get('title', '')
+        qty = p.get('quantity', 0)
+        rev = float(p.get('revenue', 0) or 0)
+        total_revenue += rev
+        total_units_qualified += qty
+        results.append({
+            'id': str(pid),
+            'name': title,
+            'sales': qty,
+            'revenue': round(rev, 2),
+            'image': image_url,
+            'handle': handle,
+            'productUrl': product_url,
+            'productType': detail.get('product_type', ''),
+            'shopifyStatus': detail.get('status', 'unknown'),
+        })
+
+    return {
+        'success': True,
+        'products': results,
+        'stats': {
+            'qualifiedCount': len(results),
+            'totalProducts': total_products,
+            'totalUnitsSold': total_units_all,
+            'totalRevenue': round(total_revenue, 2),
+            'orderPages': meta.get('pages_scanned', 0),
+        },
+        'meta': meta,
+        'thresholdUsed': min_sales,
+        'store': store.get('name', ''),
+    }, 200
+
+
+@app.route('/goth-winners')
+@employee_or_higher_required
+def goth_winners_page():
+    return send_file('goth_winners.html')
+
+
+@app.route('/api/goth-winners', methods=['GET'])
+@employee_or_higher_required
+def api_goth_winners():
+    try:
+        min_sales = max(0, int(request.args.get('min_sales', 5)))
+    except (TypeError, ValueError):
+        min_sales = 5
+    payload, status = _build_goth_winners_payload(min_sales)
+    return jsonify(payload), status
+
+
+@app.route('/api/goth-winners/export.csv', methods=['GET'])
+@employee_or_higher_required
+def api_goth_winners_csv():
+    try:
+        min_sales = max(0, int(request.args.get('min_sales', 5)))
+    except (TypeError, ValueError):
+        min_sales = 5
+    payload, status = _build_goth_winners_payload(min_sales)
+    if status != 200 or not payload.get('success'):
+        return jsonify(payload), status
+
+    import csv
+    import io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        'Product Title',
+        'Units Sold',
+        'Revenue (USD)',
+        'Product URL',
+        'Image URL',
+        'Shopify Status',
+        'Product Type',
+        'Product ID',
+        'Handle',
+    ])
+    for row in payload.get('products', []):
+        writer.writerow([
+            row.get('name', ''),
+            row.get('sales', 0),
+            f"{row.get('revenue', 0):.2f}",
+            row.get('productUrl', ''),
+            row.get('image', ''),
+            row.get('shopifyStatus', ''),
+            row.get('productType', ''),
+            row.get('id', ''),
+            row.get('handle', ''),
+        ])
+
+    csv_body = buf.getvalue()
+    ts = datetime.datetime.now().strftime('%Y-%m-%d_%H%M')
+    resp = make_response(csv_body)
+    resp.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    resp.headers['Content-Disposition'] = (
+        f'attachment; filename="goth_society_winners_min{min_sales}_{ts}.csv"'
+    )
+    return resp
 
 
 # ===== Routes: Video Generation =====
