@@ -3329,6 +3329,62 @@ def _build_goth_winners_payload(min_sales: int):
     if min_sales > 0:
         sorted_products = [p for p in sorted_products if p.get('quantity', 0) >= min_sales]
 
+    # When min_sales == 0 AND at least one filter is active, the user wants to
+    # see EVERY product in that collection/tag/type — including ones that
+    # never sold. The paid-orders cache only contains products with >=1 sale,
+    # so we need to backfill zero-sales products from the live Shopify catalog
+    # so the filtered result set is complete. Without a filter we skip this to
+    # avoid dumping the entire 500+ product catalog with zeroes.
+    include_zero_sales = (
+        min_sales == 0 and bool((collection or '').strip() or (tag or '').strip() or (product_type or '').strip())
+    )
+    if include_zero_sales:
+        try:
+            headers_z = {'X-Shopify-Access-Token': token}
+            base_url_z = f'https://{domain}/admin/api/2024-01'
+            page_url = (
+                f'{base_url_z}/products.json?limit=250'
+                f'&fields=id,title,handle,images,status,product_type,tags,variants'
+            )
+            live_products = []
+            pages_left = 10  # 10 * 250 = 2500 product cap for safety
+            while page_url and pages_left > 0:
+                pr = http_requests.get(page_url, headers=headers_z, timeout=25)
+                if pr.status_code != 200:
+                    break
+                live_products.extend(pr.json().get('products', []))
+                link = pr.headers.get('Link', '')
+                next_url = None
+                if 'rel="next"' in link:
+                    for part in link.split(','):
+                        if 'rel="next"' in part:
+                            s = part.find('<'); e = part.find('>')
+                            if s >= 0 and e > s:
+                                next_url = part[s + 1:e]
+                                break
+                page_url = next_url
+                pages_left -= 1
+                time.sleep(0.15)
+            # Add zero-sales placeholder rows for products not already in the
+            # cache. The enrichment block below will fill in the same details
+            # for them via the /products.json?ids=... batch call, so we don't
+            # need to smuggle product data through this synthetic row.
+            seen_pids = {str(p.get('product_id')) for p in sorted_products}
+            for prod in live_products:
+                pid = prod.get('id')
+                if not pid or str(pid) in seen_pids:
+                    continue
+                sorted_products.append({
+                    'product_id': pid,
+                    'title': prod.get('title', ''),
+                    'quantity': 0,
+                    'revenue': 0.0,
+                    'variant_sales': {},
+                    'fallback_image': (prod.get('images') or [{}])[0].get('src', '') if prod.get('images') else '',
+                })
+        except Exception as e:
+            log.warning(f'goth_winners: zero-sales backfill failed: {e}')
+
     # Live-enrich with product data (title corrections, handle, image, status).
     product_details = {}
     if sorted_products:
