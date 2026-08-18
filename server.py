@@ -3429,19 +3429,12 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
     if min_sales > 0:
         sorted_products = [p for p in sorted_products if p.get('quantity', 0) >= min_sales]
 
-    # When min_sales == 0 AND at least one filter is active, the user wants to
-    # see EVERY product in that collection/tag/type — including ones that
-    # never sold. The paid-orders cache only contains products with >=1 sale,
-    # so we need to backfill zero-sales products from the live Shopify catalog
-    # so the filtered result set is complete. Without a filter we skip this to
-    # avoid dumping the entire 500+ product catalog with zeroes.
-    include_zero_sales = (
-        min_sales == 0 and bool(
-            (collection or '').strip() or (tag or '').strip() or (product_type or '').strip()
-            or (collection_exclude or '').strip() or (tag_exclude or '').strip()
-            or (status or '').strip()
-        )
-    )
+    # When min_sales == 0 the user wants to see EVERY product in the store
+    # (or in the current filter scope) — including products that never sold.
+    # The paid-orders cache only contains products with >=1 sale, so we
+    # backfill zero-sales products from the live Shopify catalog whenever
+    # min_sales == 0. Filters still narrow the set afterwards.
+    include_zero_sales = (min_sales == 0)
     if include_zero_sales:
         try:
             headers_z = {'X-Shopify-Access-Token': token}
@@ -3644,8 +3637,11 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
         'products': results,
         'stats': {
             'qualifiedCount': len(results),
-            'totalProducts': total_products,
-            'totalUnitsSold': total_units_qualified if (filter_collection or filter_tag or filter_type) else total_units_all,
+            # When min_sales == 0 we backfill from the live catalog so
+            # totalProducts should reflect the true store size, not just
+            # products with paid orders.
+            'totalProducts': len(sorted_products) if include_zero_sales else total_products,
+            'totalUnitsSold': total_units_qualified if (filter_collection or filter_tag or filter_type or filter_collection_exclude or filter_tag_exclude or filter_status) else total_units_all,
             'totalRevenue': round(total_revenue, 2),
             'orderPages': meta.get('pages_scanned', 0),
         },
