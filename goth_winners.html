@@ -100,10 +100,87 @@
     border-radius: 12px;
     padding: 14px;
     display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .ctrl-row {
+    display: flex;
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    margin-bottom: 16px;
+  }
+  .filters-row {
+    padding-top: 12px;
+    border-top: 1px dashed var(--gray-200);
+  }
+  .filters-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gray-500);
+    min-width: 68px;
+  }
+  .filters-label-exclude { color: var(--red); }
+  .filter-group select.exclude.active {
+    border-color: var(--red);
+    background-color: #fef2f2;
+    color: var(--red);
+  }
+  .filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .filter-group label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--gray-500);
+  }
+  .filter-group select {
+    padding: 8px 30px 8px 10px;
+    border: 1px solid var(--gray-300);
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--gray-900);
+    background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%236b7280' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") no-repeat right 10px center;
+    -webkit-appearance: none;
+    appearance: none;
+    min-width: 180px;
+    max-width: 260px;
+    cursor: pointer;
+  }
+  .filter-group select:focus {
+    outline: 2px solid var(--purple);
+    outline-offset: -1px;
+    border-color: var(--purple);
+  }
+  .filter-group select.active {
+    border-color: var(--purple);
+    background-color: var(--purple-light);
+    color: var(--purple-dark);
+    font-weight: 600;
+  }
+  .btn-clear {
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+    align-self: flex-end;
+    padding: 8px 14px;
+    font-size: 12px;
+  }
+  .btn-clear:hover { background: var(--red); color: #fff; }
+  .active-filter-summary {
+    font-size: 12px;
+    color: var(--purple-dark);
+    font-weight: 600;
+    align-self: flex-end;
+    padding-bottom: 6px;
   }
   .controls label { font-size: 13px; font-weight: 600; color: var(--gray-700); }
   .controls input[type="number"] {
@@ -473,9 +550,14 @@
   @media (max-width: 720px) {
     main { padding: 12px; }
     .controls { padding: 12px; gap: 10px; border-radius: 10px; }
-    .controls .grow { flex-basis: 100%; order: 99; }
-    .controls input[type="number"] { width: 100%; max-width: 120px; }
-    .controls .btn { flex: 1 1 auto; justify-content: center; }
+    .ctrl-row .grow { flex-basis: 100%; order: 99; }
+    .ctrl-row input[type="number"] { width: 100%; max-width: 120px; }
+    .ctrl-row .btn { flex: 1 1 auto; justify-content: center; }
+    .filters-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .filter-group { width: 100%; }
+    .filter-group select { min-width: 0; max-width: none; width: 100%; }
+    .btn-clear { width: 100%; align-self: stretch; }
+    .active-filter-summary { padding: 4px 0 0; align-self: stretch; text-align: center; }
     .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
     .stat { padding: 14px 8px; border-radius: 10px; }
     .stat-num { font-size: 22px; }
@@ -516,16 +598,56 @@
 
 <main>
   <div class="controls">
-    <label for="minSales">Min sales:</label>
-    <input type="number" id="minSales" min="0" value="5" inputmode="numeric" enterkeyhint="go">
-    <button class="btn btn-primary" id="loadBtn">
-      <span id="loadLabel">Apply</span>
-    </button>
-    <button class="btn btn-refresh" id="refreshBtn" title="Fetch the latest paid orders from Shopify">
-      <span id="refreshLabel">↻ Refresh from Shopify</span>
-    </button>
-    <span class="grow synced-note" id="syncedNote"></span>
-    <button class="btn btn-ghost" id="csvBtn">⬇ Export CSV</button>
+    <div class="ctrl-row">
+      <label for="minSales">Min sales:</label>
+      <input type="number" id="minSales" min="0" value="5" inputmode="numeric" enterkeyhint="go">
+      <button class="btn btn-primary" id="loadBtn">
+        <span id="loadLabel">Apply</span>
+      </button>
+      <button class="btn btn-refresh" id="refreshBtn" title="Fetch the latest paid orders from Shopify">
+        <span id="refreshLabel">↻ Refresh from Shopify</span>
+      </button>
+      <span class="grow synced-note" id="syncedNote"></span>
+      <button class="btn btn-ghost" id="csvBtn">⬇ Export CSV</button>
+    </div>
+    <div class="ctrl-row filters-row">
+      <span class="filters-label">Include:</span>
+      <div class="filter-group">
+        <label for="filterCollection">Collection</label>
+        <select id="filterCollection"><option value="">All collections</option></select>
+      </div>
+      <div class="filter-group">
+        <label for="filterTag">Tag</label>
+        <select id="filterTag"><option value="">All tags</option></select>
+      </div>
+      <div class="filter-group">
+        <label for="filterType">Product type</label>
+        <select id="filterType"><option value="">All types</option></select>
+      </div>
+      <div class="filter-group">
+        <label for="filterStatus">Status</label>
+        <select id="filterStatus">
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="draft">Draft</option>
+          <option value="archived">Archived</option>
+        </select>
+      </div>
+    </div>
+    <div class="ctrl-row filters-row">
+      <span class="filters-label filters-label-exclude">Exclude:</span>
+      <div class="filter-group">
+        <label for="filterCollectionExclude">NOT in collection</label>
+        <select id="filterCollectionExclude"><option value="">— none —</option></select>
+      </div>
+      <div class="filter-group">
+        <label for="filterTagExclude">Missing tag</label>
+        <select id="filterTagExclude"><option value="">— none —</option></select>
+      </div>
+      <button class="btn btn-clear" id="clearFiltersBtn" hidden>✕ Clear filters</button>
+      <span class="grow"></span>
+      <span class="active-filter-summary" id="activeFilterSummary"></span>
+    </div>
   </div>
 
   <div class="stats">
@@ -788,20 +910,111 @@ function renderContent(payload) {
   c.innerHTML = `<div class="grid">${products.map(renderCard).join('')}</div>`;
 }
 
+function getFilterParams() {
+  const minSales = Math.max(0, parseInt($('minSales').value || '0', 10) || 0);
+  const params = new URLSearchParams({ min_sales: String(minSales) });
+  const col = $('filterCollection').value;
+  const tag = $('filterTag').value;
+  const typ = $('filterType').value;
+  const colX = $('filterCollectionExclude').value;
+  const tagX = $('filterTagExclude').value;
+  const st = $('filterStatus').value;
+  if (col) params.set('collection', col);
+  if (tag) params.set('tag', tag);
+  if (typ) params.set('product_type', typ);
+  if (colX) params.set('collection_exclude', colX);
+  if (tagX) params.set('tag_exclude', tagX);
+  if (st) params.set('status', st);
+  return params;
+}
+
+function populateFacets(facets, currentFilters) {
+  facets = facets || {};
+  const setOpts = (selectEl, values, currentValue, allLabel, formatter) => {
+    const cur = currentValue || '';
+    const prevVal = selectEl.value;
+    selectEl.innerHTML = '';
+    const optAll = document.createElement('option');
+    optAll.value = ''; optAll.textContent = allLabel;
+    selectEl.appendChild(optAll);
+    // If the current filter isn't in the facet list (rare edge case, e.g.
+    // filter was set for a collection whose only qualifying products fell
+    // below the min_sales threshold), inject it so the dropdown still
+    // reflects the active filter state instead of silently "clearing".
+    const seen = new Set(values.map(v => (typeof v === 'string' ? v : v.title)));
+    if (cur && !seen.has(cur)) {
+      const oe = document.createElement('option');
+      oe.value = cur; oe.textContent = cur + ' (no results at this min_sales)';
+      selectEl.appendChild(oe);
+    }
+    values.forEach(v => {
+      const opt = document.createElement('option');
+      if (typeof v === 'string') { opt.value = v; opt.textContent = v; }
+      else { opt.value = v.title; opt.textContent = formatter ? formatter(v) : v.title; }
+      selectEl.appendChild(opt);
+    });
+    selectEl.value = cur || prevVal || '';
+    selectEl.classList.toggle('active', !!selectEl.value);
+  };
+
+  const colFmt = c => `${c.title}${c.count ? ' (' + c.count.toLocaleString() + ')' : ''}`;
+  setOpts(
+    $('filterCollection'),
+    facets.collections || [],
+    (currentFilters || {}).collection || '',
+    'All collections',
+    colFmt,
+  );
+  setOpts($('filterTag'), facets.tags || [], (currentFilters || {}).tag || '', 'All tags');
+  setOpts($('filterType'), facets.product_types || [], (currentFilters || {}).product_type || '', 'All types');
+  // Exclude dropdowns share the same option pool as their include counterparts.
+  setOpts(
+    $('filterCollectionExclude'),
+    facets.collections || [],
+    (currentFilters || {}).collection_exclude || '',
+    '— none —',
+    colFmt,
+  );
+  setOpts($('filterTagExclude'), facets.tags || [], (currentFilters || {}).tag_exclude || '', '— none —');
+  // Status: driven by hard-coded active/draft/archived options (Shopify vocab).
+  const stEl = $('filterStatus');
+  stEl.value = (currentFilters || {}).status || '';
+  stEl.classList.toggle('active', !!stEl.value);
+  // Mark exclude selects as .exclude so their active style is red not purple.
+  $('filterCollectionExclude').classList.add('exclude');
+  $('filterTagExclude').classList.add('exclude');
+
+  // Show / hide clear button + summary.
+  const anyActive = !!(
+    $('filterCollection').value || $('filterTag').value || $('filterType').value ||
+    $('filterCollectionExclude').value || $('filterTagExclude').value || $('filterStatus').value
+  );
+  $('clearFiltersBtn').hidden = !anyActive;
+  const bits = [];
+  if ($('filterCollection').value) bits.push(`Collection: ${$('filterCollection').value}`);
+  if ($('filterTag').value) bits.push(`Tag: ${$('filterTag').value}`);
+  if ($('filterType').value) bits.push(`Type: ${$('filterType').value}`);
+  if ($('filterCollectionExclude').value) bits.push(`NOT in: ${$('filterCollectionExclude').value}`);
+  if ($('filterTagExclude').value) bits.push(`Missing tag: ${$('filterTagExclude').value}`);
+  if ($('filterStatus').value) bits.push(`Status: ${$('filterStatus').value}`);
+  $('activeFilterSummary').textContent = bits.length ? bits.join(' · ') : '';
+}
+
 async function loadWinners() {
   if (state.loading) return;
   state.loading = true;
   const btn = $('loadBtn');
   btn.disabled = true;
   $('loadLabel').innerHTML = '<span class="spinner"></span>';
-  const minSales = Math.max(0, parseInt($('minSales').value || '0', 10) || 0);
+  const params = getFilterParams();
   try {
-    const r = await fetch(`/api/goth-winners?min_sales=${minSales}`, { credentials: 'same-origin' });
+    const r = await fetch('/api/goth-winners?' + params.toString(), { credentials: 'same-origin' });
     if (r.status === 401) { window.location.href = '/login'; return; }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const payload = await r.json();
     if (!payload.success) throw new Error(payload.error || 'Failed to load');
     state.lastPayload = payload;
+    populateFacets(payload.facets, payload.filters);
     renderContent(payload);
   } catch (e) {
     toast('Load failed: ' + e.message, true);
@@ -887,8 +1100,8 @@ async function startRefresh() {
 }
 
 async function exportCSV() {
-  const minSales = Math.max(0, parseInt($('minSales').value || '0', 10) || 0);
-  const url = `/api/goth-winners/export.csv?min_sales=${minSales}`;
+  const params = getFilterParams();
+  const url = '/api/goth-winners/export.csv?' + params.toString();
   // Trigger a real navigation download (survives auth redirects, cross-browser reliable).
   const a = document.createElement('a');
   a.href = url;
@@ -904,6 +1117,19 @@ $('loadBtn').addEventListener('click', loadWinners);
 $('csvBtn').addEventListener('click', exportCSV);
 $('refreshBtn').addEventListener('click', startRefresh);
 $('minSales').addEventListener('keydown', e => { if (e.key === 'Enter') loadWinners(); });
+// Changing a filter re-queries immediately — no separate Apply click needed.
+['filterCollection', 'filterTag', 'filterType', 'filterCollectionExclude', 'filterTagExclude', 'filterStatus'].forEach(id => {
+  $(id).addEventListener('change', () => loadWinners());
+});
+$('clearFiltersBtn').addEventListener('click', () => {
+  $('filterCollection').value = '';
+  $('filterTag').value = '';
+  $('filterType').value = '';
+  $('filterCollectionExclude').value = '';
+  $('filterTagExclude').value = '';
+  $('filterStatus').value = '';
+  loadWinners();
+});
 
 async function initialLoad() {
   // If a sync happens to be running when the page opens (e.g. someone else

@@ -3281,14 +3281,114 @@ def shopify_winners(store_id):
 GOTH_WINNERS_STORE_ID = 'store_1782824738325'
 
 
-def _build_goth_winners_payload(min_sales: int):
+# Cache for collection -> product_id membership. Shopify has no bulk
+# "give me products with collections" endpoint, so we fetch each
+# collection's product list once and reuse it. Cheap TTL keeps it fresh
+# after merchants edit collections without forcing a full refetch per
+# request.
+_GOTH_COLLECTIONS_CACHE = {'ts': 0.0, 'data': None}
+_GOTH_COLLECTIONS_TTL_SEC = 300  # 5 minutes
+
+
+def _fetch_goth_collections(domain, token):
+    """Return (collections_list, product_to_collection_titles).
+
+    collections_list: [{'id': str, 'title': str, 'handle': str, 'count': int}]
+      sorted by title.
+    product_to_collection_titles: {product_id_str: [title, title, ...]}
+
+    Cached in-memory for _GOTH_COLLECTIONS_TTL_SEC seconds so the winners
+    endpoint stays fast under polling.
+    """
+    now = time.time()
+    cached = _GOTH_COLLECTIONS_CACHE.get('data')
+    if cached and (now - _GOTH_COLLECTIONS_CACHE['ts']) < _GOTH_COLLECTIONS_TTL_SEC:
+        return cached
+
+    headers = {'X-Shopify-Access-Token': token}
+    base_url = f'https://{domain}/admin/api/2024-01'
+    all_cols = []
+    for endpoint in ('custom_collections', 'smart_collections'):
+        try:
+            rr = http_requests.get(
+                f'{base_url}/{endpoint}.json?limit=250&fields=id,title,handle',
+                headers=headers, timeout=20,
+            )
+            if rr.status_code == 200:
+                all_cols.extend(rr.json().get(endpoint, []))
+        except Exception as e:
+            log.warning(f'goth collections: {endpoint} fetch failed: {e}')
+
+    prod_to_titles = {}
+    collections_meta = []
+    for col in all_cols:
+        cid = col.get('id')
+        title = col.get('title', '')
+        if not cid or not title:
+            continue
+        # Fetch product IDs in this collection. Paginate.
+        product_ids = []
+        page_url = f'{base_url}/products.json?collection_id={cid}&limit=250&fields=id'
+        pages_left = 5  # 5 * 250 = 1250 products per collection max
+        while page_url and pages_left > 0:
+            try:
+                pr = http_requests.get(page_url, headers=headers, timeout=20)
+            except Exception as e:
+                log.warning(f'goth collections: products fetch failed for {title}: {e}')
+                break
+            if pr.status_code != 200:
+                break
+            for prod in pr.json().get('products', []):
+                pid = prod.get('id')
+                if pid:
+                    product_ids.append(pid)
+            # Parse Link header for next page
+            link = pr.headers.get('Link', '')
+            next_url = None
+            if 'rel="next"' in link:
+                for part in link.split(','):
+                    if 'rel="next"' in part:
+                        start = part.find('<')
+                        end = part.find('>')
+                        if start >= 0 and end > start:
+                            next_url = part[start + 1:end]
+                            break
+            page_url = next_url
+            pages_left -= 1
+            time.sleep(0.15)  # rate limit gentleness
+
+        collections_meta.append({
+            'id': str(cid),
+            'title': title,
+            'handle': col.get('handle', ''),
+            'count': len(product_ids),
+        })
+        for pid in product_ids:
+            prod_to_titles.setdefault(str(pid), []).append(title)
+
+    collections_meta.sort(key=lambda c: c['title'].lower())
+    result = (collections_meta, prod_to_titles)
+    _GOTH_COLLECTIONS_CACHE['ts'] = now
+    _GOTH_COLLECTIONS_CACHE['data'] = result
+    return result
+
+
+def _build_goth_winners_payload(min_sales: int, collection: str = '',
+                                tag: str = '', product_type: str = '',
+                                collection_exclude: str = '',
+                                tag_exclude: str = '', status: str = ''):
     """Read the cached paid-order sales for the pinned Goth Society store,
-    filter by min_sales, and enrich with live Shopify product info (title,
-    handle, image, status).
+    filter by min_sales (+ optional collection / tag / product_type), and
+    enrich with live Shopify product info (title, handle, image, status,
+    tags, product_type, collection memberships).
 
     Read-only: never triggers a sync. If the cache is empty or the sync has
     never run, returns success=True with empty products and a message so the
     UI can show 'No data yet, ask an admin to sync'.
+
+    Filters are ANDed together and case-insensitive. Collection matches by
+    exact title; tag matches by exact tag; product_type by exact string.
+    All three empty = no filtering beyond min_sales.
     """
     stores = _load_stores()
     store = next((s for s in stores if s['id'] == GOTH_WINNERS_STORE_ID), None)
@@ -3336,7 +3436,11 @@ def _build_goth_winners_payload(min_sales: int):
     # so the filtered result set is complete. Without a filter we skip this to
     # avoid dumping the entire 500+ product catalog with zeroes.
     include_zero_sales = (
-        min_sales == 0 and bool((collection or '').strip() or (tag or '').strip() or (product_type or '').strip())
+        min_sales == 0 and bool(
+            (collection or '').strip() or (tag or '').strip() or (product_type or '').strip()
+            or (collection_exclude or '').strip() or (tag_exclude or '').strip()
+            or (status or '').strip()
+        )
     )
     if include_zero_sales:
         try:
@@ -3396,7 +3500,7 @@ def _build_goth_winners_payload(min_sales: int):
             try:
                 pr = http_requests.get(
                     f'{base_url}/products.json?ids={batch_ids}&limit=250'
-                    f'&fields=id,title,handle,images,status,product_type,variants',
+                    f'&fields=id,title,handle,images,status,product_type,tags,variants',
                     headers=headers, timeout=30,
                 )
                 if pr.status_code == 200:
@@ -3415,20 +3519,41 @@ def _build_goth_winners_payload(min_sales: int):
                             if vid is None:
                                 continue
                             variant_skus[str(vid)] = v.get('sku', '') or ''
+                        tags_raw = prod.get('tags', '') or ''
+                        tags_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
                         product_details[pid] = {
                             'title': prod.get('title', ''),
                             'handle': prod.get('handle', ''),
                             'image': image,
                             'status': prod.get('status', 'unknown'),
                             'product_type': prod.get('product_type', ''),
+                            'tags': tags_list,
                             'variant_skus': variant_skus,
                         }
                 time.sleep(0.2)
             except Exception as e:
                 log.warning(f'goth_winners: shopify enrich batch failed: {e}')
 
+    # Load collections lookup once for filtering / display.
+    try:
+        collections_meta, prod_to_collections = _fetch_goth_collections(domain, token)
+    except Exception as e:
+        log.warning(f'goth_winners: collections fetch failed: {e}')
+        collections_meta, prod_to_collections = [], {}
+
+    # Prepare filter matchers (case-insensitive exact string match).
+    filter_collection = (collection or '').strip().lower()
+    filter_tag = (tag or '').strip().lower()
+    filter_type = (product_type or '').strip().lower()
+    filter_collection_exclude = (collection_exclude or '').strip().lower()
+    filter_tag_exclude = (tag_exclude or '').strip().lower()
+    filter_status = (status or '').strip().lower()
+
     # Build response rows.
     results = []
+    all_tags_seen = set()
+    all_types_seen = set()
+    all_statuses_seen = set()
     total_revenue = 0.0
     total_units_qualified = 0
     for p in sorted_products:
@@ -3449,6 +3574,43 @@ def _build_goth_winners_payload(min_sales: int):
         # units sold desc so the top-selling size shows first on the card.
         # 'Default' single-variant products get flattened by the UI so they
         # don't display a redundant chip.
+        # Collect facets across ALL qualified products (before filtering) so
+        # the dropdowns only show values that actually exist in the current
+        # min_sales scope. This avoids surfacing empty dead-end options.
+        p_tags = detail.get('tags', []) or []
+        p_type = detail.get('product_type', '') or ''
+        p_collections = prod_to_collections.get(str(pid), [])
+        for t in p_tags:
+            all_tags_seen.add(t)
+        if p_type:
+            all_types_seen.add(p_type)
+        p_status = (detail.get('status', '') or '').strip()
+        if p_status:
+            all_statuses_seen.add(p_status)
+
+        # Apply filter(s). All ANDed together.
+        if filter_collection:
+            if not any(c.lower() == filter_collection for c in p_collections):
+                continue
+        if filter_collection_exclude:
+            # Product must NOT belong to the excluded collection.
+            if any(c.lower() == filter_collection_exclude for c in p_collections):
+                continue
+        if filter_tag:
+            if not any(t.lower() == filter_tag for t in p_tags):
+                continue
+        if filter_tag_exclude:
+            # Product must NOT have the excluded tag.
+            if any(t.lower() == filter_tag_exclude for t in p_tags):
+                continue
+        if filter_type:
+            if p_type.lower() != filter_type:
+                continue
+        if filter_status:
+            # 'active', 'draft', 'archived' (Shopify vocabulary). Case-insensitive.
+            if (detail.get('status', '') or '').lower() != filter_status:
+                continue
+
         variant_sales = p.get('variant_sales') or {}
         variant_skus = detail.get('variant_skus') or {}
         variants_out = []
@@ -3470,7 +3632,9 @@ def _build_goth_winners_payload(min_sales: int):
             'image': image_url,
             'handle': handle,
             'productUrl': product_url,
-            'productType': detail.get('product_type', ''),
+            'productType': p_type,
+            'tags': p_tags,
+            'collections': p_collections,
             'shopifyStatus': detail.get('status', 'unknown'),
             'variants': variants_out,
         })
@@ -3481,12 +3645,28 @@ def _build_goth_winners_payload(min_sales: int):
         'stats': {
             'qualifiedCount': len(results),
             'totalProducts': total_products,
-            'totalUnitsSold': total_units_all,
+            'totalUnitsSold': total_units_qualified if (filter_collection or filter_tag or filter_type) else total_units_all,
             'totalRevenue': round(total_revenue, 2),
             'orderPages': meta.get('pages_scanned', 0),
         },
         'meta': meta,
         'thresholdUsed': min_sales,
+        'filters': {
+            'collection': collection or '',
+            'tag': tag or '',
+            'product_type': product_type or '',
+            'collection_exclude': collection_exclude or '',
+            'tag_exclude': tag_exclude or '',
+            'status': status or '',
+        },
+        'facets': {
+            # Filter values available across the current min_sales scope,
+            # so the UI can populate its dropdowns without an extra call.
+            'collections': collections_meta,
+            'tags': sorted(all_tags_seen, key=str.lower),
+            'product_types': sorted(all_types_seen, key=str.lower),
+            'statuses': sorted(all_statuses_seen, key=str.lower),
+        },
         'store': store.get('name', ''),
     }, 200
 
@@ -3504,7 +3684,17 @@ def api_goth_winners():
         min_sales = max(0, int(request.args.get('min_sales', 5)))
     except (TypeError, ValueError):
         min_sales = 5
-    payload, status = _build_goth_winners_payload(min_sales)
+    collection = request.args.get('collection', '') or ''
+    tag = request.args.get('tag', '') or ''
+    product_type = request.args.get('product_type', '') or ''
+    collection_exclude = request.args.get('collection_exclude', '') or ''
+    tag_exclude = request.args.get('tag_exclude', '') or ''
+    status_filter = request.args.get('status', '') or ''
+    payload, status = _build_goth_winners_payload(
+        min_sales, collection=collection, tag=tag, product_type=product_type,
+        collection_exclude=collection_exclude, tag_exclude=tag_exclude,
+        status=status_filter,
+    )
     return jsonify(payload), status
 
 
@@ -3550,7 +3740,17 @@ def api_goth_winners_csv():
         min_sales = max(0, int(request.args.get('min_sales', 5)))
     except (TypeError, ValueError):
         min_sales = 5
-    payload, status = _build_goth_winners_payload(min_sales)
+    collection = request.args.get('collection', '') or ''
+    tag = request.args.get('tag', '') or ''
+    product_type = request.args.get('product_type', '') or ''
+    collection_exclude = request.args.get('collection_exclude', '') or ''
+    tag_exclude = request.args.get('tag_exclude', '') or ''
+    status_filter = request.args.get('status', '') or ''
+    payload, status = _build_goth_winners_payload(
+        min_sales, collection=collection, tag=tag, product_type=product_type,
+        collection_exclude=collection_exclude, tag_exclude=tag_exclude,
+        status=status_filter,
+    )
     if status != 200 or not payload.get('success'):
         return jsonify(payload), status
 
@@ -3574,6 +3774,8 @@ def api_goth_winners_csv():
         'Image URL',
         'Shopify Status',
         'Product Type',
+        'Tags',
+        'Collections',
         'Product ID',
         'Variant ID',
         'Handle',
@@ -3584,6 +3786,8 @@ def api_goth_winners_csv():
             'sales': row.get('sales', 0),
             'revenue': row.get('revenue', 0),
         }]
+        tags_str = ', '.join(row.get('tags') or [])
+        cols_str = ', '.join(row.get('collections') or [])
         for v in variants:
             writer.writerow([
                 row.get('name', ''),
@@ -3597,6 +3801,8 @@ def api_goth_winners_csv():
                 row.get('image', ''),
                 row.get('shopifyStatus', ''),
                 row.get('productType', ''),
+                tags_str,
+                cols_str,
                 row.get('id', ''),
                 v.get('id', ''),
                 row.get('handle', ''),
@@ -3604,11 +3810,25 @@ def api_goth_winners_csv():
 
     csv_body = buf.getvalue()
     ts = datetime.datetime.now().strftime('%Y-%m-%d_%H%M')
+    # Filename encodes the filter combo so multiple downloads don't collide
+    # and Allison can tell them apart from her downloads folder.
+    slug_bits = [f'min{min_sales}']
+    if collection:
+        slug_bits.append('col-' + re.sub(r'[^a-z0-9]+', '', collection.lower())[:20])
+    if collection_exclude:
+        slug_bits.append('notcol-' + re.sub(r'[^a-z0-9]+', '', collection_exclude.lower())[:20])
+    if tag:
+        slug_bits.append('tag-' + re.sub(r'[^a-z0-9]+', '', tag.lower())[:20])
+    if tag_exclude:
+        slug_bits.append('nottag-' + re.sub(r'[^a-z0-9]+', '', tag_exclude.lower())[:20])
+    if product_type:
+        slug_bits.append('type-' + re.sub(r'[^a-z0-9]+', '', product_type.lower())[:20])
+    if status_filter:
+        slug_bits.append('status-' + re.sub(r'[^a-z0-9]+', '', status_filter.lower())[:12])
+    filename = f'goth_society_winners_{"_".join(slug_bits)}_{ts}.csv'
     resp = make_response(csv_body)
     resp.headers['Content-Type'] = 'text/csv; charset=utf-8'
-    resp.headers['Content-Disposition'] = (
-        f'attachment; filename="goth_society_winners_min{min_sales}_{ts}.csv"'
-    )
+    resp.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     return resp
 
 
