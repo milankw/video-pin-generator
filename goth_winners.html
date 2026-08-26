@@ -175,6 +175,38 @@
     font-size: 12px;
   }
   .btn-clear:hover { background: var(--red); color: #fff; }
+  .url-search-row {
+    padding-top: 12px;
+    border-top: 1px dashed var(--gray-200);
+  }
+  .url-search-row input[type="text"] {
+    flex: 1 1 320px;
+    min-width: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--gray-300);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+    color: var(--gray-900);
+    background: #fff;
+  }
+  .url-search-row input[type="text"]:focus {
+    outline: 2px solid var(--purple);
+    outline-offset: -1px;
+    border-color: var(--purple);
+  }
+  .url-search-hint {
+    font-size: 12px;
+    color: var(--gray-500);
+  }
+  .url-search-hint.err { color: var(--red); font-weight: 600; }
+  .url-search-hint.ok { color: var(--green); font-weight: 600; }
+  .card.url-match {
+    outline: 3px solid var(--purple);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 6px var(--purple-light);
+    scroll-margin-top: 20px;
+  }
   .active-filter-summary {
     font-size: 12px;
     color: var(--purple-dark);
@@ -550,6 +582,9 @@
   @media (max-width: 720px) {
     main { padding: 12px; }
     .controls { padding: 12px; gap: 10px; border-radius: 10px; }
+    .url-search-row { flex-direction: column; align-items: stretch; gap: 8px; }
+    .url-search-row input[type="text"] { width: 100%; }
+    .url-search-row .btn { width: 100%; justify-content: center; }
     .ctrl-row .grow { flex-basis: 100%; order: 99; }
     .ctrl-row input[type="number"] { width: 100%; max-width: 120px; }
     .ctrl-row .btn { flex: 1 1 auto; justify-content: center; }
@@ -609,6 +644,15 @@
       </button>
       <span class="grow synced-note" id="syncedNote"></span>
       <button class="btn btn-ghost" id="csvBtn">⬇ Export CSV</button>
+    </div>
+    <div class="ctrl-row url-search-row">
+      <label for="urlSearch" class="filters-label">Find by URL:</label>
+      <input type="text" id="urlSearch"
+             placeholder="Paste a product URL or handle (e.g. antique-baroque-cross-statement-necklace)"
+             autocomplete="off" spellcheck="false" enterkeyhint="search">
+      <button class="btn btn-ghost" id="urlSearchBtn" type="button">→ Find</button>
+      <button class="btn btn-clear" id="urlSearchClearBtn" type="button" hidden>✕ Clear</button>
+      <span class="url-search-hint" id="urlSearchHint"></span>
     </div>
     <div class="ctrl-row filters-row">
       <span class="filters-label">Include:</span>
@@ -840,8 +884,10 @@ function renderCard(p) {
   const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
   const url = p.productUrl || '#';
   const hasUrl = !!p.productUrl;
+  // data-handle is used by the URL/handle search to locate and highlight cards.
+  const handleAttr = p.handle ? ` data-handle="${escapeHtml((p.handle || '').toLowerCase())}"` : '';
   return `
-    <div class="card">
+    <div class="card"${handleAttr}>
       <div class="card-img">
         ${p.image
           ? `<img src="${escapeHtml(p.image)}" alt="" loading="lazy"
@@ -1112,11 +1158,88 @@ async function exportCSV() {
   toast('Downloading CSV…');
 }
 
+// ==================== URL / handle search ====================
+// Accept anything from a full production URL, to a preview URL, to a raw
+// handle. We only care about the last non-empty path segment (with `.html`
+// or query string stripped) so any Shopify domain / subdomain works.
+function extractHandle(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  // Try to parse as URL first. Fall back to treating it as a path/handle.
+  let candidate = raw;
+  try {
+    // Prepend protocol so URL parser accepts "domain.com/products/foo".
+    const withProto = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+    const u = new URL(withProto);
+    candidate = u.pathname || raw;
+  } catch (e) {
+    // Not a URL — use the raw input.
+    candidate = raw;
+  }
+  // Strip query/hash if any survived (raw path input).
+  candidate = candidate.split('?')[0].split('#')[0];
+  // Split on slashes, drop empties, drop trailing .html
+  const parts = candidate.split('/').filter(Boolean);
+  if (!parts.length) return '';
+  let last = parts[parts.length - 1];
+  last = last.replace(/\.html?$/i, '');
+  // Handles are lowercase alphanumeric + hyphens in Shopify. Lowercase for
+  // matching; downstream comparison is against p.handle which is already
+  // lowercase from Shopify.
+  return last.toLowerCase().trim();
+}
+
+function runUrlSearch() {
+  const input = $('urlSearch').value;
+  const handle = extractHandle(input);
+  const hintEl = $('urlSearchHint');
+  const clearBtn = $('urlSearchClearBtn');
+  // Clear any previous highlight first.
+  document.querySelectorAll('.card.url-match').forEach(el => el.classList.remove('url-match'));
+  if (!handle) {
+    hintEl.className = 'url-search-hint err';
+    hintEl.textContent = 'Enter a product URL or handle.';
+    clearBtn.hidden = false;
+    return;
+  }
+  const card = document.querySelector(`.card[data-handle="${CSS.escape(handle)}"]`);
+  if (card) {
+    card.classList.add('url-match');
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    hintEl.className = 'url-search-hint ok';
+    hintEl.textContent = `Found: ${handle}`;
+    clearBtn.hidden = false;
+    // Remove the outline after a while so the page returns to normal.
+    setTimeout(() => card.classList.remove('url-match'), 6000);
+    return;
+  }
+  // Not in current view. The product might exist in the store but be filtered
+  // out (e.g. min_sales too high, or filtered by collection/tag/status).
+  hintEl.className = 'url-search-hint err';
+  const products = (state.lastPayload && state.lastPayload.products) || [];
+  const totalLoaded = products.length;
+  hintEl.textContent = totalLoaded
+    ? `Handle "${handle}" not in the ${totalLoaded} loaded products — try setting Min sales to 0 and clearing filters.`
+    : `Handle "${handle}" not found — load some products first.`;
+  clearBtn.hidden = false;
+}
+
+function clearUrlSearch() {
+  $('urlSearch').value = '';
+  $('urlSearchHint').textContent = '';
+  $('urlSearchHint').className = 'url-search-hint';
+  $('urlSearchClearBtn').hidden = true;
+  document.querySelectorAll('.card.url-match').forEach(el => el.classList.remove('url-match'));
+}
+
 // Event wiring
 $('loadBtn').addEventListener('click', loadWinners);
 $('csvBtn').addEventListener('click', exportCSV);
 $('refreshBtn').addEventListener('click', startRefresh);
 $('minSales').addEventListener('keydown', e => { if (e.key === 'Enter') loadWinners(); });
+$('urlSearchBtn').addEventListener('click', runUrlSearch);
+$('urlSearchClearBtn').addEventListener('click', clearUrlSearch);
+$('urlSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runUrlSearch(); } });
 // Changing a filter re-queries immediately — no separate Apply click needed.
 ['filterCollection', 'filterTag', 'filterType', 'filterCollectionExclude', 'filterTagExclude', 'filterStatus'].forEach(id => {
   $(id).addEventListener('change', () => loadWinners());
