@@ -364,6 +364,197 @@
     background: rgba(255, 255, 255, 0.95);
     color: var(--gray-600);
   }
+
+  /* ==================== Supplier / sheet pills ==================== */
+  /* Pills row shown just above the sales/revenue meta line. */
+  .sheet-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 2px 0 0;
+  }
+  .sheet-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1.35;
+    white-space: nowrap;
+    border: 1px solid transparent;
+  }
+  .sheet-pill-tag      { background: #ede9fe; color: #5b21b6; border-color: #ddd6fe; }
+  .sheet-pill-material { background: #dbeafe; color: #1e40af; border-color: #bfdbfe; }
+  .sheet-pill-price    { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
+  .sheet-pill-warn     { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+  .sheet-pill-supplier { background: #fff; color: #6d28d9; border-color: var(--purple-light); text-decoration: none; }
+  .sheet-pill-supplier:hover { background: var(--purple-light); }
+
+  /* ==================== Sheet sync bar (under header) ==================== */
+  .sheet-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 0 0 12px;
+    background: #f5f3ff;
+    border: 1px solid #ddd6fe;
+    border-radius: 8px;
+    font-size: 12.5px;
+    color: var(--gray-700);
+  }
+  .sheet-bar.err {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #991b1b;
+  }
+  .sheet-bar.warn {
+    background: #fef3c7;
+    border-color: #fde68a;
+    color: #92400e;
+  }
+  .sheet-bar-icon { font-size: 14px; }
+  .sheet-bar-body { flex: 1; min-width: 200px; }
+  .sheet-bar strong { color: var(--gray-900); }
+  .sheet-bar .btn {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  /* ==================== Settings modal ==================== */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    padding: 16px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+    max-width: 560px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: auto;
+    padding: 20px;
+  }
+  .modal h2 {
+    font-size: 18px;
+    margin: 0 0 6px;
+    color: var(--gray-900);
+  }
+  .modal .modal-sub {
+    font-size: 13px;
+    color: var(--gray-600);
+    margin-bottom: 16px;
+    line-height: 1.5;
+  }
+  .modal label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--gray-600);
+    margin: 12px 0 4px;
+  }
+  .modal input[type="text"] {
+    width: 100%;
+    padding: 9px 11px;
+    border: 1px solid var(--gray-300);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .modal input[type="text"]:focus {
+    outline: 2px solid var(--purple);
+    outline-offset: -1px;
+    border-color: var(--purple);
+  }
+  .modal-steps {
+    background: #f9fafb;
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-top: 14px;
+    font-size: 12.5px;
+    color: var(--gray-700);
+    line-height: 1.55;
+  }
+  .modal-steps ol {
+    margin: 6px 0 0 18px;
+    padding: 0;
+  }
+  .modal-steps code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    background: #fff;
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--gray-200);
+  }
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+  .modal-actions .btn { flex-shrink: 0; }
+
+  /* Missing-data toggle chip on filter row 3 */
+  .toggle-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 10px;
+    border: 1px solid var(--gray-300);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gray-700);
+    background: #fff;
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-chip input {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--purple);
+    margin: 0;
+  }
+  .toggle-chip.active {
+    background: #fef3c7;
+    border-color: #fde68a;
+    color: #92400e;
+  }
+  .price-range {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--gray-700);
+  }
+  .price-range input {
+    width: 68px;
+    padding: 6px 8px;
+    border: 1px solid var(--gray-300);
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+  .price-range input:focus {
+    outline: 2px solid var(--purple);
+    outline-offset: -1px;
+    border-color: var(--purple);
+  }
   .card-body {
     padding: 10px 12px 12px;
     display: flex;
@@ -632,6 +823,18 @@
 </header>
 
 <main>
+  <!-- Supplier-sheet sync bar. Its state is updated by refreshSheetBar():
+       'not-configured' -> asks Allison to set up the sheet URL.
+       'never-synced'  -> ready to sync but not yet run.
+       'synced'        -> shows last sync time + matched-row count.
+       'error'         -> shows failure reason from last sync attempt. -->
+  <div class="sheet-bar" id="sheetBar" hidden>
+    <span class="sheet-bar-icon" id="sheetBarIcon">📄</span>
+    <span class="sheet-bar-body" id="sheetBarBody">Supplier sheet: not configured.</span>
+    <button class="btn btn-refresh" id="sheetSyncBtn" type="button">↻ Sync sheet</button>
+    <button class="btn btn-ghost" id="sheetSettingsBtn" type="button">⚙ Settings</button>
+  </div>
+
   <div class="controls">
     <div class="ctrl-row">
       <label for="minSales">Min sales:</label>
@@ -692,6 +895,52 @@
       <span class="grow"></span>
       <span class="active-filter-summary" id="activeFilterSummary"></span>
     </div>
+    <!-- Sheet-driven filters. Hidden until sheet is synced so the row
+         doesn't clutter the UI when Allison hasn't wired the sheet yet. -->
+    <div class="ctrl-row filters-row" id="sheetFiltersRow" hidden>
+      <span class="filters-label">Supplier:</span>
+      <div class="filter-group">
+        <label for="filterMaterial">Material</label>
+        <select id="filterMaterial"><option value="">All materials</option></select>
+      </div>
+      <div class="price-range">
+        <span>Unit $</span>
+        <input type="number" id="filterPriceMin" min="0" step="0.01" placeholder="min" inputmode="decimal">
+        <span>–</span>
+        <input type="number" id="filterPriceMax" min="0" step="0.01" placeholder="max" inputmode="decimal">
+      </div>
+      <label class="toggle-chip" id="toggleMissingMaterial">
+        <input type="checkbox" id="filterMissingMaterial"> Missing material
+      </label>
+      <label class="toggle-chip" id="toggleMissingPrice">
+        <input type="checkbox" id="filterMissingPrice"> Missing quote
+      </label>
+    </div>
+  </div>
+
+  <!-- Settings modal: paste the Google Sheet URL. -->
+  <div class="modal-overlay" id="sheetSettingsModal" role="dialog" aria-modal="true" aria-labelledby="sheetSettingsTitle">
+    <div class="modal">
+      <h2 id="sheetSettingsTitle">Supplier sheet</h2>
+      <p class="modal-sub">Paste the Google Sheet URL below. The tool will match each row to a product using the <strong>Website Product Links</strong> column (by URL handle).</p>
+      <label for="sheetUrlInput">Google Sheet URL</label>
+      <input type="text" id="sheetUrlInput"
+             placeholder="https://docs.google.com/spreadsheets/d/…/edit#gid=…"
+             autocomplete="off" spellcheck="false">
+      <div class="modal-steps">
+        <strong>One-time setup in Google Sheets:</strong>
+        <ol>
+          <li>Open your sheet, click <code>Share</code>.</li>
+          <li>Change <code>General access</code> to <code>Anyone with the link → Viewer</code>.</li>
+          <li>Copy the URL from your browser's address bar (include the <code>#gid=…</code> at the end so we sync the correct tab).</li>
+          <li>Paste it above and click <strong>Save &amp; sync</strong>.</li>
+        </ol>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="sheetSettingsCancel" type="button">Cancel</button>
+        <button class="btn btn-primary" id="sheetSettingsSave" type="button">Save &amp; sync</button>
+      </div>
+    </div>
   </div>
 
   <div class="stats">
@@ -699,6 +948,13 @@
     <div class="stat"><div class="stat-num" id="statProducts">–</div><div class="stat-label">Total Products</div></div>
     <div class="stat"><div class="stat-num" id="statUnits">–</div><div class="stat-label">Total Units Sold</div></div>
     <div class="stat"><div class="stat-num" id="statPages">–</div><div class="stat-label">Order Pages</div></div>
+    <!-- Only visible once the sheet is synced. Counts products in the
+         current filtered view that are missing material AND/OR price
+         in the supplier sheet. -->
+    <div class="stat" id="statMissingSheetWrap" hidden>
+      <div class="stat-num" id="statMissingSheet" style="color:#92400e;">–</div>
+      <div class="stat-label">Missing supplier data</div>
+    </div>
   </div>
 
   <div id="content">
@@ -716,7 +972,14 @@
 'use strict';
 
 const $ = id => document.getElementById(id);
-const state = { loading: false, lastPayload: null };
+const state = {
+  loading: false,
+  lastPayload: null,
+  // Last /api/goth-sheet/status response. When .synced_at is set, cards
+  // render supplier pills and the sheet filter row becomes visible.
+  sheetStatus: null,
+  sheetSyncing: false,
+};
 
 function escapeHtml(s) {
   return String(s == null ? '' : s)
@@ -877,6 +1140,38 @@ function renderVariants(variants) {
           </div>`;
 }
 
+// Render the supplier-sheet pills (tag / material / price / supplier link).
+// When the sheet is synced and a product has NO matching row at all, we
+// still emit a single warning pill so Allison knows to add it. When the
+// sheet is not synced yet, we skip pills entirely (avoids false alarms).
+function renderSheetPills(sheet, sheetSynced) {
+  if (!sheetSynced) return '';
+  if (!sheet) {
+    return `<div class="sheet-pills">
+              <span class="sheet-pill sheet-pill-warn" title="No matching row in the supplier sheet. Add this product's URL to a sheet row.">⚠ not in sheet</span>
+            </div>`;
+  }
+  const bits = [];
+  if (sheet.product_tag) {
+    bits.push(`<span class="sheet-pill sheet-pill-tag">${escapeHtml(sheet.product_tag)}</span>`);
+  }
+  if (sheet.material) {
+    bits.push(`<span class="sheet-pill sheet-pill-material" title="Material">${escapeHtml(sheet.material)}</span>`);
+  } else {
+    bits.push(`<span class="sheet-pill sheet-pill-warn" title="Material missing in the supplier sheet">⚠ no material</span>`);
+  }
+  if (typeof sheet.unit_price === 'number') {
+    bits.push(`<span class="sheet-pill sheet-pill-price" title="Supplier unit price">$${sheet.unit_price.toFixed(2)}</span>`);
+  } else {
+    bits.push(`<span class="sheet-pill sheet-pill-warn" title="Unit price missing in the supplier sheet">⚠ no quote</span>`);
+  }
+  if (sheet.supplier_link) {
+    // Open in new tab. Use rel=noopener for safety.
+    bits.push(`<a class="sheet-pill sheet-pill-supplier" href="${escapeHtml(sheet.supplier_link)}" target="_blank" rel="noopener" title="Open supplier listing">1688 ↗</a>`);
+  }
+  return `<div class="sheet-pills">${bits.join('')}</div>`;
+}
+
 function renderCard(p) {
   const status = (p.shopifyStatus || 'unknown').toLowerCase();
   const statusClass = status === 'active' ? 'status-active'
@@ -886,6 +1181,7 @@ function renderCard(p) {
   const hasUrl = !!p.productUrl;
   // data-handle is used by the URL/handle search to locate and highlight cards.
   const handleAttr = p.handle ? ` data-handle="${escapeHtml((p.handle || '').toLowerCase())}"` : '';
+  const sheetSynced = !!(state.sheetStatus && state.sheetStatus.synced_at);
   return `
     <div class="card"${handleAttr}>
       <div class="card-img">
@@ -899,6 +1195,7 @@ function renderCard(p) {
         ${hasUrl
           ? `<a class="card-title" href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</a>`
           : `<div class="card-title" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</div>`}
+        ${renderSheetPills(p.sheet, sheetSynced)}
         <div class="card-meta">
           <div class="card-sales">${fmtNum(p.sales)} <span>sales</span></div>
           <div class="card-rev">${fmtMoney(p.revenue)}</div>
@@ -953,6 +1250,24 @@ function renderContent(payload) {
       </div>`;
     return;
   }
+  // "Missing supplier data" stat: products in the CURRENT view that either
+  // have no matching sheet row, or have a row but no material / no price.
+  // Only shown when the sheet has been synced.
+  const sheetSynced = !!(state.sheetStatus && state.sheetStatus.synced_at);
+  const wrap = $('statMissingSheetWrap');
+  if (sheetSynced) {
+    let missing = 0;
+    products.forEach(p => {
+      const s = p.sheet;
+      if (!s) { missing++; return; }
+      if (!s.material || typeof s.unit_price !== 'number') missing++;
+    });
+    $('statMissingSheet').textContent = fmtNum(missing);
+    wrap.hidden = false;
+  } else {
+    wrap.hidden = true;
+  }
+
   c.innerHTML = `<div class="grid">${products.map(renderCard).join('')}</div>`;
 }
 
@@ -971,6 +1286,15 @@ function getFilterParams() {
   if (colX) params.set('collection_exclude', colX);
   if (tagX) params.set('tag_exclude', tagX);
   if (st) params.set('status', st);
+  // Sheet-driven filters.
+  const mat = $('filterMaterial').value;
+  if (mat) params.set('material', mat);
+  const pMin = ($('filterPriceMin').value || '').trim();
+  const pMax = ($('filterPriceMax').value || '').trim();
+  if (pMin !== '') params.set('price_min', pMin);
+  if (pMax !== '') params.set('price_max', pMax);
+  if ($('filterMissingMaterial').checked) params.set('missing_material', '1');
+  if ($('filterMissingPrice').checked) params.set('missing_price', '1');
   return params;
 }
 
@@ -1026,6 +1350,22 @@ function populateFacets(facets, currentFilters) {
   const stEl = $('filterStatus');
   stEl.value = (currentFilters || {}).status || '';
   stEl.classList.toggle('active', !!stEl.value);
+  // Material facet + missing-data toggles come from the sheet. If the sheet
+  // has never been synced, materials[] is empty and we hide the row.
+  const materials = facets.materials || [];
+  setOpts($('filterMaterial'), materials, (currentFilters || {}).material || '', 'All materials');
+  $('filterMissingMaterial').checked = !!(currentFilters || {}).missing_material;
+  $('filterMissingPrice').checked = !!(currentFilters || {}).missing_price;
+  $('toggleMissingMaterial').classList.toggle('active', $('filterMissingMaterial').checked);
+  $('toggleMissingPrice').classList.toggle('active', $('filterMissingPrice').checked);
+  const pMinCur = (currentFilters || {}).price_min;
+  const pMaxCur = (currentFilters || {}).price_max;
+  if (pMinCur !== null && pMinCur !== undefined) $('filterPriceMin').value = pMinCur;
+  if (pMaxCur !== null && pMaxCur !== undefined) $('filterPriceMax').value = pMaxCur;
+  // Row visibility follows sheet-synced state, not just facet presence —
+  // an admin might sync a sheet where every row has an empty material.
+  const sheetSynced = !!(state.sheetStatus && state.sheetStatus.synced_at);
+  $('sheetFiltersRow').hidden = !sheetSynced;
   // Mark exclude selects as .exclude so their active style is red not purple.
   $('filterCollectionExclude').classList.add('exclude');
   $('filterTagExclude').classList.add('exclude');
@@ -1033,7 +1373,9 @@ function populateFacets(facets, currentFilters) {
   // Show / hide clear button + summary.
   const anyActive = !!(
     $('filterCollection').value || $('filterTag').value || $('filterType').value ||
-    $('filterCollectionExclude').value || $('filterTagExclude').value || $('filterStatus').value
+    $('filterCollectionExclude').value || $('filterTagExclude').value || $('filterStatus').value ||
+    $('filterMaterial').value || $('filterMissingMaterial').checked || $('filterMissingPrice').checked ||
+    ($('filterPriceMin').value || '').trim() !== '' || ($('filterPriceMax').value || '').trim() !== ''
   );
   $('clearFiltersBtn').hidden = !anyActive;
   const bits = [];
@@ -1043,6 +1385,12 @@ function populateFacets(facets, currentFilters) {
   if ($('filterCollectionExclude').value) bits.push(`NOT in: ${$('filterCollectionExclude').value}`);
   if ($('filterTagExclude').value) bits.push(`Missing tag: ${$('filterTagExclude').value}`);
   if ($('filterStatus').value) bits.push(`Status: ${$('filterStatus').value}`);
+  if ($('filterMaterial').value) bits.push(`Material: ${$('filterMaterial').value}`);
+  if ($('filterMissingMaterial').checked) bits.push('Missing material');
+  if ($('filterMissingPrice').checked) bits.push('Missing quote');
+  if (($('filterPriceMin').value || '').trim() !== '' || ($('filterPriceMax').value || '').trim() !== '') {
+    bits.push(`$${$('filterPriceMin').value || '0'}–${$('filterPriceMax').value || '∞'}`);
+  }
   $('activeFilterSummary').textContent = bits.length ? bits.join(' · ') : '';
 }
 
@@ -1232,6 +1580,117 @@ function clearUrlSearch() {
   document.querySelectorAll('.card.url-match').forEach(el => el.classList.remove('url-match'));
 }
 
+// ==================== Sheet sync (supplier data) ====================
+// The sync bar shows one of four states depending on whether the sheet
+// URL has been saved and whether we've ever pulled data from it.
+function refreshSheetBar() {
+  const bar = $('sheetBar');
+  const body = $('sheetBarBody');
+  const icon = $('sheetBarIcon');
+  const syncBtn = $('sheetSyncBtn');
+  const s = state.sheetStatus || {};
+  bar.hidden = false;
+  bar.classList.remove('err', 'warn');
+  if (!s.configured) {
+    icon.textContent = '📄';
+    bar.classList.add('warn');
+    body.innerHTML = '<strong>Supplier sheet not connected.</strong> Add material and unit-price data by pasting your Google Sheet URL.';
+    syncBtn.hidden = true;
+    return;
+  }
+  syncBtn.hidden = false;
+  if (!s.synced_at) {
+    icon.textContent = '📄';
+    bar.classList.add('warn');
+    body.innerHTML = '<strong>Supplier sheet configured but not yet synced.</strong> Click “Sync sheet” to pull the data now.';
+    return;
+  }
+  if (state.sheetSyncing) {
+    icon.textContent = '⏳';
+    body.innerHTML = 'Syncing supplier sheet…';
+    return;
+  }
+  icon.textContent = '✅';
+  const rows = s.row_count || 0;
+  const matched = s.matched_by_handle || 0;
+  const when = s.synced_at ? fmtRelative(s.synced_at) : '';
+  body.innerHTML = `<strong>Supplier sheet synced ${escapeHtml(when)}.</strong> ${fmtNum(rows)} rows · ${fmtNum(matched)} matched to products by URL.`;
+}
+
+async function fetchSheetStatus() {
+  try {
+    const r = await fetch('/api/goth-sheet/status', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (data.success) state.sheetStatus = data;
+  } catch (_) {
+    // Non-fatal — the winners view still works without the sheet.
+  }
+  refreshSheetBar();
+}
+
+async function syncSheet() {
+  if (state.sheetSyncing) return;
+  state.sheetSyncing = true;
+  $('sheetSyncBtn').disabled = true;
+  refreshSheetBar();
+  try {
+    const r = await fetch('/api/goth-sheet/sync', { method: 'POST', credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data.error || ('HTTP ' + r.status));
+    toast(`Synced sheet: ${fmtNum(data.row_count)} rows, ${fmtNum(data.matched_by_handle)} matched.`);
+    // Refresh both status + product list so pills appear immediately.
+    await fetchSheetStatus();
+    loadWinners();
+  } catch (e) {
+    toast('Sheet sync failed: ' + e.message, true);
+    // Keep the error visible on the bar too.
+    const bar = $('sheetBar');
+    bar.classList.remove('warn');
+    bar.classList.add('err');
+    $('sheetBarIcon').textContent = '⚠';
+    $('sheetBarBody').innerHTML = `<strong>Sheet sync failed.</strong> ${escapeHtml(e.message)}`;
+  } finally {
+    state.sheetSyncing = false;
+    $('sheetSyncBtn').disabled = false;
+  }
+}
+
+function openSheetSettings() {
+  $('sheetUrlInput').value = (state.sheetStatus && state.sheetStatus.sheet_url) || '';
+  $('sheetSettingsModal').classList.add('open');
+  setTimeout(() => $('sheetUrlInput').focus(), 50);
+}
+function closeSheetSettings() {
+  $('sheetSettingsModal').classList.remove('open');
+}
+async function saveSheetSettings() {
+  const url = ($('sheetUrlInput').value || '').trim();
+  if (!url) { toast('Paste a Google Sheet URL first.', true); return; }
+  $('sheetSettingsSave').disabled = true;
+  try {
+    const r = await fetch('/api/goth-sheet/config', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sheet_url: url }),
+    });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data.error || ('HTTP ' + r.status));
+    closeSheetSettings();
+    toast('Sheet URL saved. Syncing…');
+    await fetchSheetStatus();
+    await syncSheet();
+  } catch (e) {
+    toast('Save failed: ' + e.message, true);
+  } finally {
+    $('sheetSettingsSave').disabled = false;
+  }
+}
+
 // Event wiring
 $('loadBtn').addEventListener('click', loadWinners);
 $('csvBtn').addEventListener('click', exportCSV);
@@ -1241,8 +1700,16 @@ $('urlSearchBtn').addEventListener('click', runUrlSearch);
 $('urlSearchClearBtn').addEventListener('click', clearUrlSearch);
 $('urlSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runUrlSearch(); } });
 // Changing a filter re-queries immediately — no separate Apply click needed.
-['filterCollection', 'filterTag', 'filterType', 'filterCollectionExclude', 'filterTagExclude', 'filterStatus'].forEach(id => {
+['filterCollection', 'filterTag', 'filterType', 'filterCollectionExclude', 'filterTagExclude', 'filterStatus', 'filterMaterial'].forEach(id => {
   $(id).addEventListener('change', () => loadWinners());
+});
+['filterMissingMaterial', 'filterMissingPrice'].forEach(id => {
+  $(id).addEventListener('change', () => loadWinners());
+});
+// Price range inputs: reload on Enter or on blur (avoid firing on every keystroke).
+['filterPriceMin', 'filterPriceMax'].forEach(id => {
+  $(id).addEventListener('change', () => loadWinners());
+  $(id).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadWinners(); } });
 });
 $('clearFiltersBtn').addEventListener('click', () => {
   $('filterCollection').value = '';
@@ -1251,10 +1718,29 @@ $('clearFiltersBtn').addEventListener('click', () => {
   $('filterCollectionExclude').value = '';
   $('filterTagExclude').value = '';
   $('filterStatus').value = '';
+  $('filterMaterial').value = '';
+  $('filterMissingMaterial').checked = false;
+  $('filterMissingPrice').checked = false;
+  $('filterPriceMin').value = '';
+  $('filterPriceMax').value = '';
   loadWinners();
+});
+// Sheet controls.
+$('sheetSyncBtn').addEventListener('click', syncSheet);
+$('sheetSettingsBtn').addEventListener('click', openSheetSettings);
+$('sheetSettingsCancel').addEventListener('click', closeSheetSettings);
+$('sheetSettingsSave').addEventListener('click', saveSheetSettings);
+$('sheetUrlInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveSheetSettings(); } });
+// Close modal on backdrop click (but not on inner click).
+$('sheetSettingsModal').addEventListener('click', e => {
+  if (e.target === $('sheetSettingsModal')) closeSheetSettings();
 });
 
 async function initialLoad() {
+  // Fetch sheet status FIRST so the first winners render already has pills
+  // and the sheet filter row shows/hides correctly (no jarring "pills appear
+  // 200ms later" effect).
+  await fetchSheetStatus();
   // If a sync happens to be running when the page opens (e.g. someone else
   // kicked one off), pick up its progress rather than showing empty data.
   try {

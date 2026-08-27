@@ -194,6 +194,7 @@ _EMPLOYEE_ALLOWED_EXACT = {
     '/api/session-role',
     '/api/goth-winners', '/api/goth-winners/export.csv',
     '/api/goth-winners/sync', '/api/goth-winners/sync/status',
+    '/api/goth-sheet/sync', '/api/goth-sheet/status', '/api/goth-sheet/config',
 }
 
 
@@ -3286,6 +3287,323 @@ GOTH_WINNERS_STORE_ID = 'store_1782824738325'
 # collection's product list once and reuse it. Cheap TTL keeps it fresh
 # after merchants edit collections without forcing a full refetch per
 # request.
+# ==================== Goth Sheet (supplier data) sync ====================
+# The user maintains a Google Sheet with per-product supplier info: unique
+# tag (TGS#001), product URL, material, unit price, weight, supplier link,
+# etc. The sheet is set to "Anyone with the link → Viewer" and we fetch it
+# on demand as CSV, then match rows to Shopify products by handle (extracted
+# from the URL column) and by product tag.
+GOTH_SHEET_CONFIG_PATH = 'data/goth_sheet_config.json'
+GOTH_SHEET_CACHE_PATH = 'data/goth_sheet_cache.json'
+
+
+def _load_goth_sheet_config():
+    """{'sheet_url': str, 'gid': str}"""
+    return _load_json(GOTH_SHEET_CONFIG_PATH, default={}) or {}
+
+
+def _save_goth_sheet_config(cfg):
+    _save_json(GOTH_SHEET_CONFIG_PATH, cfg)
+
+
+def _load_goth_sheet_cache():
+    return _load_json(GOTH_SHEET_CACHE_PATH, default={}) or {}
+
+
+def _save_goth_sheet_cache(data):
+    _save_json(GOTH_SHEET_CACHE_PATH, data)
+
+
+def _extract_handle_from_url(url: str) -> str:
+    """Pull the Shopify handle out of any Goth Society product URL.
+
+    Accepts the production storefront URL, a Shopify preview URL, a bare
+    /products/<handle> path, or just the handle itself. Handles are
+    case-insensitive so we lowercase for comparison.
+    """
+    if not url:
+        return ''
+    s = str(url).strip()
+    if not s:
+        return ''
+    # Strip protocol / host if present so re works on the path.
+    s = re.sub(r'^https?://[^/]+', '', s, flags=re.IGNORECASE)
+    s = s.split('?')[0].split('#')[0].rstrip('/')
+    m = re.search(r'/products/([^/]+)', s)
+    if m:
+        return m.group(1).lower()
+    # Fallback: treat the whole thing as a handle (bare handle input).
+    parts = [p for p in s.split('/') if p]
+    if parts:
+        return parts[-1].lower()
+    return ''
+
+
+def _clean_money(val: str):
+    """'$3.65' -> 3.65 float; 'USD 3.65' -> 3.65; '' -> None."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    m = re.search(r'(\d+(?:\.\d+)?)', s.replace(',', ''))
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except ValueError:
+        return None
+
+
+def _sheet_csv_url(sheet_url: str, gid: str = ''):
+    """Turn a user-pasted Google Sheets URL into a CSV export URL.
+
+    We accept: full edit URL, view URL, /d/<id>/... URL, or just the sheet id.
+    Optionally honour a gid captured from the URL fragment (#gid=X) or from
+    a separately configured value.
+    """
+    if not sheet_url:
+        return ''
+    s = str(sheet_url).strip()
+    # Extract sheet id.
+    m = re.search(r'/d/([a-zA-Z0-9_-]+)', s)
+    sid = m.group(1) if m else s
+    # Extract gid from #gid=... or ?gid=... if not explicitly passed.
+    if not gid:
+        m2 = re.search(r'[#&?]gid=([0-9]+)', s)
+        if m2:
+            gid = m2.group(1)
+    url = f'https://docs.google.com/spreadsheets/d/{sid}/export?format=csv'
+    if gid:
+        url += f'&gid={gid}'
+    return url
+
+
+# Column-name matchers. We look for these substrings (case-insensitive) so
+# minor spelling / column-order changes on the sheet don't break the sync.
+#
+# IMPORTANT: aliases are tried longest-first for each field, and columns are
+# scored across ALL fields — the highest-specificity match wins. This avoids
+# ambiguity when two columns share a substring (e.g. the sheet has BOTH
+# "Product Link (1688/Ali)" and "Suppliers Link (1688/Ali)"; the second is
+# the real supplier link column and must not be matched by a generic '1688'
+# alias that fires on the first column).
+_SHEET_COL_ALIASES = {
+    'product_tag':      ['product unique tag', 'unique tag', 'product tag'],
+    'product_name':     ['product name'],
+    'sku':              ['sku'],
+    # The one that ends in .../products/<handle> on the storefront.
+    'website_url':      ['website product link', 'product link (website)', 'website link', 'website url'],
+    # 1688/Ali supplier link. Anchored to "suppliers link" / "supplier link"
+    # so the older "Product Link (1688/Ali)" scratch column can't win.
+    'supplier_link':    ['suppliers link (1688', 'supplier link (1688', 'suppliers link', 'supplier link'],
+    # The second "other supplier link" column we saw in the sheet ("Product
+    # Link (1688/Ali)"). Rarely populated but we capture it so it doesn't
+    # steal the supplier_link match.
+    'alt_supplier_link':['product link (1688', 'product link (ali'],
+    'material':         ['material'],
+    'unit_price':       ['unit price (supplier', 'supplier unit price', 'unit price', 'supplier price', 'price (supplier)'],
+    'unit_weight':      ['unit weight', 'weight'],
+    'quality':          ['quality of the product', 'quality'],
+    'shipping_price':   ['shipping price'],
+    'notes':            ['notes', 'note'],
+    'added_on_website': ['added on website', 'on website'],
+    'image_url':        ['img url', 'image url'],
+    'suppliers_website': ['suppliers website', 'supplier website'],
+}
+
+
+def _match_sheet_columns(header_row):
+    """Return {field: column_index} for every field we can locate.
+
+    Uses a specificity-scored match: the alias whose text is the longest
+    substring of the header cell wins. This prevents a short generic alias
+    (e.g. '1688') from stealing a column that a longer, more specific alias
+    (e.g. 'suppliers link (1688') should own on a DIFFERENT column.
+    """
+    # (field, column_index, matched_alias_length)
+    picks = {}  # field -> (col_idx, alias_len)
+    used_columns = set()
+    # Build (field, alias, length) list sorted by length desc so longer
+    # aliases get first pick.
+    ordered = []
+    for field, aliases in _SHEET_COL_ALIASES.items():
+        for a in aliases:
+            ordered.append((len(a), field, a.lower()))
+    ordered.sort(reverse=True)
+
+    for _, field, alias in ordered:
+        if field in picks:
+            continue
+        for i, cell in enumerate(header_row):
+            if i in used_columns:
+                continue
+            low = str(cell or '').strip().lower()
+            if not low:
+                continue
+            if alias in low:
+                picks[field] = (i, len(alias))
+                used_columns.add(i)
+                break
+    return {f: v[0] for f, v in picks.items()}
+
+
+def _sync_goth_sheet():
+    """Fetch the configured sheet, parse it, match to Shopify products by
+    handle + product_tag, and write the cache.
+
+    Returns (cache_payload, http_status).
+    """
+    cfg = _load_goth_sheet_config()
+    sheet_url = (cfg.get('sheet_url') or '').strip()
+    if not sheet_url:
+        return {'success': False, 'error': 'No sheet URL configured. Paste your Google Sheet URL in Settings first.'}, 400
+    csv_url = _sheet_csv_url(sheet_url, cfg.get('gid', ''))
+    if not csv_url:
+        return {'success': False, 'error': 'Could not parse the sheet URL.'}, 400
+    try:
+        r = http_requests.get(csv_url, timeout=30, allow_redirects=True)
+    except Exception as e:
+        return {'success': False, 'error': f'Fetch failed: {e}'}, 502
+    if r.status_code != 200 or not r.text:
+        # Common cause: sheet is not shared publicly. Give a helpful hint.
+        hint = ''
+        if r.status_code in (401, 403):
+            hint = ' — the sheet must be shared as "Anyone with the link → Viewer".'
+        return {'success': False, 'error': f'Sheet returned HTTP {r.status_code}{hint}'}, 502
+
+    import csv as _csv
+    import io as _io
+    reader = _csv.reader(_io.StringIO(r.text))
+    all_rows = list(reader)
+    if not all_rows:
+        return {'success': False, 'error': 'Sheet is empty'}, 400
+
+    # Header can be preceded by legend / instruction rows. Scan the first ~30
+    # rows for something that looks like a header (has 'Product' + either
+    # 'Tag' or 'Name' or 'Link').
+    header_idx = None
+    for i, row in enumerate(all_rows[:30]):
+        low = [str(c or '').lower() for c in row]
+        if any('product unique tag' in c or 'product name' in c or 'website product link' in c for c in low):
+            header_idx = i
+            break
+    if header_idx is None:
+        return {'success': False, 'error': 'Could not find a header row. Make sure column names include "Product Unique Tag", "Product Name", or "Website Product Links".'}, 400
+
+    header = all_rows[header_idx]
+    col_idx = _match_sheet_columns(header)
+    missing_critical = [f for f in ('product_tag', 'website_url') if f not in col_idx]
+    # We can still sync if we have at least ONE match key (tag or URL).
+    if 'product_tag' not in col_idx and 'website_url' not in col_idx:
+        return {'success': False, 'error': 'Sheet must have either a "Product Unique Tag" column or a "Website Product Links" column so we can match rows to products.'}, 400
+
+    def get(row, field):
+        i = col_idx.get(field)
+        if i is None or i >= len(row):
+            return ''
+        return str(row[i] or '').strip()
+
+    by_handle = {}
+    by_tag = {}
+    row_count = 0
+    for row in all_rows[header_idx + 1:]:
+        if not any(c and str(c).strip() for c in row):
+            continue  # blank row
+        row_count += 1
+        tag = get(row, 'product_tag')
+        url = get(row, 'website_url')
+        handle = _extract_handle_from_url(url) if url else ''
+        # Skip rows with neither key.
+        if not tag and not handle:
+            continue
+        price_val = _clean_money(get(row, 'unit_price'))
+        shipping_val = _clean_money(get(row, 'shipping_price'))
+        entry = {
+            'product_tag': tag,
+            'product_name': get(row, 'product_name'),
+            'sku': get(row, 'sku'),
+            'website_url': url,
+            'handle': handle,
+            'supplier_link': get(row, 'supplier_link'),
+            'material': get(row, 'material'),
+            'unit_price': price_val,
+            'unit_price_display': get(row, 'unit_price') if price_val is not None else '',
+            'unit_weight': get(row, 'unit_weight'),
+            'quality': get(row, 'quality'),
+            'shipping_price': shipping_val,
+            'shipping_price_display': get(row, 'shipping_price') if shipping_val is not None else '',
+            'notes': get(row, 'notes'),
+            'added_on_website': get(row, 'added_on_website').strip().lower() in ('true', 'yes', '1', 'checked', 'x'),
+            'image_url': get(row, 'image_url'),
+        }
+        if handle:
+            by_handle[handle] = entry
+        if tag:
+            by_tag[tag] = entry
+
+    # Enumerate distinct materials for facet dropdown. Deduplicate
+    # case-insensitively ("Alloy" and "alloy" collapse to one option) and
+    # keep the first-seen casing so the dropdown reads naturally.
+    seen_mat = {}
+    for e in by_handle.values():
+        m = (e.get('material') or '').strip()
+        if not m:
+            continue
+        key = m.lower()
+        if key not in seen_mat:
+            seen_mat[key] = m
+    materials = sorted(seen_mat.values(), key=str.lower)
+
+    cache = {
+        'synced_at': time.time(),
+        'sheet_url': sheet_url,
+        'csv_url': csv_url,
+        'row_count': row_count,
+        'matched_by_handle': len(by_handle),
+        'matched_by_tag': len(by_tag),
+        'materials': materials,
+        'columns_found': sorted(col_idx.keys()),
+        'columns_missing': [f for f in _SHEET_COL_ALIASES.keys() if f not in col_idx],
+        'by_handle': by_handle,
+        'by_tag': by_tag,
+    }
+    _save_goth_sheet_cache(cache)
+    return {
+        'success': True,
+        'synced_at': cache['synced_at'],
+        'row_count': row_count,
+        'matched_by_handle': len(by_handle),
+        'matched_by_tag': len(by_tag),
+        'materials': materials,
+        'columns_found': cache['columns_found'],
+        'columns_missing': cache['columns_missing'],
+    }, 200
+
+
+def _lookup_sheet_entry(sheet_cache, handle: str, sku: str = ''):
+    """Return the sheet row for a product, or None.
+
+    Matches by handle first (most reliable, since we derived it from the URL
+    column). Falls back to SKU-lookup against the product_tag column, so a
+    row with only a tag still lights up if you tag the Shopify product with
+    the same value later.
+    """
+    if not sheet_cache:
+        return None
+    by_handle = sheet_cache.get('by_handle') or {}
+    if handle:
+        e = by_handle.get(handle.lower())
+        if e:
+            return e
+    by_tag = sheet_cache.get('by_tag') or {}
+    if sku:
+        e = by_tag.get(sku)
+        if e:
+            return e
+    return None
+
+
 _GOTH_COLLECTIONS_CACHE = {'ts': 0.0, 'data': None}
 _GOTH_COLLECTIONS_TTL_SEC = 300  # 5 minutes
 
@@ -3376,7 +3694,11 @@ def _fetch_goth_collections(domain, token):
 def _build_goth_winners_payload(min_sales: int, collection: str = '',
                                 tag: str = '', product_type: str = '',
                                 collection_exclude: str = '',
-                                tag_exclude: str = '', status: str = ''):
+                                tag_exclude: str = '', status: str = '',
+                                material: str = '',
+                                missing_material: bool = False,
+                                missing_price: bool = False,
+                                price_min=None, price_max=None):
     """Read the cached paid-order sales for the pinned Goth Society store,
     filter by min_sales (+ optional collection / tag / product_type), and
     enrich with live Shopify product info (title, handle, image, status,
@@ -3541,6 +3863,13 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
     filter_collection_exclude = (collection_exclude or '').strip().lower()
     filter_tag_exclude = (tag_exclude or '').strip().lower()
     filter_status = (status or '').strip().lower()
+    filter_material = (material or '').strip().lower()
+
+    # Sheet-backed supplier data (may be empty if the sheet has never been
+    # synced). Loaded once per request; each product row will pick up its
+    # entry via _lookup_sheet_entry.
+    sheet_cache = _load_goth_sheet_cache()
+    sheet_materials = sheet_cache.get('materials') if sheet_cache else []
 
     # Build response rows.
     results = []
@@ -3604,6 +3933,46 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             if (detail.get('status', '') or '').lower() != filter_status:
                 continue
 
+        # Sheet-driven filters (material / missing material / missing price /
+        # price range). Look up the sheet entry lazily so we only pay for it
+        # when needed.
+        # Handle is the reliable match key; there is no product-level SKU.
+        sheet_entry = _lookup_sheet_entry(sheet_cache, handle)
+        if filter_material:
+            entry_mat = (sheet_entry.get('material', '') if sheet_entry else '').lower()
+            if entry_mat != filter_material:
+                continue
+        if missing_material:
+            if sheet_entry and (sheet_entry.get('material') or '').strip():
+                continue
+        if missing_price:
+            if sheet_entry and sheet_entry.get('unit_price') is not None:
+                continue
+        if price_min is not None or price_max is not None:
+            pv = sheet_entry.get('unit_price') if sheet_entry else None
+            if pv is None:
+                continue  # excluded from a price range if we don't know the price
+            if price_min is not None and pv < price_min:
+                continue
+            if price_max is not None and pv > price_max:
+                continue
+
+        # Attach sheet snapshot for the UI.
+        sheet_out = None
+        if sheet_entry:
+            sheet_out = {
+                'product_tag': sheet_entry.get('product_tag', ''),
+                'material': sheet_entry.get('material', ''),
+                'unit_price': sheet_entry.get('unit_price'),
+                'unit_price_display': sheet_entry.get('unit_price_display', ''),
+                'unit_weight': sheet_entry.get('unit_weight', ''),
+                'quality': sheet_entry.get('quality', ''),
+                'supplier_link': sheet_entry.get('supplier_link', ''),
+                'shipping_price': sheet_entry.get('shipping_price'),
+                'shipping_price_display': sheet_entry.get('shipping_price_display', ''),
+                'notes': sheet_entry.get('notes', ''),
+                'added_on_website': sheet_entry.get('added_on_website', False),
+            }
         variant_sales = p.get('variant_sales') or {}
         variant_skus = detail.get('variant_skus') or {}
         variants_out = []
@@ -3630,6 +3999,7 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'collections': p_collections,
             'shopifyStatus': detail.get('status', 'unknown'),
             'variants': variants_out,
+            'sheet': sheet_out,
         })
 
     return {
@@ -3654,6 +4024,11 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'collection_exclude': collection_exclude or '',
             'tag_exclude': tag_exclude or '',
             'status': status or '',
+            'material': material or '',
+            'missing_material': bool(missing_material),
+            'missing_price': bool(missing_price),
+            'price_min': price_min,
+            'price_max': price_max,
         },
         'facets': {
             # Filter values available across the current min_sales scope,
@@ -3662,6 +4037,14 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'tags': sorted(all_tags_seen, key=str.lower),
             'product_types': sorted(all_types_seen, key=str.lower),
             'statuses': sorted(all_statuses_seen, key=str.lower),
+            'materials': sheet_materials or [],
+        },
+        'sheet': {
+            'synced_at': sheet_cache.get('synced_at') if sheet_cache else None,
+            'row_count': sheet_cache.get('row_count', 0) if sheet_cache else 0,
+            'matched_by_handle': sheet_cache.get('matched_by_handle', 0) if sheet_cache else 0,
+            'matched_by_tag': sheet_cache.get('matched_by_tag', 0) if sheet_cache else 0,
+            'configured': bool((_load_goth_sheet_config().get('sheet_url') or '').strip()),
         },
         'store': store.get('name', ''),
     }, 200
@@ -3673,23 +4056,49 @@ def goth_winners_page():
     return send_file('goth_winners.html')
 
 
-@app.route('/api/goth-winners', methods=['GET'])
-@employee_or_higher_required
-def api_goth_winners():
+def _parse_goth_winners_args():
+    """Parse GET args shared by /api/goth-winners and its .csv sibling."""
     try:
         min_sales = max(0, int(request.args.get('min_sales', 5)))
     except (TypeError, ValueError):
         min_sales = 5
-    collection = request.args.get('collection', '') or ''
-    tag = request.args.get('tag', '') or ''
-    product_type = request.args.get('product_type', '') or ''
-    collection_exclude = request.args.get('collection_exclude', '') or ''
-    tag_exclude = request.args.get('tag_exclude', '') or ''
-    status_filter = request.args.get('status', '') or ''
+
+    def _num(name):
+        v = (request.args.get(name, '') or '').strip()
+        if not v:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            return None
+
+    return {
+        'min_sales': min_sales,
+        'collection': request.args.get('collection', '') or '',
+        'tag': request.args.get('tag', '') or '',
+        'product_type': request.args.get('product_type', '') or '',
+        'collection_exclude': request.args.get('collection_exclude', '') or '',
+        'tag_exclude': request.args.get('tag_exclude', '') or '',
+        'status': request.args.get('status', '') or '',
+        'material': request.args.get('material', '') or '',
+        'missing_material': (request.args.get('missing_material', '') or '').lower() in ('1', 'true', 'yes'),
+        'missing_price': (request.args.get('missing_price', '') or '').lower() in ('1', 'true', 'yes'),
+        'price_min': _num('price_min'),
+        'price_max': _num('price_max'),
+    }
+
+
+@app.route('/api/goth-winners', methods=['GET'])
+@employee_or_higher_required
+def api_goth_winners():
+    a = _parse_goth_winners_args()
     payload, status = _build_goth_winners_payload(
-        min_sales, collection=collection, tag=tag, product_type=product_type,
-        collection_exclude=collection_exclude, tag_exclude=tag_exclude,
-        status=status_filter,
+        a['min_sales'], collection=a['collection'], tag=a['tag'],
+        product_type=a['product_type'],
+        collection_exclude=a['collection_exclude'], tag_exclude=a['tag_exclude'],
+        status=a['status'], material=a['material'],
+        missing_material=a['missing_material'], missing_price=a['missing_price'],
+        price_min=a['price_min'], price_max=a['price_max'],
     )
     return jsonify(payload), status
 
@@ -3732,20 +4141,20 @@ def api_goth_winners_sync_status():
 @app.route('/api/goth-winners/export.csv', methods=['GET'])
 @employee_or_higher_required
 def api_goth_winners_csv():
-    try:
-        min_sales = max(0, int(request.args.get('min_sales', 5)))
-    except (TypeError, ValueError):
-        min_sales = 5
-    collection = request.args.get('collection', '') or ''
-    tag = request.args.get('tag', '') or ''
-    product_type = request.args.get('product_type', '') or ''
-    collection_exclude = request.args.get('collection_exclude', '') or ''
-    tag_exclude = request.args.get('tag_exclude', '') or ''
-    status_filter = request.args.get('status', '') or ''
+    a = _parse_goth_winners_args()
+    min_sales = a['min_sales']
+    collection = a['collection']
+    tag = a['tag']
+    product_type = a['product_type']
+    collection_exclude = a['collection_exclude']
+    tag_exclude = a['tag_exclude']
+    status_filter = a['status']
     payload, status = _build_goth_winners_payload(
         min_sales, collection=collection, tag=tag, product_type=product_type,
         collection_exclude=collection_exclude, tag_exclude=tag_exclude,
-        status=status_filter,
+        status=status_filter, material=a['material'],
+        missing_material=a['missing_material'], missing_price=a['missing_price'],
+        price_min=a['price_min'], price_max=a['price_max'],
     )
     if status != 200 or not payload.get('success'):
         return jsonify(payload), status
@@ -3775,6 +4184,16 @@ def api_goth_winners_csv():
         'Product ID',
         'Variant ID',
         'Handle',
+        # Sheet-backed supplier columns. Empty when the product has no
+        # matching sheet row so Allison can filter for blanks in Excel.
+        'Sheet Product Tag',
+        'Material',
+        'Supplier Unit Price (USD)',
+        'Supplier Shipping (USD)',
+        'Unit Weight',
+        'Supplier Link',
+        'Quality Notes',
+        'Sheet Notes',
     ])
     for row in payload.get('products', []):
         variants = row.get('variants') or [{
@@ -3784,6 +4203,9 @@ def api_goth_winners_csv():
         }]
         tags_str = ', '.join(row.get('tags') or [])
         cols_str = ', '.join(row.get('collections') or [])
+        sheet = row.get('sheet') or {}
+        sheet_price = sheet.get('unit_price')
+        sheet_ship = sheet.get('shipping_price')
         for v in variants:
             writer.writerow([
                 row.get('name', ''),
@@ -3802,6 +4224,14 @@ def api_goth_winners_csv():
                 row.get('id', ''),
                 v.get('id', ''),
                 row.get('handle', ''),
+                sheet.get('product_tag', ''),
+                sheet.get('material', ''),
+                f"{sheet_price:.2f}" if isinstance(sheet_price, (int, float)) else '',
+                f"{sheet_ship:.2f}" if isinstance(sheet_ship, (int, float)) else '',
+                sheet.get('unit_weight', ''),
+                sheet.get('supplier_link', ''),
+                sheet.get('quality', ''),
+                sheet.get('notes', ''),
             ])
 
     csv_body = buf.getvalue()
@@ -3826,6 +4256,57 @@ def api_goth_winners_csv():
     resp.headers['Content-Type'] = 'text/csv; charset=utf-8'
     resp.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
     return resp
+
+
+# ===== Routes: Goth Sheet (supplier data) sync =====
+@app.route('/api/goth-sheet/status', methods=['GET'])
+@employee_or_higher_required
+def api_goth_sheet_status():
+    """Return current sheet config + last sync metadata (no raw rows)."""
+    cfg = _load_goth_sheet_config()
+    cache = _load_goth_sheet_cache()
+    return jsonify({
+        'success': True,
+        'configured': bool((cfg.get('sheet_url') or '').strip()),
+        'sheet_url': cfg.get('sheet_url', ''),
+        'gid': cfg.get('gid', ''),
+        'synced_at': cache.get('synced_at') if cache else None,
+        'row_count': cache.get('row_count', 0) if cache else 0,
+        'matched_by_handle': cache.get('matched_by_handle', 0) if cache else 0,
+        'matched_by_tag': cache.get('matched_by_tag', 0) if cache else 0,
+        'materials': cache.get('materials', []) if cache else [],
+        'columns_found': cache.get('columns_found', []) if cache else [],
+        'columns_missing': cache.get('columns_missing', []) if cache else [],
+    })
+
+
+@app.route('/api/goth-sheet/config', methods=['POST'])
+@employee_or_higher_required
+def api_goth_sheet_config():
+    """Save the Google Sheet URL. Employee-scoped so Allison can wire it up
+    without needing admin, since the sheet is public-read anyway.
+    """
+    data = request.get_json(silent=True) or {}
+    sheet_url = (data.get('sheet_url') or '').strip()
+    gid = (data.get('gid') or '').strip()
+    if not sheet_url:
+        return jsonify({'success': False, 'error': 'sheet_url is required'}), 400
+    # Basic sanity check - must look like a Google Sheets URL or a raw sheet id.
+    if not re.search(r'docs\.google\.com/spreadsheets|/d/[a-zA-Z0-9_-]+', sheet_url) and not re.match(r'^[a-zA-Z0-9_-]{20,}$', sheet_url):
+        return jsonify({'success': False, 'error': 'That does not look like a Google Sheets URL. Paste the full https://docs.google.com/spreadsheets/... link.'}), 400
+    _save_goth_sheet_config({'sheet_url': sheet_url, 'gid': gid})
+    return jsonify({'success': True, 'sheet_url': sheet_url, 'gid': gid})
+
+
+@app.route('/api/goth-sheet/sync', methods=['POST'])
+@employee_or_higher_required
+def api_goth_sheet_sync():
+    """Fetch the configured sheet as CSV, parse it, and cache. Synchronous —
+    the sheet is small (a few hundred rows) so we don't need a background
+    worker for it.
+    """
+    payload, status = _sync_goth_sheet()
+    return jsonify(payload), status
 
 
 # ===== Routes: Video Generation =====
