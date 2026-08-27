@@ -535,6 +535,33 @@
     border-color: #fde68a;
     color: #92400e;
   }
+  /* Top-N quick preset chip buttons next to the Min sales / Top N inputs. */
+  .topn-presets {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+  .chip-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 10px;
+    border: 1px solid var(--gray-300);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--gray-700);
+    background: #fff;
+    cursor: pointer;
+    user-select: none;
+    line-height: 1;
+  }
+  .chip-btn:hover { border-color: var(--purple); color: var(--purple); }
+  .chip-btn.active {
+    background: var(--purple);
+    border-color: var(--purple);
+    color: #fff;
+  }
   .price-range {
     display: inline-flex;
     align-items: center;
@@ -839,6 +866,15 @@
     <div class="ctrl-row">
       <label for="minSales">Min sales:</label>
       <input type="number" id="minSales" min="0" value="5" inputmode="numeric" enterkeyhint="go">
+      <label for="topN" title="Show only the top N products by units sold (blank = show all)">Top N:</label>
+      <input type="number" id="topN" min="1" placeholder="all" inputmode="numeric" enterkeyhint="go" style="width:6.5em">
+      <div class="topn-presets" role="group" aria-label="Quick top-N presets">
+        <button type="button" class="chip-btn" data-topn="25">Top 25</button>
+        <button type="button" class="chip-btn" data-topn="50">Top 50</button>
+        <button type="button" class="chip-btn" data-topn="100">Top 100</button>
+        <button type="button" class="chip-btn" data-topn="250">Top 250</button>
+        <button type="button" class="chip-btn" data-topn="">All</button>
+      </div>
       <button class="btn btn-primary" id="loadBtn">
         <span id="loadLabel">Apply</span>
       </button>
@@ -1220,7 +1256,15 @@ function renderContent(payload) {
   const products = payload.products || [];
   const stats = payload.stats || {};
 
-  $('statQualified').textContent = fmtNum(stats.qualifiedCount);
+  // When a Top N clip is on, show "showing X of Y" so it's obvious a
+  // slice is active. matchedBeforeTop is the full pre-clip match count.
+  const matched = stats.matchedBeforeTop;
+  const shown = stats.qualifiedCount;
+  if (typeof matched === 'number' && matched > shown) {
+    $('statQualified').textContent = `${fmtNum(shown)} of ${fmtNum(matched)}`;
+  } else {
+    $('statQualified').textContent = fmtNum(shown);
+  }
   $('statProducts').textContent = fmtNum(stats.totalProducts);
   $('statUnits').textContent = fmtNum(stats.totalUnitsSold);
   $('statPages').textContent = fmtNum(stats.orderPages);
@@ -1274,6 +1318,11 @@ function renderContent(payload) {
 function getFilterParams() {
   const minSales = Math.max(0, parseInt($('minSales').value || '0', 10) || 0);
   const params = new URLSearchParams({ min_sales: String(minSales) });
+  // Top N: empty / 0 / negative = show all, so we only send the param when
+  // it's a positive integer. The server double-guards this.
+  const rawTop = ($('topN').value || '').trim();
+  const topN = rawTop ? parseInt(rawTop, 10) : 0;
+  if (topN > 0) params.set('top_n', String(topN));
   const col = $('filterCollection').value;
   const tag = $('filterTag').value;
   const typ = $('filterType').value;
@@ -1362,6 +1411,14 @@ function populateFacets(facets, currentFilters) {
   const pMaxCur = (currentFilters || {}).price_max;
   if (pMinCur !== null && pMinCur !== undefined) $('filterPriceMin').value = pMinCur;
   if (pMaxCur !== null && pMaxCur !== undefined) $('filterPriceMax').value = pMaxCur;
+  // Reflect server-echoed top_n back into the input so a shared URL that
+  // pre-populates ?top_n=... shows up in the UI. Also update the active
+  // state on the preset chips so the right one is highlighted.
+  const topNCur = (currentFilters || {}).top_n;
+  if (typeof topNCur === 'number' && topNCur > 0) {
+    $('topN').value = String(topNCur);
+  }
+  updateTopNPresetHighlight();
   // Row visibility follows sheet-synced state, not just facet presence —
   // an admin might sync a sheet where every row has an empty material.
   const sheetSynced = !!(state.sheetStatus && state.sheetStatus.synced_at);
@@ -1375,7 +1432,8 @@ function populateFacets(facets, currentFilters) {
     $('filterCollection').value || $('filterTag').value || $('filterType').value ||
     $('filterCollectionExclude').value || $('filterTagExclude').value || $('filterStatus').value ||
     $('filterMaterial').value || $('filterMissingMaterial').checked || $('filterMissingPrice').checked ||
-    ($('filterPriceMin').value || '').trim() !== '' || ($('filterPriceMax').value || '').trim() !== ''
+    ($('filterPriceMin').value || '').trim() !== '' || ($('filterPriceMax').value || '').trim() !== '' ||
+    ($('topN').value || '').trim() !== ''
   );
   $('clearFiltersBtn').hidden = !anyActive;
   const bits = [];
@@ -1391,6 +1449,8 @@ function populateFacets(facets, currentFilters) {
   if (($('filterPriceMin').value || '').trim() !== '' || ($('filterPriceMax').value || '').trim() !== '') {
     bits.push(`$${$('filterPriceMin').value || '0'}–${$('filterPriceMax').value || '∞'}`);
   }
+  const topNRaw = ($('topN').value || '').trim();
+  if (topNRaw) bits.push(`Top ${topNRaw}`);
   $('activeFilterSummary').textContent = bits.length ? bits.join(' · ') : '';
 }
 
@@ -1696,6 +1756,26 @@ $('loadBtn').addEventListener('click', loadWinners);
 $('csvBtn').addEventListener('click', exportCSV);
 $('refreshBtn').addEventListener('click', startRefresh);
 $('minSales').addEventListener('keydown', e => { if (e.key === 'Enter') loadWinners(); });
+// Top N: reload on Enter or on blur (blur fires the native `change` event).
+$('topN').addEventListener('change', () => loadWinners());
+$('topN').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); loadWinners(); } });
+$('topN').addEventListener('input', updateTopNPresetHighlight);
+// Top N quick-preset chips: click sets the input value and reloads.
+// data-topn="" means "clear" (show all).
+document.querySelectorAll('.topn-presets .chip-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $('topN').value = btn.dataset.topn || '';
+    updateTopNPresetHighlight();
+    loadWinners();
+  });
+});
+
+function updateTopNPresetHighlight() {
+  const cur = ($('topN').value || '').trim();
+  document.querySelectorAll('.topn-presets .chip-btn').forEach(btn => {
+    btn.classList.toggle('active', (btn.dataset.topn || '') === cur);
+  });
+}
 $('urlSearchBtn').addEventListener('click', runUrlSearch);
 $('urlSearchClearBtn').addEventListener('click', clearUrlSearch);
 $('urlSearch').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); runUrlSearch(); } });
@@ -1723,6 +1803,8 @@ $('clearFiltersBtn').addEventListener('click', () => {
   $('filterMissingPrice').checked = false;
   $('filterPriceMin').value = '';
   $('filterPriceMax').value = '';
+  $('topN').value = '';
+  updateTopNPresetHighlight();
   loadWinners();
 });
 // Sheet controls.

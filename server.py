@@ -3698,7 +3698,8 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
                                 material: str = '',
                                 missing_material: bool = False,
                                 missing_price: bool = False,
-                                price_min=None, price_max=None):
+                                price_min=None, price_max=None,
+                                top_n=None):
     """Read the cached paid-order sales for the pinned Goth Society store,
     filter by min_sales (+ optional collection / tag / product_type), and
     enrich with live Shopify product info (title, handle, image, status,
@@ -4002,11 +4003,22 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'sheet': sheet_out,
         })
 
+    # Apply "Top N by sales" AFTER every other filter has run so the user
+    # sees the top N of the *filtered* set (not the top N of the store).
+    # results is already sorted by sales DESC because sorted_products is.
+    total_matched = len(results)
+    if top_n is not None and top_n > 0:
+        results = results[:top_n]
+
     return {
         'success': True,
         'products': results,
         'stats': {
+            # qualifiedCount reflects what the user actually sees. The full
+            # pre-topN match count is exposed as matchedBeforeTop so the UI
+            # can show "showing 100 of 210 matches" when a Top N clip is on.
             'qualifiedCount': len(results),
+            'matchedBeforeTop': total_matched,
             # When min_sales == 0 we backfill from the live catalog so
             # totalProducts should reflect the true store size, not just
             # products with paid orders.
@@ -4029,6 +4041,7 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'missing_price': bool(missing_price),
             'price_min': price_min,
             'price_max': price_max,
+            'top_n': top_n,
         },
         'facets': {
             # Filter values available across the current min_sales scope,
@@ -4085,6 +4098,10 @@ def _parse_goth_winners_args():
         'missing_price': (request.args.get('missing_price', '') or '').lower() in ('1', 'true', 'yes'),
         'price_min': _num('price_min'),
         'price_max': _num('price_max'),
+        # "Top N by sales" clip. Empty / 0 / bad = no clip.
+        'top_n': (lambda v: v if (v and v > 0) else None)(
+            (lambda s: (int(s) if s.isdigit() else None))((request.args.get('top_n', '') or '').strip())
+        ),
     }
 
 
@@ -4099,6 +4116,7 @@ def api_goth_winners():
         status=a['status'], material=a['material'],
         missing_material=a['missing_material'], missing_price=a['missing_price'],
         price_min=a['price_min'], price_max=a['price_max'],
+        top_n=a['top_n'],
     )
     return jsonify(payload), status
 
@@ -4155,6 +4173,7 @@ def api_goth_winners_csv():
         status=status_filter, material=a['material'],
         missing_material=a['missing_material'], missing_price=a['missing_price'],
         price_min=a['price_min'], price_max=a['price_max'],
+        top_n=a['top_n'],
     )
     if status != 200 or not payload.get('success'):
         return jsonify(payload), status
