@@ -195,6 +195,7 @@ _EMPLOYEE_ALLOWED_EXACT = {
     '/api/goth-winners', '/api/goth-winners/export.csv',
     '/api/goth-winners/sync', '/api/goth-winners/sync/status',
     '/api/goth-sheet/sync', '/api/goth-sheet/status', '/api/goth-sheet/config',
+    '/api/goth-sheet/tag-gaps',
 }
 
 
@@ -3698,6 +3699,7 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
                                 material: str = '',
                                 missing_material: bool = False,
                                 missing_price: bool = False,
+                                missing_tag: bool = False,
                                 price_min=None, price_max=None,
                                 top_n=None):
     """Read the cached paid-order sales for the pinned Goth Society store,
@@ -3949,6 +3951,13 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
         if missing_price:
             if sheet_entry and sheet_entry.get('unit_price') is not None:
                 continue
+        # "Missing TGS# tag" filter: keep the product if either it has no
+        # matching sheet row at all, or the row exists but the product_tag
+        # column is blank. Mirrors the missing_material / missing_price
+        # logic exactly so the three chips behave the same way.
+        if missing_tag:
+            if sheet_entry and (sheet_entry.get('product_tag') or '').strip():
+                continue
         if price_min is not None or price_max is not None:
             pv = sheet_entry.get('unit_price') if sheet_entry else None
             if pv is None:
@@ -4039,6 +4048,7 @@ def _build_goth_winners_payload(min_sales: int, collection: str = '',
             'material': material or '',
             'missing_material': bool(missing_material),
             'missing_price': bool(missing_price),
+            'missing_tag': bool(missing_tag),
             'price_min': price_min,
             'price_max': price_max,
             'top_n': top_n,
@@ -4096,6 +4106,7 @@ def _parse_goth_winners_args():
         'material': request.args.get('material', '') or '',
         'missing_material': (request.args.get('missing_material', '') or '').lower() in ('1', 'true', 'yes'),
         'missing_price': (request.args.get('missing_price', '') or '').lower() in ('1', 'true', 'yes'),
+        'missing_tag': (request.args.get('missing_tag', '') or '').lower() in ('1', 'true', 'yes'),
         'price_min': _num('price_min'),
         'price_max': _num('price_max'),
         # "Top N by sales" clip. Empty / 0 / bad = no clip.
@@ -4115,6 +4126,7 @@ def api_goth_winners():
         collection_exclude=a['collection_exclude'], tag_exclude=a['tag_exclude'],
         status=a['status'], material=a['material'],
         missing_material=a['missing_material'], missing_price=a['missing_price'],
+        missing_tag=a['missing_tag'],
         price_min=a['price_min'], price_max=a['price_max'],
         top_n=a['top_n'],
     )
@@ -4172,6 +4184,7 @@ def api_goth_winners_csv():
         collection_exclude=collection_exclude, tag_exclude=tag_exclude,
         status=status_filter, material=a['material'],
         missing_material=a['missing_material'], missing_price=a['missing_price'],
+        missing_tag=a['missing_tag'],
         price_min=a['price_min'], price_max=a['price_max'],
         top_n=a['top_n'],
     )
@@ -4315,6 +4328,84 @@ def api_goth_sheet_config():
         return jsonify({'success': False, 'error': 'That does not look like a Google Sheets URL. Paste the full https://docs.google.com/spreadsheets/... link.'}), 400
     _save_goth_sheet_config({'sheet_url': sheet_url, 'gid': gid})
     return jsonify({'success': True, 'sheet_url': sheet_url, 'gid': gid})
+
+
+@app.route('/api/goth-sheet/tag-gaps', methods=['GET'])
+@employee_or_higher_required
+def api_goth_sheet_tag_gaps():
+    """Analyze the supplier sheet's Product Unique Tag column and report
+    any gaps in the TGS#NNN numbering (e.g. we have TGS#001 and TGS#003
+    but no TGS#002). Also lists duplicates and non-conforming tag values
+    so Allison can spot data-entry issues at a glance.
+
+    Numbering scheme: expects TGS#<digits>, case-insensitive, any leading
+    zeros. Range is 1..max(seen). Optional query param `up_to=<int>`
+    lets the caller extend the range past the highest seen tag (useful
+    to see "which of TGS#001..TGS#500 are still unused").
+    """
+    cache = _load_goth_sheet_cache()
+    if not cache:
+        return jsonify({'success': False, 'error': 'Sheet not synced yet. Click Sync sheet first.'}), 400
+
+    # Pull the tag off every row via the by_handle index which already
+    # contains one entry per sheet row.
+    by_handle = cache.get('by_handle') or {}
+    by_tag = cache.get('by_tag') or {}
+
+    tag_pat = re.compile(r'^\s*tgs\s*#?\s*(\d+)\s*$', re.IGNORECASE)
+
+    seen = {}   # int -> [display_tags]
+    bad = []    # non-conforming, non-empty tag strings
+    # Iterate the by_tag index so we cover every distinct tag exactly once.
+    for tag_raw, entry in by_tag.items():
+        s = (tag_raw or '').strip()
+        if not s:
+            continue
+        m = tag_pat.match(s)
+        if not m:
+            bad.append({'tag': s, 'name': (entry or {}).get('product_name', '')})
+            continue
+        n = int(m.group(1))
+        seen.setdefault(n, []).append(s)
+
+    if not seen:
+        return jsonify({
+            'success': True,
+            'total_tags': 0,
+            'max_seen': 0,
+            'missing': [],
+            'duplicates': [],
+            'malformed': bad,
+        })
+
+    max_seen = max(seen.keys())
+    try:
+        up_to = int((request.args.get('up_to') or '').strip() or 0)
+    except ValueError:
+        up_to = 0
+    ceiling = max(max_seen, up_to)
+
+    missing = [n for n in range(1, ceiling + 1) if n not in seen]
+    duplicates = [
+        {'number': n, 'tags': tags}
+        for n, tags in sorted(seen.items()) if len(tags) > 1
+    ]
+
+    # Also count how many products in the store have NO tag at all (blank
+    # sheet cell or no matching sheet row). This is the same data as the
+    # "Missing tag" filter but summarized so the UI can show it upfront.
+    # Only counts against the currently qualified paid-order winners so it
+    # matches what Allison sees on the page.
+    return jsonify({
+        'success': True,
+        'total_tags': len(seen),
+        'max_seen': max_seen,
+        'ceiling': ceiling,
+        'missing': missing,     # e.g. [2, 5, 17]
+        'missing_count': len(missing),
+        'duplicates': duplicates,
+        'malformed': bad,
+    })
 
 
 @app.route('/api/goth-sheet/sync', methods=['POST'])
