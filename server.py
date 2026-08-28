@@ -196,6 +196,7 @@ _EMPLOYEE_ALLOWED_EXACT = {
     '/api/goth-winners/sync', '/api/goth-winners/sync/status',
     '/api/goth-sheet/sync', '/api/goth-sheet/status', '/api/goth-sheet/config',
     '/api/goth-sheet/tag-gaps',
+    '/api/product-plan/refresh', '/api/product-plan/refresh/status',
 }
 
 
@@ -4406,6 +4407,114 @@ def api_goth_sheet_tag_gaps():
         'duplicates': duplicates,
         'malformed': bad,
     })
+
+
+# ---------------------------------------------------------------------------
+# Product Plan sheet refresh
+# ---------------------------------------------------------------------------
+# The user has a separate Google Sheet (their "Product Plan") that lists
+# store product URLs in column D and wants columns F/G/H auto-filled from
+# our tool cache (product tag / units sold / supplier quote). We don't have
+# Google auth on this VPS, so this endpoint just records a refresh request
+# to a JSON queue file. A separate operator process (Perplexity Computer
+# session) polls the queue and does the actual Google Sheets write, then
+# posts the result back via /api/product-plan/refresh/result. The UI polls
+# /api/product-plan/refresh/status until the request is fulfilled.
+
+PRODUCT_PLAN_REFRESH_FILE = os.path.join(DATA_DIR, 'product_plan_refresh.json')
+
+
+def _load_pp_refresh():
+    return _load_json('product_plan_refresh.json', default={'requests': [], 'last_result': None})
+
+
+def _save_pp_refresh(data):
+    _save_json('product_plan_refresh.json', data)
+
+
+@app.route('/api/product-plan/refresh', methods=['POST'])
+@employee_or_higher_required
+def api_product_plan_refresh_request():
+    """Queue a refresh request. Records who asked, when, and returns a
+    request_id the client polls with /status. The actual write to Google
+    Sheets happens out-of-band — an operator picks up the queued request
+    and posts back to /result.
+    """
+    state = _load_pp_refresh()
+    reqs = state.get('requests') or []
+    # If there's already a pending request, return that one instead of
+    # queuing a duplicate — double-clicking the button shouldn't spam.
+    pending = [r for r in reqs if r.get('status') == 'pending']
+    if pending:
+        return jsonify({
+            'success': True,
+            'request_id': pending[-1]['id'],
+            'status': 'pending',
+            'already_pending': True,
+            'requested_at': pending[-1]['requested_at'],
+        })
+    req = {
+        'id': secrets.token_hex(8),
+        'requested_at': datetime.datetime.utcnow().isoformat() + 'Z',
+        'requested_by': session.get('username') or session.get('role') or 'unknown',
+        'status': 'pending',
+    }
+    reqs.append(req)
+    # Cap queue at 50 to prevent unbounded growth.
+    state['requests'] = reqs[-50:]
+    _save_pp_refresh(state)
+    return jsonify({'success': True, 'request_id': req['id'], 'status': 'pending'})
+
+
+@app.route('/api/product-plan/refresh/status', methods=['GET'])
+@employee_or_higher_required
+def api_product_plan_refresh_status():
+    """Poll for a refresh request's status. If request_id is provided,
+    returns that specific request; otherwise returns the most recent one.
+    Shape: {status: pending|done|error, result: {...}, requested_at}.
+    """
+    state = _load_pp_refresh()
+    reqs = state.get('requests') or []
+    if not reqs:
+        return jsonify({'success': True, 'status': 'idle', 'last_result': state.get('last_result')})
+    rid = (request.args.get('request_id') or '').strip()
+    if rid:
+        match = [r for r in reqs if r.get('id') == rid]
+        if not match:
+            return jsonify({'success': False, 'error': 'request_id not found'}), 404
+        return jsonify({'success': True, **match[0]})
+    return jsonify({'success': True, **reqs[-1]})
+
+
+@app.route('/api/product-plan/refresh/result', methods=['POST'])
+@admin_required
+def api_product_plan_refresh_result():
+    """Operator posts the outcome of a queued refresh. Body should include
+    request_id and either {status: 'done', result: {...}} or
+    {status: 'error', error: '...'}. Admin-only — employees can't spoof
+    results.
+    """
+    body = request.get_json(silent=True) or {}
+    rid = (body.get('request_id') or '').strip()
+    if not rid:
+        return jsonify({'success': False, 'error': 'request_id required'}), 400
+    new_status = (body.get('status') or '').strip()
+    if new_status not in ('done', 'error'):
+        return jsonify({'success': False, 'error': "status must be 'done' or 'error'"}), 400
+    state = _load_pp_refresh()
+    reqs = state.get('requests') or []
+    for r in reqs:
+        if r.get('id') == rid:
+            r['status'] = new_status
+            r['completed_at'] = datetime.datetime.utcnow().isoformat() + 'Z'
+            if new_status == 'done':
+                r['result'] = body.get('result') or {}
+            else:
+                r['error'] = body.get('error') or 'unknown error'
+            state['last_result'] = r
+            _save_pp_refresh(state)
+            return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'request_id not found'}), 404
 
 
 @app.route('/api/goth-sheet/sync', methods=['POST'])

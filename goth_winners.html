@@ -888,6 +888,7 @@
     <span class="sheet-bar-body" id="sheetBarBody">Supplier sheet: not configured.</span>
     <button class="btn btn-refresh" id="sheetSyncBtn" type="button">↻ Sync sheet</button>
     <button class="btn btn-ghost" id="sheetSettingsBtn" type="button">⚙ Settings</button>
+    <button class="btn btn-ghost" id="planRefreshBtn" type="button" title="Re-fill columns F/G/H of the Product Plan Google Sheet using the current tool cache">🔄 Refresh Product Plan sheet</button>
   </div>
 
   <div class="controls">
@@ -1007,6 +1008,27 @@
       <div class="modal-actions">
         <button class="btn btn-ghost" id="tagGapsClose" type="button">Close</button>
         <button class="btn btn-primary" id="tagGapsCopy" type="button">Copy missing numbers</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Product Plan refresh modal: shows queue status and last result. -->
+  <div class="modal-overlay" id="planRefreshModal" role="dialog" aria-modal="true" aria-labelledby="planRefreshTitle">
+    <div class="modal">
+      <h2 id="planRefreshTitle">Refresh Product Plan sheet</h2>
+      <p class="modal-sub">This fills columns <strong>F</strong> (PRODUCT TAG), <strong>G</strong> (UNITS SOLD), and <strong>H</strong> (SUPPLIER QUOTE) of your <em>Product Plan</em> Google Sheet based on the URLs in column D. Adds/updates any new rows you appended since last refresh.</p>
+      <div class="gaps-summary" id="planRefreshSummary">Idle. Click <strong>Refresh now</strong> to queue an update.</div>
+      <div class="gaps-section" id="planRefreshResultWrap" hidden>
+        <strong>Last result</strong>
+        <div class="gaps-list" id="planRefreshResult"></div>
+      </div>
+      <div class="gaps-section" id="planRefreshUnmatchedWrap" hidden>
+        <strong>Unmatched rows</strong> <span class="gaps-hint">(product URL not in tool cache)</span>
+        <div class="gaps-list" id="planRefreshUnmatched"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="planRefreshClose" type="button">Close</button>
+        <button class="btn btn-primary" id="planRefreshRun" type="button">Refresh now</button>
       </div>
     </div>
   </div>
@@ -1949,6 +1971,140 @@ $('tagGapsCopy').addEventListener('click', async () => {
   } catch (e) {
     toast('Copy failed: ' + e.message, true);
   }
+});
+
+// -------- Product Plan sheet refresh modal --------
+// Behavior: user clicks Refresh now -> we POST /api/product-plan/refresh
+// to enqueue the request. An external operator picks it up and writes to
+// Google Sheets, then posts the result back. We poll /status until we see
+// status !== 'pending' or a 5-minute cap. Renders result inline.
+let planPollTimer = null;
+let planCurrentRequestId = null;
+function planStopPolling() {
+  if (planPollTimer) { clearTimeout(planPollTimer); planPollTimer = null; }
+}
+function planRenderIdle(msg) {
+  planStopPolling();
+  $('planRefreshSummary').innerHTML = msg || 'Idle. Click <strong>Refresh now</strong> to queue an update.';
+  $('planRefreshRun').disabled = false;
+  $('planRefreshRun').textContent = 'Refresh now';
+}
+function planRenderPending() {
+  $('planRefreshSummary').innerHTML =
+    '<span class="gaps-none" style="color:#b45309">⏳ Queued.</span> ' +
+    'A refresh request has been recorded. It usually completes within a minute. ' +
+    'This modal will update automatically when it\'s done.';
+  $('planRefreshRun').disabled = true;
+  $('planRefreshRun').textContent = 'Waiting…';
+}
+function planRenderDone(r) {
+  planStopPolling();
+  const res = r.result || {};
+  const total = res.total || 0;
+  const matched = res.matched || 0;
+  const written = res.written_cells || 0;
+  const unmatched = res.unmatched || [];
+  const missingTag = res.missing_tag_count || 0;
+  const missingQuote = res.missing_quote_count || 0;
+  const range = res.range || '';
+  const when = r.completed_at ? new Date(r.completed_at).toLocaleString() : '';
+  $('planRefreshSummary').innerHTML =
+    `<span style="color:#166534">✓ Refreshed.</span> ` +
+    `<strong>${matched}</strong> of <strong>${total}</strong> rows matched — ` +
+    `${written} cell${written === 1 ? '' : 's'} written to ${escapeHtml(range)}. ` +
+    (when ? `<br><span class="gaps-hint">Completed ${escapeHtml(when)}.</span>` : '');
+  const resultWrap = $('planRefreshResultWrap');
+  const resultEl = $('planRefreshResult');
+  const bits = [];
+  if (missingTag) bits.push(`<div>⚠️ ${missingTag} matched row${missingTag === 1 ? '' : 's'} still have no PRODUCT TAG in the supplier sheet.</div>`);
+  if (missingQuote) bits.push(`<div>⚠️ ${missingQuote} matched row${missingQuote === 1 ? '' : 's'} still have no SUPPLIER QUOTE in the supplier sheet.</div>`);
+  if (bits.length) { resultEl.innerHTML = bits.join(''); resultWrap.hidden = false; }
+  else { resultWrap.hidden = true; }
+  const unmatchedWrap = $('planRefreshUnmatchedWrap');
+  const unmatchedEl = $('planRefreshUnmatched');
+  if (unmatched.length) {
+    unmatchedEl.innerHTML = unmatched.map(u =>
+      `<div>Row ${u.row}: <a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">${escapeHtml(u.url)}</a></div>`
+    ).join('');
+    unmatchedWrap.hidden = false;
+  } else {
+    unmatchedWrap.hidden = true;
+  }
+  $('planRefreshRun').disabled = false;
+  $('planRefreshRun').textContent = 'Refresh again';
+}
+function planRenderError(err) {
+  planStopPolling();
+  $('planRefreshSummary').innerHTML =
+    `<span style="color:#b91c1c">✖ Refresh failed:</span> ${escapeHtml(err || 'unknown error')}`;
+  $('planRefreshResultWrap').hidden = true;
+  $('planRefreshUnmatchedWrap').hidden = true;
+  $('planRefreshRun').disabled = false;
+  $('planRefreshRun').textContent = 'Try again';
+}
+async function planPollStatus(startedAt) {
+  if (!planCurrentRequestId) return;
+  // Cap at 5 minutes.
+  if (Date.now() - startedAt > 5 * 60 * 1000) {
+    planRenderError('Timed out waiting for refresh. Try again — the request is still queued and will be picked up.');
+    return;
+  }
+  try {
+    const r = await fetch(`/api/product-plan/refresh/status?request_id=${encodeURIComponent(planCurrentRequestId)}`, { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data.error || ('HTTP ' + r.status));
+    if (data.status === 'done') { planRenderDone(data); return; }
+    if (data.status === 'error') { planRenderError(data.error); return; }
+    // Still pending — poll again in 3s.
+    planPollTimer = setTimeout(() => planPollStatus(startedAt), 3000);
+  } catch (e) {
+    // Transient network error: keep polling but slow down.
+    planPollTimer = setTimeout(() => planPollStatus(startedAt), 5000);
+  }
+}
+async function openPlanRefresh() {
+  $('planRefreshModal').classList.add('open');
+  $('planRefreshResultWrap').hidden = true;
+  $('planRefreshUnmatchedWrap').hidden = true;
+  // Show the last known result on open so re-opening doesn't feel empty.
+  try {
+    const r = await fetch('/api/product-plan/refresh/status', { credentials: 'same-origin' });
+    if (r.ok) {
+      const data = await r.json();
+      if (data && data.status === 'done') { planRenderDone(data); return; }
+      if (data && data.status === 'pending') {
+        planCurrentRequestId = data.id || null;
+        planRenderPending();
+        planPollStatus(Date.now());
+        return;
+      }
+      if (data && data.status === 'error') { planRenderError(data.error); return; }
+    }
+  } catch (e) { /* fall through to idle */ }
+  planRenderIdle();
+}
+function closePlanRefresh() { planStopPolling(); $('planRefreshModal').classList.remove('open'); }
+async function runPlanRefresh() {
+  $('planRefreshRun').disabled = true;
+  $('planRefreshRun').textContent = 'Queuing…';
+  try {
+    const r = await fetch('/api/product-plan/refresh', { method: 'POST', credentials: 'same-origin' });
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    const data = await r.json();
+    if (!r.ok || !data.success) throw new Error(data.error || ('HTTP ' + r.status));
+    planCurrentRequestId = data.request_id;
+    planRenderPending();
+    planPollStatus(Date.now());
+  } catch (e) {
+    planRenderError(e.message);
+  }
+}
+$('planRefreshBtn').addEventListener('click', openPlanRefresh);
+$('planRefreshClose').addEventListener('click', closePlanRefresh);
+$('planRefreshRun').addEventListener('click', runPlanRefresh);
+$('planRefreshModal').addEventListener('click', e => {
+  if (e.target === $('planRefreshModal')) closePlanRefresh();
 });
 
 async function initialLoad() {
