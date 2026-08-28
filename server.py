@@ -4082,9 +4082,9 @@ def goth_winners_page():
 def _parse_goth_winners_args():
     """Parse GET args shared by /api/goth-winners and its .csv sibling."""
     try:
-        min_sales = max(0, int(request.args.get('min_sales', 5)))
+        min_sales = max(0, int(request.args.get('min_sales', 0)))
     except (TypeError, ValueError):
-        min_sales = 5
+        min_sales = 0
 
     def _num(name):
         v = (request.args.get(name, '') or '').strip()
