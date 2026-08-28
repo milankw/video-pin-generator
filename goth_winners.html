@@ -2006,6 +2006,7 @@ function planRenderDone(r) {
   const unmatched = res.unmatched || [];
   const missingTag = res.missing_tag_count || 0;
   const missingQuote = res.missing_quote_count || 0;
+  const missingMat = res.missing_material_count || 0;
   const range = res.range || '';
   const when = r.completed_at ? new Date(r.completed_at).toLocaleString() : '';
   $('planRefreshSummary').innerHTML =
@@ -2018,6 +2019,7 @@ function planRenderDone(r) {
   const bits = [];
   if (missingTag) bits.push(`<div>⚠️ ${missingTag} matched row${missingTag === 1 ? '' : 's'} still have no PRODUCT TAG in the supplier sheet.</div>`);
   if (missingQuote) bits.push(`<div>⚠️ ${missingQuote} matched row${missingQuote === 1 ? '' : 's'} still have no SUPPLIER QUOTE in the supplier sheet.</div>`);
+  if (missingMat) bits.push(`<div>⚠️ ${missingMat} matched row${missingMat === 1 ? '' : 's'} still have no MATERIAL in the supplier sheet.</div>`);
   if (bits.length) { resultEl.innerHTML = bits.join(''); resultWrap.hidden = false; }
   else { resultWrap.hidden = true; }
   const unmatchedWrap = $('planRefreshUnmatchedWrap');
